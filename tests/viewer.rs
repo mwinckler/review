@@ -1,0 +1,193 @@
+use std::sync::atomic::AtomicU64;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::{Terminal, backend::TestBackend, text::Text};
+use review::{
+    app::{App, Focus},
+    renderer::{RenderOptions, RendererConfig, render_pair},
+    state::Review,
+    tree, ui,
+    vcs::{Change, Comparison, Entry},
+};
+
+fn change(path: &str) -> Change {
+    Change {
+        path: path.into(),
+        old_path: path.into(),
+        status: "M".into(),
+        old: Entry {
+            object_id: "old".into(),
+            kind: "file".into(),
+            executable: false,
+        },
+        new: Entry {
+            object_id: "new".into(),
+            kind: "file".into(),
+            executable: false,
+        },
+    }
+}
+
+fn review() -> Review {
+    Review::new(
+        Comparison {
+            base_ref: "main".into(),
+            head_ref: "feature".into(),
+            base_id: "aaa".into(),
+            head_id: "bbb".into(),
+        },
+        vec![
+            change("README.md"),
+            change("src/a.rs"),
+            change("src/nested/b.rs"),
+        ],
+    )
+}
+
+fn key(app: &mut App, code: KeyCode) {
+    app.handle_key(KeyEvent::new(code, KeyModifiers::NONE), 10, 100);
+}
+
+#[test]
+fn tree_collapses_filters_and_counts_viewed_files() {
+    let mut review = review();
+    review.toggle_viewed(1);
+    let rows = tree::rows(&review);
+    let src = rows.iter().find(|row| row.path == "src/").unwrap();
+    assert_eq!((src.total, src.viewed), (2, 1));
+    review.view.collapsed.insert("src/".into());
+    assert_eq!(tree::rows(&review).len(), 2);
+    review.view.filter = "b.rs".into();
+    let rows = tree::rows(&review);
+    assert!(rows.iter().any(|row| row.path == "src/nested/b.rs"));
+    assert!(!rows.iter().any(|row| row.path == "README.md"));
+    review.view.filter.clear();
+    review.view.collapsed.clear();
+    review.view.unviewed_only = true;
+    assert!(!tree::rows(&review).iter().any(|row| row.path == "src/a.rs"));
+}
+
+#[test]
+fn vim_navigation_marking_and_unviewed_jumps_work() {
+    let mut app = App::new(review());
+    assert_eq!(app.active, Some(0));
+    key(&mut app, KeyCode::Char(' '));
+    assert!(app.review.is_viewed(&app.review.changes[0]));
+    key(&mut app, KeyCode::Char(']'));
+    key(&mut app, KeyCode::Char('u'));
+    assert_eq!(app.active, Some(1));
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(app.focus, Focus::Diff);
+    key(&mut app, KeyCode::Char('j'));
+    assert_eq!(app.review.view.positions["src/a.rs"].vertical, 1);
+    key(&mut app, KeyCode::Char('g'));
+    key(&mut app, KeyCode::Char('g'));
+    assert_eq!(app.review.view.positions["src/a.rs"].vertical, 0);
+    key(&mut app, KeyCode::Char('G'));
+    assert_eq!(app.review.view.positions["src/a.rs"].vertical, 90);
+}
+
+#[test]
+fn ratatui_renders_progress_tree_and_diff_at_small_sizes() {
+    for (width, height) in [(100, 24), (30, 8), (1, 1)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let mut app = App::new(review());
+        app.review.toggle_viewed(0);
+        terminal
+            .draw(|frame| ui::draw(frame, &mut app, &Text::raw("diff body")))
+            .unwrap();
+        if width == 100 {
+            let buffer = terminal.backend().buffer();
+            let output: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+            assert!(output.contains("Viewed 1/3"));
+            assert!(output.contains("README.md"));
+            assert!(output.contains("diff body"));
+        }
+    }
+}
+
+#[test]
+fn difft_output_is_embedded_with_ansi_colors() {
+    let output = render_pair(
+        &RendererConfig::default(),
+        &change("example.rs"),
+        b"fn old() {}\n",
+        b"fn new() {}\n",
+        RenderOptions {
+            width: 80,
+            inline: false,
+        },
+        &AtomicU64::new(1),
+        1,
+    )
+    .unwrap();
+    let plain = output.to_string();
+    assert!(plain.contains("old"));
+    assert!(plain.contains("new"));
+    assert!(!plain.contains('\u{1b}'));
+    assert!(
+        output
+            .lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .any(|span| span.style.fg.is_some())
+    );
+}
+
+#[test]
+fn external_renderer_supports_placeholders_exit_one_timeout_and_cancellation() {
+    let config = RendererConfig {
+        command: vec!["diff".into(), "-u".into(), "{old}".into(), "{new}".into()],
+        timeout_ms: 1_000,
+    };
+    let output = render_pair(
+        &config,
+        &change("a.txt"),
+        b"old\n",
+        b"new\n",
+        RenderOptions {
+            width: 80,
+            inline: true,
+        },
+        &AtomicU64::new(1),
+        1,
+    )
+    .unwrap();
+    assert!(output.to_string().contains("+new"));
+    let sleeping = RendererConfig {
+        command: vec!["sleep".into(), "10".into()],
+        timeout_ms: 30,
+    };
+    assert!(
+        render_pair(
+            &sleeping,
+            &change("a.txt"),
+            b"",
+            b"",
+            RenderOptions {
+                width: 80,
+                inline: false
+            },
+            &AtomicU64::new(1),
+            1
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("timed out")
+    );
+    assert!(
+        render_pair(
+            &config,
+            &change("a.txt"),
+            b"",
+            b"",
+            RenderOptions {
+                width: 80,
+                inline: false
+            },
+            &AtomicU64::new(2),
+            1
+        )
+        .is_err()
+    );
+}
