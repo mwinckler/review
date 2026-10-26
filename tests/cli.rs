@@ -84,15 +84,15 @@ fn noninteractive_launch_accepts_comparisons_and_keeps_state_empty() {
 #[test]
 fn positional_comparisons_conflict_with_other_comparison_and_session_options() {
     for args in [
-        vec!["main..feature", "--base", "main"],
-        vec!["--base", "main", "main..feature"],
-        vec!["main..feature", "--head", "feature"],
-        vec!["main..feature", "--resume"],
-        vec!["--resume", "latest", "main..feature"],
-        vec!["main..feature", "--list"],
+        &["main..feature", "--base", "main"] as &[&str],
+        &["--base", "main", "main..feature"],
+        &["main..feature", "--head", "feature"],
+        &["main..feature", "--resume"],
+        &["--resume", "latest", "main..feature"],
+        &["main..feature", "--list"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_review"))
-            .args(&args)
+            .args(args)
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(2), "{args:?}");

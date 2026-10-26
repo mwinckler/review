@@ -426,11 +426,8 @@ fn range_separator(expression: &str, backend: Backend) -> Result<Option<(usize, 
     let mut quote = None;
     let mut escaped = false;
     let mut separator = None;
-    let mut operator_end = 0;
-    for (index, character) in expression.char_indices() {
-        if index < operator_end {
-            continue;
-        }
+    let mut characters = expression.char_indices().peekable();
+    while let Some((index, character)) = characters.next() {
         if let Some(delimiter) = quote {
             if escaped {
                 escaped = false;
@@ -454,10 +451,7 @@ fn range_separator(expression: &str, backend: Backend) -> Result<Option<(usize, 
             {
                 depth += 1;
             }
-            ')' | ']' if backend == Backend::Jj => {
-                depth = depth.saturating_sub(1);
-            }
-            '}' => {
+            ')' | ']' | '}' if backend == Backend::Jj || character == '}' => {
                 depth = depth.saturating_sub(1);
             }
             ':' if backend == Backend::Git
@@ -467,18 +461,17 @@ fn range_separator(expression: &str, backend: Backend) -> Result<Option<(usize, 
                 // A Git message-search revision consumes the remaining text as a regex.
                 break;
             }
-            '.' if depth == 0 && expression[index..].starts_with("..") => {
+            '.' if depth == 0 && characters.next_if(|(_, next)| *next == '.').is_some() => {
                 ensure!(
                     separator.is_none(),
                     "comparison requires exactly two endpoints"
                 );
-                let length = if expression[index..].starts_with("...") {
+                let length = if characters.next_if(|(_, next)| *next == '.').is_some() {
                     3
                 } else {
                     2
                 };
                 separator = Some((index, length));
-                operator_end = index + length;
             }
             _ => {}
         }
