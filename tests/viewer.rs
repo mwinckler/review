@@ -508,10 +508,8 @@ fn jj_header_shows_change_ids_alongside_the_pinned_commit_hashes() {
     let mut review = review();
     review.comparison.base_id = "abcdef1234567890".into();
     review.comparison.head_id = "1234567890abcdef".into();
-    let mut comparison = serde_json::to_value(&review.comparison).unwrap();
-    comparison["base_change_id"] = "ukrwmnxyzqst".into();
-    comparison["head_change_id"] = "vqmrstuvwxyz".into();
-    review.comparison = serde_json::from_value(comparison).unwrap();
+    review.comparison.base_change_id = Some("ukrwmnxyzqst".into());
+    review.comparison.head_change_id = Some("vqmrstuvwxyz".into());
     let app = App::new(review);
     for width in [120, 50, 9, 1] {
         let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();

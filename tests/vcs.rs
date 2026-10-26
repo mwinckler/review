@@ -204,19 +204,18 @@ fn jj_change_ids_identify_the_pinned_endpoints_for_direct_and_merge_base_compari
             repo.snapshot("main", "feature").unwrap(),
             repo.snapshot_expression("main..feature").unwrap(),
         ] {
-            let metadata = serde_json::to_value(&comparison).unwrap();
-            for (field, commit) in [
-                ("base_change_id", &comparison.base_id),
-                ("head_change_id", &comparison.head_id),
+            for (change_id, commit) in [
+                (&comparison.base_change_id, &comparison.base_id),
+                (&comparison.head_change_id, &comparison.head_id),
             ] {
                 let expected = match backend {
-                    Backend::Git => serde_json::Value::Null,
-                    Backend::Jj => serde_json::Value::String(jj(
+                    Backend::Git => None,
+                    Backend::Jj => Some(jj(
                         dir.path(),
                         &["log", "--no-graph", "-r", commit, "-T", "change_id"],
                     )),
                 };
-                assert_eq!(metadata[field], expected, "{backend:?} {field}");
+                assert_eq!(change_id, &expected, "{backend:?} {commit}");
             }
         }
     }

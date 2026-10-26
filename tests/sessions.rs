@@ -90,17 +90,20 @@ fn sessions_preserve_change_ids_and_accept_legacy_comparisons() {
     let repo = repo(dir.path());
     let store = SessionStore::new(dir.path(), &repo).unwrap();
     let mut review = review();
-    let mut comparison = serde_json::to_value(&review.comparison).unwrap();
-    comparison["base_change_id"] = "ukrwmnxyzqst".into();
-    comparison["head_change_id"] = "vqmrstuvwxyz".into();
-    review.comparison = serde_json::from_value(comparison).unwrap();
+    review.comparison.base_change_id = Some("ukrwmnxyzqst".into());
+    review.comparison.head_change_id = Some("vqmrstuvwxyz".into());
     review.toggle_viewed(0);
     let (saved, lock) = store.create(review).unwrap();
     drop(lock);
     let (loaded, lock) = store.open(&saved.id).unwrap();
-    let metadata = serde_json::to_value(&loaded.review.comparison).unwrap();
-    assert_eq!(metadata["base_change_id"], "ukrwmnxyzqst");
-    assert_eq!(metadata["head_change_id"], "vqmrstuvwxyz");
+    assert_eq!(
+        loaded.review.comparison.base_change_id.as_deref(),
+        Some("ukrwmnxyzqst")
+    );
+    assert_eq!(
+        loaded.review.comparison.head_change_id.as_deref(),
+        Some("vqmrstuvwxyz")
+    );
     let mut legacy = serde_json::to_value(&loaded).unwrap();
     for field in ["base_change_id", "head_change_id"] {
         legacy["review"]["comparison"]
@@ -117,6 +120,8 @@ fn sessions_preserve_change_ids_and_accept_legacy_comparisons() {
     let (loaded, _lock) = store.open(&saved.id).unwrap();
     assert_eq!(loaded.review.comparison.base_id, "base");
     assert_eq!(loaded.review.comparison.head_id, "head");
+    assert_eq!(loaded.review.comparison.base_change_id, None);
+    assert_eq!(loaded.review.comparison.head_change_id, None);
     assert!(loaded.review.is_viewed(&loaded.review.changes[0]));
 }
 
