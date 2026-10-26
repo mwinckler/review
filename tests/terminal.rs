@@ -151,7 +151,7 @@ fn terminal_flash_pane_shortcuts_and_tree_resizing_work_together() {
     let fixture = common::fixture();
     let state = tempfile::tempdir().unwrap();
     let config = state.path().join("config.toml");
-    fs::write(&config, "[keybindings]\nv = 'toggle_viewed'\n").unwrap();
+    fs::write(&config, "[keybindings]\nv = 'clear_filters'\n").unwrap();
     let repo = Repository::discover(fixture.path(), Some(Backend::Git)).unwrap();
     let store = SessionStore::new(state.path(), &repo).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_review"));

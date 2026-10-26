@@ -145,16 +145,17 @@ Binary changes, renames, symlinks, executable-bit changes, submodule pointers,
 and Jujutsu conflict contents remain visible through file metadata and diffs.
 
 Key aliases supplement the defaults in navigation mode; search and Flash prompts
-use typed characters for their own input. Keys may be a character, a named key (`Space`, `Enter`, `Tab`,
-`BackTab`, `Esc`, `Backspace`, arrows, `PageUp`, `PageDown`, `Home`, `End`), or a
-`Ctrl-`/`Alt-` combination. Use uppercase characters for shifted letters.
+use typed characters for their own input. Keys may be a character, a named key
+(`Space`, `Enter`, `Tab`, `BackTab`, `Esc`, `Backspace`, arrows, `PageUp`,
+`PageDown`, `Home`, `End`), or a `Ctrl-`/`Alt-` combination. Use uppercase
+characters for shifted letters.
 `Ctrl-c` always saves and exits.
 
 Actions: `up`, `down`, `left`, `right`, `focus_tree`, `focus_diff`, `first`, `last`,
 `page_down`, `page_up`, `half_page_down`, `half_page_up`, `next_file`,
 `previous_file`, `next_unviewed`, `previous_unviewed`, `toggle_viewed`,
-`toggle_unviewed`, `toggle_inline`, `toggle_fullscreen`, `search`, `flash`, `next_match`,
-`previous_match`, `refresh`, `clear_filters`, `help`, `quit`.
+`toggle_unviewed`, `toggle_inline`, `toggle_fullscreen`, `search`, `flash`,
+`next_match`, `previous_match`, `refresh`, `clear_filters`, `help`, `quit`.
 
 ## Development
 

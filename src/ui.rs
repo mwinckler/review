@@ -1,5 +1,7 @@
-use crate::app::{App, Focus};
-use crate::tree;
+use crate::{
+    app::{App, Focus},
+    tree,
+};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -95,6 +97,9 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             .as_ref()
             .map(|flash| flash.query.to_lowercase())
             .unwrap_or_default();
+        let flash_style = Style::default()
+            .add_modifier(Modifier::BOLD)
+            .remove_modifier(Modifier::DIM);
         let items: Vec<_> = app
             .rows
             .iter()
@@ -126,21 +131,14 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 let marker = if let Some((_, label)) = label {
                     Span::styled(
                         format!("{} ", label.to_ascii_uppercase()),
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
-                            .remove_modifier(Modifier::DIM),
+                        flash_style.fg(Color::Black).bg(Color::Yellow),
                     )
                 } else {
                     Span::styled(format!("{mark} "), Style::default().fg(color))
                 };
                 let name_style = if !query.is_empty() && row.name().to_lowercase().contains(&query)
                 {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
-                        .remove_modifier(Modifier::DIM)
+                    flash_style.fg(Color::Yellow)
                 } else {
                     Style::default()
                 };
@@ -289,11 +287,25 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             height,
         );
         frame.render_widget(Clear, area);
-        let mut text = String::from(
-            "j/k, arrows      Move in tree / scroll diff\nh/l              Collapse/expand / horizontal scroll\nTab, Ctrl-h/l    Focus tree/diff\ngg / G           First/last row or page\nCtrl-d/u, f/b    Half/full page down/up\nSpace            Toggle file / mark folder viewed\n]f / [f          Next/previous file\n]u / [u          Next/previous unviewed file\n/                Filter filenames / search diff\nn / N            Next/previous search match\nu                Toggle unviewed-only files\ni / z            Toggle inline / full-width diff\nr                Refresh revisions, keep matching progress\nEsc              Clear filters\nq / Ctrl-c       Save and quit\n",
-        );
-        text.push_str("Ctrl-Left/Right  Resize tree\n");
-        text.push_str("s                Flash jump in the tree from either pane\n");
+        let mut text = String::from(concat!(
+            "j/k, arrows      Move in tree / scroll diff\n",
+            "h/l              Collapse/expand / horizontal scroll\n",
+            "Tab, Ctrl-h/l    Focus tree/diff\n",
+            "Ctrl-Left/Right  Resize tree\n",
+            "gg / G           First/last row or page\n",
+            "Ctrl-d/u, f/b    Half/full page down/up\n",
+            "Space            Toggle file / mark folder viewed\n",
+            "]f / [f          Next/previous file\n",
+            "]u / [u          Next/previous unviewed file\n",
+            "/                Filter filenames / search diff\n",
+            "s                Flash jump in the tree from either pane\n",
+            "n / N            Next/previous search match\n",
+            "u                Toggle unviewed-only files\n",
+            "i / z            Toggle inline / full-width diff\n",
+            "r                Refresh revisions, keep matching progress\n",
+            "Esc              Clear filters\n",
+            "q / Ctrl-c       Save and quit\n",
+        ));
         if !app.bindings_help.is_empty() {
             text.push_str(&format!("\nCustom: {}\n", display_path(&app.bindings_help)));
         }

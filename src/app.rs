@@ -15,8 +15,8 @@ pub struct Flash {
     pub query: String,
     pub matches: Vec<usize>,
     pub labels: Vec<(usize, char)>,
-    focus: Focus,
-    fullscreen: bool,
+    previous_focus: Focus,
+    previous_fullscreen: bool,
 }
 
 pub struct App {
@@ -353,8 +353,8 @@ impl App {
                     query: String::new(),
                     matches: Vec::new(),
                     labels: Vec::new(),
-                    focus: self.focus,
-                    fullscreen: self.review.view.fullscreen,
+                    previous_focus: self.focus,
+                    previous_fullscreen: self.review.view.fullscreen,
                 });
                 self.focus = Focus::Tree;
                 self.review.view.fullscreen = false;
@@ -391,19 +391,15 @@ impl App {
             matches.iter().all(|(_, name)| !name.contains(&extension))
         });
         flash.matches = matches.iter().map(|(index, _)| *index).collect();
-        flash.labels = matches
-            .iter()
-            .map(|(index, _)| *index)
-            .zip(labels)
-            .collect();
+        flash.labels = flash.matches.iter().copied().zip(labels).collect();
     }
 
     fn handle_flash(&mut self, key: KeyEvent, height: usize) {
         let mut flash = self.flash.take().expect("Flash mode is active");
         match key.code {
             KeyCode::Esc => {
-                self.focus = flash.focus;
-                self.review.view.fullscreen = flash.fullscreen;
+                self.focus = flash.previous_focus;
+                self.review.view.fullscreen = flash.previous_fullscreen;
                 return;
             }
             KeyCode::Enter => {
