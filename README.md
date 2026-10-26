@@ -78,7 +78,7 @@ open session holds an exclusive lock.
 | `j` / `k`, arrows | Move in the tree or scroll the diff |
 | `h` / `l` | Collapse/expand directories or scroll horizontally |
 | `Enter` | Toggle a directory or focus the selected file's diff |
-| `Tab`, `Ctrl-w h/l` | Switch panes |
+| `Tab`, `Ctrl-h` / `Ctrl-l` | Switch panes; focus the tree / diff |
 | `gg` / `G`, `Home` / `End` | First/last row or page |
 | `Ctrl-d/u`, `Ctrl-f/b`, `PageDown/Up` | Half/full-page scrolling |
 | `Space` | Toggle a file's viewed marker; mark all files in a folder viewed |

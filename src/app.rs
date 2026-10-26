@@ -164,15 +164,6 @@ impl App {
                     self.jump_file(false, key.code == KeyCode::Char('u'));
                     return;
                 }
-                ('w', KeyCode::Char('h')) => {
-                    self.focus = Focus::Tree;
-                    self.review.view.fullscreen = false;
-                    return;
-                }
-                ('w', KeyCode::Char('l')) => {
-                    self.focus = Focus::Diff;
-                    return;
-                }
                 ('g', KeyCode::Char('g')) => {
                     self.move_to(0);
                     return;
@@ -182,8 +173,12 @@ impl App {
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Char('w') => {
-                    self.prefix = Some('w');
+                KeyCode::Char('h') => {
+                    self.focus = Focus::Tree;
+                    self.review.view.fullscreen = false;
+                }
+                KeyCode::Char('l') => {
+                    self.focus = Focus::Diff;
                 }
                 KeyCode::Char('d') => {
                     self.move_by((page as isize / 2).max(1), page, diff_lines);
@@ -202,6 +197,10 @@ impl App {
             return;
         }
         match key.code {
+            KeyCode::Backspace => {
+                self.focus = Focus::Tree;
+                self.review.view.fullscreen = false;
+            }
             KeyCode::Char('q') => {
                 self.quit = true;
             }

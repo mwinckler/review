@@ -88,6 +88,40 @@ fn vim_navigation_marking_and_unviewed_jumps_work() {
 }
 
 #[test]
+fn control_h_and_l_focus_panes_directly() {
+    let mut app = App::new(review());
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+        10,
+        100,
+    );
+    assert_eq!(app.focus, Focus::Diff);
+    assert!(app.review.view.diff_focused);
+    key(&mut app, KeyCode::Char('z'));
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+        10,
+        100,
+    );
+    assert_eq!(app.focus, Focus::Tree);
+    assert!(!app.review.view.fullscreen);
+    assert!(!app.review.view.diff_focused);
+}
+
+#[test]
+fn backspace_focuses_the_tree_but_edits_search_prompts() {
+    let mut app = App::new(review());
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Backspace);
+    assert_eq!(app.focus, Focus::Tree);
+    key(&mut app, KeyCode::Char('/'));
+    key(&mut app, KeyCode::Char('a'));
+    key(&mut app, KeyCode::Backspace);
+    assert!(app.searching);
+    assert!(app.review.view.filter.is_empty());
+}
+
+#[test]
 fn space_marks_all_descendants_of_a_collapsed_folder_viewed() {
     let mut review = review();
     review.changes.push(change("src-other/c.rs"));

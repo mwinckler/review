@@ -54,3 +54,20 @@ fn config_reports_typos_invalid_actions_and_required_missing_files() {
         assert!(Config::load(&path, true).is_err(), "{invalid}");
     }
 }
+
+#[test]
+fn pane_focus_aliases_use_direct_control_shortcuts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "[keybindings]\nH = 'focus_tree'\nL = 'focus_diff'\n").unwrap();
+    let config = Config::load(&path, true).unwrap();
+    for ch in ['h', 'l'] {
+        assert_eq!(
+            config.translate(KeyEvent::new(
+                KeyCode::Char(ch.to_ascii_uppercase()),
+                KeyModifiers::SHIFT
+            )),
+            [KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL)]
+        );
+    }
+}
