@@ -41,6 +41,8 @@ fn review() -> Review {
             head_ref: "feature".into(),
             base_id: "aaa".into(),
             head_id: "bbb".into(),
+            base_change_id: None,
+            head_change_id: None,
             mode: Default::default(),
             line_counts: Some(LineCounts::default()),
         },
@@ -499,6 +501,50 @@ fn overall_line_counts_are_right_justified_and_colored_on_the_top_line() {
             );
         }
     }
+}
+
+#[test]
+fn jj_header_shows_change_ids_alongside_the_pinned_commit_hashes() {
+    let mut review = review();
+    review.comparison.base_id = "abcdef1234567890".into();
+    review.comparison.head_id = "1234567890abcdef".into();
+    let mut comparison = serde_json::to_value(&review.comparison).unwrap();
+    comparison["base_change_id"] = "ukrwmnxyzqst".into();
+    comparison["head_change_id"] = "vqmrstuvwxyz".into();
+    review.comparison = serde_json::from_value(comparison).unwrap();
+    let app = App::new(review);
+    for width in [120, 50, 9, 1] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+        terminal
+            .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
+            .unwrap();
+        let top: String = (0..width)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+            .collect();
+        if width == 120 {
+            assert!(
+                top.contains("main (ukrwmnxy abcdef12) → feature (vqmrstuv 12345678)"),
+                "{top}"
+            );
+            assert!(top.contains("Viewed 0/3"));
+        }
+        if width >= 9 {
+            assert!(top.ends_with("+0 -0"), "{top}");
+        }
+    }
+}
+
+#[test]
+fn git_and_legacy_headers_keep_their_commit_hashes() {
+    let app = App::new(review());
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    terminal
+        .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
+        .unwrap();
+    let top: String = (0..100)
+        .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+        .collect();
+    assert!(top.contains("main (aaa) → feature (bbb)"), "{top}");
 }
 
 #[test]

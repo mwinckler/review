@@ -492,22 +492,42 @@ fn exercise_terminal(backend: Backend) {
     assert_eq!(saved.review.view.filter, "main.rs");
     assert_eq!(saved.review.view.selected, "src/main.rs");
     assert_eq!(saved.review.viewed.len(), 1);
+    let metadata = serde_json::to_value(&saved.review.comparison).unwrap();
+    for (field, commit) in [
+        ("base_change_id", &saved.review.comparison.base_id),
+        ("head_change_id", &saved.review.comparison.head_id),
+    ] {
+        if backend == Backend::Jj {
+            let change_id = common::jj(
+                fixture.path(),
+                &["log", "--no-graph", "-r", commit, "-T", "change_id"],
+            );
+            assert_eq!(metadata[field], change_id);
+            assert!(terminal.output.contains(&format!("({}", &change_id[..8])));
+            assert!(terminal.output.contains(&format!("{})", &commit[..8])));
+        } else {
+            assert!(metadata[field].is_null());
+        }
+    }
     let counts = saved
         .review
         .comparison
         .line_counts
         .expect("line counts saved with the snapshots");
     let mut legacy = serde_json::to_value(&saved).unwrap();
-    legacy["review"]["comparison"]
-        .as_object_mut()
-        .unwrap()
-        .remove("line_counts");
+    for field in ["line_counts", "base_change_id", "head_change_id"] {
+        legacy["review"]["comparison"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+    }
     fs::write(
         store.directory.join(format!("{}.json", saved.id)),
         serde_json::to_vec(&legacy).unwrap(),
     )
     .unwrap();
     fs::write(fixture.path().join("src/main.rs"), "working tree changed\n").unwrap();
+    common::jj(fixture.path(), &["bookmark", "set", "feature", "-r", "@"]);
     let mut resume = command();
     resume.args(["--resume", &saved.id]);
     let mut terminal = Pty::spawn(resume);
@@ -516,6 +536,10 @@ fn exercise_terminal(backend: Backend) {
     terminal.wait_until(|_| store.list().unwrap()[0].review.viewed.len() == 2);
     let pinned = store.list().unwrap().remove(0);
     assert_eq!(pinned.review.comparison.line_counts, Some(counts));
+    let pinned_metadata = serde_json::to_value(&pinned.review.comparison).unwrap();
+    for field in ["base_change_id", "head_change_id"] {
+        assert_eq!(pinned_metadata[field], metadata[field]);
+    }
     assert_eq!(
         pinned.review.comparison.head_id,
         saved.review.comparison.head_id
@@ -540,6 +564,21 @@ fn exercise_terminal(backend: Backend) {
     terminal.send(b"\x03");
     assert!(terminal.finish().success());
     let resumed = store.list().unwrap().remove(0);
+    let refreshed_metadata = serde_json::to_value(&resumed.review.comparison).unwrap();
+    for (field, commit) in [
+        ("base_change_id", &resumed.review.comparison.base_id),
+        ("head_change_id", &resumed.review.comparison.head_id),
+    ] {
+        if backend == Backend::Jj {
+            let change_id = common::jj(
+                fixture.path(),
+                &["log", "--no-graph", "-r", commit, "-T", "change_id"],
+            );
+            assert_eq!(refreshed_metadata[field], change_id);
+        } else {
+            assert!(refreshed_metadata[field].is_null());
+        }
+    }
     assert_ne!(
         resumed.review.comparison.head_id,
         saved.review.comparison.head_id

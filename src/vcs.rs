@@ -45,6 +45,10 @@ pub struct Comparison {
     pub base_id: String,
     pub head_id: String,
     #[serde(default)]
+    pub base_change_id: Option<String>,
+    #[serde(default)]
+    pub head_change_id: Option<String>,
+    #[serde(default)]
     pub mode: ComparisonMode,
     #[serde(default)]
     pub line_counts: Option<LineCounts>,
@@ -159,11 +163,34 @@ impl Repository {
             head_ref: head.to_owned(),
             base_id,
             head_id,
+            base_change_id: None,
+            head_change_id: None,
             mode,
             line_counts: None,
         };
+        self.fill_change_ids(&mut comparison)?;
         comparison.line_counts = Some(self.line_counts(&comparison)?);
         Ok(comparison)
+    }
+
+    pub fn fill_change_ids(&self, comparison: &mut Comparison) -> Result<bool> {
+        if self.backend != Backend::Jj {
+            return Ok(false);
+        }
+        let mut updated = false;
+        for (commit_id, change_id) in [
+            (&comparison.base_id, &mut comparison.base_change_id),
+            (&comparison.head_id, &mut comparison.head_change_id),
+        ] {
+            if change_id.is_none() {
+                *change_id = Some(String::from_utf8(self.run(
+                    &["log", "--no-graph", "-r", commit_id, "-T", "change_id"],
+                    false,
+                )?)?);
+                updated = true;
+            }
+        }
+        Ok(updated)
     }
 
     fn merge_base(&self, base: &str, head: &str) -> Result<String> {

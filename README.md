@@ -62,7 +62,8 @@ branch since the histories diverged.
 
 The nearest repository is detected automatically from the current directory,
 with Jujutsu preferred in a colocated workspace. The header displays the resolved
-snapshot IDs.
+snapshot IDs. Jujutsu reviews show each endpoint's change ID and Git commit hash,
+such as `main (ukrwmnxy abcdef12)`.
 Added and removed line totals appear at the right edge of the header in green
 and red. These totals cover the full comparison and follow the pinned snapshots
 when resuming or refreshing a review.

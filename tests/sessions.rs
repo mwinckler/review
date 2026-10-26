@@ -20,6 +20,8 @@ fn review() -> Review {
             head_ref: "@".into(),
             base_id: "base".into(),
             head_id: "head".into(),
+            base_change_id: None,
+            head_change_id: None,
             mode: ComparisonMode::MergeBase,
             line_counts: Some(LineCounts {
                 added: 12,
@@ -80,6 +82,42 @@ fn session_roundtrip_preserves_snapshots_progress_and_navigation() {
             removed: 3
         })
     );
+}
+
+#[test]
+fn sessions_preserve_change_ids_and_accept_legacy_comparisons() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let store = SessionStore::new(dir.path(), &repo).unwrap();
+    let mut review = review();
+    let mut comparison = serde_json::to_value(&review.comparison).unwrap();
+    comparison["base_change_id"] = "ukrwmnxyzqst".into();
+    comparison["head_change_id"] = "vqmrstuvwxyz".into();
+    review.comparison = serde_json::from_value(comparison).unwrap();
+    review.toggle_viewed(0);
+    let (saved, lock) = store.create(review).unwrap();
+    drop(lock);
+    let (loaded, lock) = store.open(&saved.id).unwrap();
+    let metadata = serde_json::to_value(&loaded.review.comparison).unwrap();
+    assert_eq!(metadata["base_change_id"], "ukrwmnxyzqst");
+    assert_eq!(metadata["head_change_id"], "vqmrstuvwxyz");
+    let mut legacy = serde_json::to_value(&loaded).unwrap();
+    for field in ["base_change_id", "head_change_id"] {
+        legacy["review"]["comparison"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+    }
+    fs::write(
+        store.directory.join(format!("{}.json", saved.id)),
+        serde_json::to_vec(&legacy).unwrap(),
+    )
+    .unwrap();
+    drop(lock);
+    let (loaded, _lock) = store.open(&saved.id).unwrap();
+    assert_eq!(loaded.review.comparison.base_id, "base");
+    assert_eq!(loaded.review.comparison.head_id, "head");
+    assert!(loaded.review.is_viewed(&loaded.review.changes[0]));
 }
 
 #[test]

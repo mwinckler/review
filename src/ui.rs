@@ -88,9 +88,21 @@ pub fn change_heading(change: &Change) -> (String, String) {
     )
 }
 
+fn revision_label(reference: &str, commit_id: &str, change_id: Option<&str>) -> String {
+    let change_id = change_id
+        .map(|id| format!("{} ", id.get(..8).unwrap_or(id)))
+        .unwrap_or_default();
+    format!(
+        "{} ({change_id}{})",
+        display_path(reference),
+        commit_id.get(..8).unwrap_or(commit_id),
+    )
+}
+
 pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     let panes = panes(frame.area(), app);
     let viewed = app.review.viewed.len();
+    let comparison = &app.review.comparison;
     let header = Line::from(vec![
         Span::styled(
             " review ",
@@ -99,26 +111,24 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(format!(
-            "{} ({}) → {} ({})  ",
-            display_path(&app.review.comparison.base_ref),
-            app.review
-                .comparison
-                .base_id
-                .get(..8)
-                .unwrap_or(&app.review.comparison.base_id),
-            display_path(&app.review.comparison.head_ref),
-            app.review
-                .comparison
-                .head_id
-                .get(..8)
-                .unwrap_or(&app.review.comparison.head_id),
+            "{} → {}  ",
+            revision_label(
+                &comparison.base_ref,
+                &comparison.base_id,
+                comparison.base_change_id.as_deref()
+            ),
+            revision_label(
+                &comparison.head_ref,
+                &comparison.head_id,
+                comparison.head_change_id.as_deref()
+            ),
         )),
         Span::styled(
             format!("Viewed {viewed}/{}", app.review.changes.len()),
             Style::default().fg(Color::Green),
         ),
     ]);
-    let counts = if let Some(counts) = app.review.comparison.line_counts {
+    let counts = if let Some(counts) = comparison.line_counts {
         Line::from(vec![
             Span::styled(
                 format!("+{}", counts.added),

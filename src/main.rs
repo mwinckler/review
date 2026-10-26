@@ -123,8 +123,12 @@ fn main() -> Result<()> {
         let changes = repo.changes(&comparison)?;
         store.create(Review::new(comparison, changes))?
     };
+    let mut metadata_changed = repo.fill_change_ids(&mut saved.review.comparison)?;
     if saved.review.comparison.line_counts.is_none() {
         saved.review.comparison.line_counts = Some(repo.line_counts(&saved.review.comparison)?);
+        metadata_changed = true;
+    }
+    if metadata_changed {
         lock.save(&mut saved)?;
     }
     let mut app = App::new(saved.review.clone());

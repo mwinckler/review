@@ -192,6 +192,37 @@ fn comparison_uses_merge_base_instead_of_the_current_base_tip() {
 }
 
 #[test]
+fn jj_change_ids_identify_the_pinned_endpoints_for_direct_and_merge_base_comparisons() {
+    let dir = fixture();
+    jj(dir.path(), &["new", "main"]);
+    fs::write(dir.path().join("base-only.txt"), "new on main\n").unwrap();
+    jj(dir.path(), &["commit", "-m", "advance main"]);
+    jj(dir.path(), &["bookmark", "set", "main", "-r", "@-"]);
+    for backend in [Backend::Git, Backend::Jj] {
+        let repo = Repository::discover(dir.path(), Some(backend)).unwrap();
+        for comparison in [
+            repo.snapshot("main", "feature").unwrap(),
+            repo.snapshot_expression("main..feature").unwrap(),
+        ] {
+            let metadata = serde_json::to_value(&comparison).unwrap();
+            for (field, commit) in [
+                ("base_change_id", &comparison.base_id),
+                ("head_change_id", &comparison.head_id),
+            ] {
+                let expected = match backend {
+                    Backend::Git => serde_json::Value::Null,
+                    Backend::Jj => serde_json::Value::String(jj(
+                        dir.path(),
+                        &["log", "--no-graph", "-r", commit, "-T", "change_id"],
+                    )),
+                };
+                assert_eq!(metadata[field], expected, "{backend:?} {field}");
+            }
+        }
+    }
+}
+
+#[test]
 fn positional_ranges_compare_tips_directly_even_when_branches_diverge() {
     let dir = fixture();
     jj(dir.path(), &["new", "main"]);
