@@ -304,8 +304,10 @@ impl App {
                 };
                 if let Some(index) = file {
                     self.review.toggle_viewed(index);
-                    if self.review.is_viewed(&self.review.changes[index]) {
-                        self.jump_file(true, true);
+                    if self.review.is_viewed(&self.review.changes[index])
+                        && self.jump_file(true, true)
+                    {
+                        return;
                     }
                 } else if self.focus == Focus::Tree
                     && let Some(row) = self.rows.get(self.selection)
@@ -464,7 +466,7 @@ impl App {
         }
     }
 
-    fn jump_file(&mut self, forward: bool, unviewed: bool) {
+    fn jump_file(&mut self, forward: bool, unviewed: bool) -> bool {
         let len = self.review.changes.len();
         let start = self.active.unwrap_or(0);
         let filter = self.review.view.filter.to_lowercase();
@@ -484,10 +486,11 @@ impl App {
                     .collapsed
                     .retain(|parent| !change.path.starts_with(parent));
                 self.rebuild();
-                return;
+                return true;
             }
         }
         self.message = "All matching files have been viewed".into();
+        false
     }
 
     pub fn search_diff(&mut self, text: &Text<'_>, forward: bool) {
