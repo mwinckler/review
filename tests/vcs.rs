@@ -3,7 +3,7 @@ mod common;
 use std::fs;
 
 use common::{fixture, jj};
-use review::vcs::{Backend, Repository};
+use review::vcs::{Backend, LineCounts, Repository};
 
 #[test]
 fn discovers_jj_first_and_allows_git_override_from_a_subdirectory() {
@@ -61,6 +61,67 @@ fn both_backends_list_changes_and_read_pinned_contents() {
             repo.content(&comparison, binary, false).unwrap(),
             [0, 4, 5, 6]
         );
+    }
+}
+
+#[test]
+fn both_backends_count_added_and_removed_lines_from_pinned_snapshots() {
+    let dir = fixture();
+    jj(dir.path(), &["new", "main"]);
+    fs::write(dir.path().join("src/main.rs"), "first\nsecond\n").unwrap();
+    fs::remove_file(dir.path().join("removed.txt")).unwrap();
+    fs::write(dir.path().join("added\tand\nλ.txt"), "new\nlast").unwrap();
+    fs::write(dir.path().join("image.bin"), [0, 7, 8, 9]).unwrap();
+    jj(dir.path(), &["bookmark", "create", "stats", "-r", "@"]);
+    jj(dir.path(), &["new"]);
+    let expected = LineCounts {
+        added: 4,
+        removed: 2,
+    };
+
+    for backend in [Backend::Git, Backend::Jj] {
+        let repo = Repository::discover(dir.path(), Some(backend)).unwrap();
+        let comparison = repo.snapshot("main", "stats").unwrap();
+        assert_eq!(comparison.line_counts, Some(expected));
+        fs::write(dir.path().join("src/main.rs"), "uncommitted contents\n").unwrap();
+        assert_eq!(repo.line_counts(&comparison).unwrap(), expected);
+    }
+}
+
+#[test]
+fn line_counts_handle_additions_only_deletions_only_and_identical_snapshots() {
+    let dir = fixture();
+    jj(dir.path(), &["new", "main"]);
+    fs::write(dir.path().join("added.txt"), "first\nlast").unwrap();
+    jj(dir.path(), &["bookmark", "create", "additions", "-r", "@"]);
+    jj(dir.path(), &["new", "main"]);
+    fs::remove_file(dir.path().join("removed.txt")).unwrap();
+    jj(dir.path(), &["bookmark", "create", "deletions", "-r", "@"]);
+
+    for backend in [Backend::Git, Backend::Jj] {
+        let repo = Repository::discover(dir.path(), Some(backend)).unwrap();
+        for (head, counts) in [
+            (
+                "additions",
+                LineCounts {
+                    added: 2,
+                    removed: 0,
+                },
+            ),
+            (
+                "deletions",
+                LineCounts {
+                    added: 0,
+                    removed: 1,
+                },
+            ),
+            ("main", LineCounts::default()),
+        ] {
+            assert_eq!(
+                repo.snapshot("main", head).unwrap().line_counts,
+                Some(counts)
+            );
+        }
     }
 }
 

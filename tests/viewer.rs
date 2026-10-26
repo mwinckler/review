@@ -1,13 +1,19 @@
 use std::sync::atomic::AtomicU64;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{Terminal, backend::TestBackend, layout::Rect, style::Modifier, text::Text};
+use ratatui::{
+    Terminal,
+    backend::TestBackend,
+    layout::Rect,
+    style::{Color, Modifier},
+    text::Text,
+};
 use review::{
     app::{App, Focus},
     renderer::{RenderOptions, RendererConfig, render_pair},
     state::Review,
     tree, ui,
-    vcs::{Change, Comparison, Entry},
+    vcs::{Change, Comparison, Entry, LineCounts},
 };
 
 fn change(path: &str) -> Change {
@@ -35,6 +41,7 @@ fn review() -> Review {
             head_ref: "feature".into(),
             base_id: "aaa".into(),
             head_id: "bbb".into(),
+            line_counts: Some(LineCounts::default()),
         },
         vec![
             change("README.md"),
@@ -353,6 +360,60 @@ fn ratatui_renders_progress_tree_and_diff_at_small_sizes() {
             assert!(output.contains("README.md"));
             assert!(output.contains("diff body"));
         }
+    }
+}
+
+#[test]
+fn overall_line_counts_are_right_justified_and_colored_on_the_top_line() {
+    for counts in [
+        LineCounts {
+            added: 1234,
+            removed: 56,
+        },
+        LineCounts::default(),
+    ] {
+        for width in [120, 50, 9] {
+            let mut review = review();
+            review.comparison.base_ref = "a-very-long-base-branch-name".repeat(5);
+            review.comparison.line_counts = Some(counts);
+            let app = App::new(review);
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal
+                .draw(|frame| ui::draw(frame, &app, &Text::raw("diff body")))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let top: String = (0..width).map(|x| buffer[(x, 0)].symbol()).collect();
+            let expected = format!("+{} -{}", counts.added, counts.removed);
+            assert!(top.ends_with(&expected), "{top:?}");
+            assert_eq!(buffer[(width - expected.len() as u16, 0)].fg, Color::Green);
+            assert_eq!(
+                buffer[(width - counts.removed.to_string().len() as u16 - 1, 0)].fg,
+                Color::Red
+            );
+        }
+    }
+}
+
+#[test]
+fn overall_line_counts_cover_the_full_comparison_while_filtering_or_marking() {
+    let mut review = review();
+    review.comparison.line_counts = Some(LineCounts {
+        added: 123,
+        removed: 45,
+    });
+    review.view.filter = "b.rs".into();
+    review.view.unviewed_only = true;
+    let mut app = App::new(review);
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    for _ in 0..2 {
+        terminal
+            .draw(|frame| ui::draw(frame, &app, &Text::raw("diff body")))
+            .unwrap();
+        let top: String = (0..100)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+            .collect();
+        assert!(top.ends_with("+123 -45"));
+        key(&mut app, KeyCode::Char(' '));
     }
 }
 

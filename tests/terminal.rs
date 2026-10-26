@@ -313,6 +313,21 @@ fn exercise_terminal(backend: Backend) {
     assert_eq!(saved.review.view.filter, "main.rs");
     assert_eq!(saved.review.view.selected, "src/main.rs");
     assert_eq!(saved.review.viewed.len(), 1);
+    let counts = saved
+        .review
+        .comparison
+        .line_counts
+        .expect("line counts saved with the snapshots");
+    let mut legacy = serde_json::to_value(&saved).unwrap();
+    legacy["review"]["comparison"]
+        .as_object_mut()
+        .unwrap()
+        .remove("line_counts");
+    fs::write(
+        store.directory.join(format!("{}.json", saved.id)),
+        serde_json::to_vec(&legacy).unwrap(),
+    )
+    .unwrap();
     fs::write(fixture.path().join("src/main.rs"), "working tree changed\n").unwrap();
     let mut resume = command();
     resume.args(["--resume", &saved.id]);
@@ -321,6 +336,7 @@ fn exercise_terminal(backend: Backend) {
     terminal.send(b"v");
     terminal.wait_until(|_| store.list().unwrap()[0].review.viewed.len() == 2);
     let pinned = store.list().unwrap().remove(0);
+    assert_eq!(pinned.review.comparison.line_counts, Some(counts));
     assert_eq!(
         pinned.review.comparison.head_id,
         saved.review.comparison.head_id
@@ -328,7 +344,7 @@ fn exercise_terminal(backend: Backend) {
     common::jj(fixture.path(), &["new", "feature"]);
     fs::write(
         fixture.path().join("src/main.rs"),
-        "fn main() { println!(\"updated\"); }\n",
+        "fn main() {\n    println!(\"updated\");\n}\n",
     )
     .unwrap();
     common::jj(fixture.path(), &["commit", "-m", "update feature"]);
@@ -338,6 +354,9 @@ fn exercise_terminal(backend: Backend) {
         let latest = store.list().unwrap().remove(0);
         latest.review.comparison.head_id != saved.review.comparison.head_id
             && latest.review.viewed.len() == 1
+            && latest.review.comparison.line_counts.is_some_and(|updated| {
+                updated.added == counts.added + 2 && updated.removed == counts.removed
+            })
     });
     terminal.send(b"\x03");
     assert!(terminal.finish().success());

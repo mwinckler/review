@@ -112,6 +112,10 @@ fn main() -> Result<()> {
         let changes = repo.changes(&comparison)?;
         store.create(Review::new(comparison, changes))?
     };
+    if saved.review.comparison.line_counts.is_none() {
+        saved.review.comparison.line_counts = Some(repo.line_counts(&saved.review.comparison)?);
+        lock.save(&mut saved)?;
+    }
     let mut app = App::new(saved.review.clone());
     app.message = format!("Session {} · ? help", saved.id);
     app.bindings_help = config

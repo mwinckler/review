@@ -4,7 +4,7 @@ use crate::{
 };
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
@@ -87,7 +87,31 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             Style::default().fg(Color::Green),
         ),
     ]);
-    frame.render_widget(Paragraph::new(header), panes.header);
+    let counts = if let Some(counts) = app.review.comparison.line_counts {
+        Line::from(vec![
+            Span::styled(
+                format!("+{}", counts.added),
+                Style::default().fg(Color::Green),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                format!("-{}", counts.removed),
+                Style::default().fg(Color::Red),
+            ),
+        ])
+    } else {
+        Line::styled("+? -?", Style::default().fg(Color::DarkGray))
+    };
+    let [info_area, counts_area] = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(counts.width() as u16 + 1),
+    ])
+    .areas(panes.header);
+    frame.render_widget(Paragraph::new(header), info_area);
+    frame.render_widget(
+        Paragraph::new(counts).alignment(Alignment::Right),
+        counts_area,
+    );
     if panes.tree.width > 0 {
         let height = panes.tree.height.saturating_sub(2) as usize;
         let visible = tree::visible_range(app.rows.len(), app.selection, height);

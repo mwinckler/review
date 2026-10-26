@@ -44,6 +44,14 @@ pub struct Comparison {
     pub head_ref: String,
     pub base_id: String,
     pub head_id: String,
+    #[serde(default)]
+    pub line_counts: Option<LineCounts>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineCounts {
+    pub added: u64,
+    pub removed: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -109,12 +117,15 @@ impl Repository {
             "comparison requires exactly one merge base, found {}",
             bases.len()
         );
-        Ok(Comparison {
+        let mut comparison = Comparison {
             base_ref: base.to_owned(),
             head_ref: head.to_owned(),
             base_id: bases[0].to_owned(),
             head_id,
-        })
+            line_counts: None,
+        };
+        comparison.line_counts = Some(self.line_counts(&comparison)?);
+        Ok(comparison)
     }
 
     pub fn changes(&self, comparison: &Comparison) -> Result<Vec<Change>> {
@@ -174,6 +185,48 @@ impl Repository {
         }
         changes.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(changes)
+    }
+
+    pub fn line_counts(&self, comparison: &Comparison) -> Result<LineCounts> {
+        let args = match self.backend {
+            Backend::Git => vec![
+                "diff",
+                "--shortstat",
+                "--color=never",
+                "--find-renames",
+                "--no-ext-diff",
+                "--no-textconv",
+                &comparison.base_id,
+                &comparison.head_id,
+                "--",
+            ],
+            Backend::Jj => vec![
+                "diff",
+                "--from",
+                &comparison.base_id,
+                "--to",
+                &comparison.head_id,
+                "--stat",
+            ],
+        };
+        let output = String::from_utf8(self.run(&args, false)?)?;
+        let mut counts = LineCounts::default();
+        for field in output.lines().last().unwrap_or_default().split(',') {
+            let count = if field.ends_with("(+)") {
+                &mut counts.added
+            } else if field.ends_with("(-)") {
+                &mut counts.removed
+            } else {
+                continue;
+            };
+            *count = field
+                .split_whitespace()
+                .next()
+                .context("missing changed line count")?
+                .parse()
+                .context("invalid changed line count")?;
+        }
+        Ok(counts)
     }
 
     pub fn content(&self, comparison: &Comparison, change: &Change, old: bool) -> Result<Vec<u8>> {
@@ -272,6 +325,7 @@ impl Repository {
         match self.backend {
             Backend::Git => {
                 command
+                    .env("LC_ALL", "C")
                     .env("GIT_OPTIONAL_LOCKS", "0")
                     .env("GIT_TERMINAL_PROMPT", "0");
             }

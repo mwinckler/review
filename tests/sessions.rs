@@ -3,7 +3,7 @@ use std::{fs, path::Path};
 use review::{
     state::Review,
     store::SessionStore,
-    vcs::{Backend, Change, Comparison, Entry, Repository},
+    vcs::{Backend, Change, Comparison, Entry, LineCounts, Repository},
 };
 
 fn repo(root: &Path) -> Repository {
@@ -20,6 +20,10 @@ fn review() -> Review {
             head_ref: "@".into(),
             base_id: "base".into(),
             head_id: "head".into(),
+            line_counts: Some(LineCounts {
+                added: 12,
+                removed: 3,
+            }),
         },
         vec![Change {
             path: "src/a.rs".into(),
@@ -68,6 +72,39 @@ fn session_roundtrip_preserves_snapshots_progress_and_navigation() {
     assert!(loaded.review.view.collapsed.contains("src/"));
     assert!(loaded.review.view.inline);
     assert_eq!(loaded.review.view.tree_width, Some(40));
+    assert_eq!(
+        loaded.review.comparison.line_counts,
+        Some(LineCounts {
+            added: 12,
+            removed: 3
+        })
+    );
+}
+
+#[test]
+fn sessions_without_line_counts_preserve_their_pinned_snapshots_and_viewed_marks() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let store = SessionStore::new(dir.path(), &repo).unwrap();
+    let (mut saved, lock) = store.create(review()).unwrap();
+    saved.review.toggle_viewed(0);
+    let mut legacy = serde_json::to_value(&saved).unwrap();
+    legacy["review"]["comparison"]
+        .as_object_mut()
+        .unwrap()
+        .remove("line_counts");
+    fs::write(
+        store.directory.join(format!("{}.json", saved.id)),
+        serde_json::to_vec(&legacy).unwrap(),
+    )
+    .unwrap();
+    drop(lock);
+
+    let (loaded, _lock) = store.open(&saved.id).unwrap();
+
+    assert_eq!(loaded.review.comparison.head_id, "head");
+    assert_eq!(loaded.review.comparison.line_counts, None);
+    assert!(loaded.review.is_viewed(&loaded.review.changes[0]));
 }
 
 #[test]

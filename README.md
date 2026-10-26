@@ -38,6 +38,9 @@ with Jujutsu preferred in a colocated workspace. Each endpoint must resolve to
 one revision; jj revision expressions such as `heads(main::feature)` work. The
 comparison starts at the unique merge base, so unrelated changes on the base
 branch stay outside the review. The header displays the resolved snapshot IDs.
+Added and removed line totals appear at the right edge of the header in green
+and red. These totals cover the full comparison and follow the pinned snapshots
+when resuming or refreshing a review.
 
 For Jujutsu, starting or refreshing a review snapshots the working copy once
 through `jj`. File contents are then read at fixed revisions.
