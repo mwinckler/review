@@ -51,18 +51,14 @@ fn lists_saved_sessions_without_a_terminal() {
 }
 
 #[test]
-fn first_run_explains_how_to_start_and_noninteractive_launch_keeps_state_empty() {
+fn noninteractive_launch_keeps_state_empty_with_default_or_explicit_base() {
     let repo = common::fixture();
     let state = tempfile::tempdir().unwrap();
-    let output = cli(repo.path(), state.path()).output().unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("--base"));
-    let output = cli(repo.path(), state.path())
-        .args(["--base", "main"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal"));
+    for args in [vec![], vec!["--base", "main"]] {
+        let output = cli(repo.path(), state.path()).args(args).output().unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal"));
+    }
     let repo = Repository::discover(repo.path(), Some(Backend::Git)).unwrap();
     assert!(
         SessionStore::new(state.path(), &repo)
@@ -71,4 +67,18 @@ fn first_run_explains_how_to_start_and_noninteractive_launch_keeps_state_empty()
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn resume_without_sessions_explains_how_to_start() {
+    let repo = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let output = cli(repo.path(), state.path())
+        .arg("--resume")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("No saved review"));
+    assert!(error.contains("Start one with review"));
 }

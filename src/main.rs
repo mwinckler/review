@@ -30,7 +30,7 @@ struct Cli {
     /// Override automatic repository detection
     #[arg(long, value_enum)]
     backend: Option<Backend>,
-    /// Base branch or single-revision jj expression; compare from its merge base
+    /// Base branch or single-revision jj expression; compare from its merge base (defaults to master)
     #[arg(long)]
     base: Option<String>,
     /// Head revision (defaults to HEAD for Git, @ for Jujutsu)
@@ -77,18 +77,17 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
-    let resume_id = if cli.base.is_none() {
-        Some(match cli.resume.as_deref() {
-            Some(id) if id != "latest" => id.to_owned(),
-            _ => store
+    let resume_id = match cli.resume.as_deref() {
+        Some("latest") => Some(
+            store
                 .list()?
                 .first()
-                .context("No saved review. Start one with review --base <branch-or-revision>")?
+                .context("No saved review. Start one with review")?
                 .id
                 .clone(),
-        })
-    } else {
-        None
+        ),
+        Some(id) => Some(id.to_owned()),
+        None => None,
     };
     ensure!(
         io::stdin().is_terminal() && io::stdout().is_terminal(),
@@ -109,12 +108,7 @@ fn main() -> Result<()> {
             Backend::Git => "HEAD",
             Backend::Jj => "@",
         });
-        let comparison = repo.snapshot(
-            cli.base
-                .as_deref()
-                .expect("base provided for a new session"),
-            head,
-        )?;
+        let comparison = repo.snapshot(cli.base.as_deref().unwrap_or("master"), head)?;
         let changes = repo.changes(&comparison)?;
         store.create(Review::new(comparison, changes))?
     };

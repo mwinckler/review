@@ -16,6 +16,9 @@ cargo install --path .
 ## Start a review
 
 ```sh
+# Review the current directory's repository against master
+review
+
 # Git: review the current branch against its merge base with main
 review --base main
 
@@ -29,11 +32,12 @@ review --base 'trunk()' --head @
 review -C ../project --backend git --base main
 ```
 
-The nearest repository is detected automatically, with Jujutsu preferred in a
-colocated workspace. Each endpoint must resolve to one revision; jj revision
-expressions such as `heads(main::feature)` work. The comparison starts at the
-unique merge base, so unrelated changes on the base branch stay outside the
-review. The header displays the resolved snapshot IDs.
+The base defaults to `master`; use `--base` to choose another branch or revision.
+The nearest repository is detected automatically from the current directory,
+with Jujutsu preferred in a colocated workspace. Each endpoint must resolve to
+one revision; jj revision expressions such as `heads(main::feature)` work. The
+comparison starts at the unique merge base, so unrelated changes on the base
+branch stay outside the review. The header displays the resolved snapshot IDs.
 
 For Jujutsu, starting or refreshing a review snapshots the working copy once
 through `jj`. File contents are then read at fixed revisions.
@@ -41,8 +45,7 @@ through `jj`. File contents are then read at fixed revisions.
 ## Stop and resume
 
 ```sh
-review                   # Resume the most recently saved session
-review --resume          # Same as above
+review --resume          # Resume the most recently saved session
 review --list            # List saved sessions for this repository/backend
 review --resume <id>     # Resume a particular session
 review --base main       # Start a fresh review

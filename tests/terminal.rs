@@ -136,6 +136,80 @@ fn jj_terminal_autosaves_resumes_refreshes_and_restores_terminal_settings() {
     exercise_terminal(Backend::Jj);
 }
 
+#[test]
+fn git_no_argument_launch_starts_at_master_in_the_current_repository() {
+    exercise_default_launch(Backend::Git);
+}
+
+#[test]
+fn jj_no_argument_launch_starts_at_master_in_the_current_repository() {
+    exercise_default_launch(Backend::Jj);
+}
+
+fn exercise_default_launch(backend: Backend) {
+    let fixture = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    common::jj(
+        fixture.path(),
+        &["bookmark", "create", "master", "-r", "main"],
+    );
+    if backend == Backend::Git {
+        fs::rename(fixture.path().join(".jj"), state.path().join("jj")).unwrap();
+    }
+    let repo = Repository::discover(fixture.path(), None).unwrap();
+    assert_eq!(repo.backend, backend);
+    let store = SessionStore::new(&state.path().join("review"), &repo).unwrap();
+    let head = match backend {
+        Backend::Git => "HEAD",
+        Backend::Jj => "@",
+    };
+    let expected = repo.snapshot("master", head).unwrap();
+    let command = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
+        command
+            .current_dir(fixture.path().join("src"))
+            .env("JJ_CONFIG", "/dev/null")
+            .env("XDG_STATE_HOME", state.path())
+            .env("XDG_CONFIG_HOME", state.path());
+        command
+    };
+
+    let mut terminal = Pty::spawn(command());
+    terminal.wait_until(|text| text.contains("Changed files"));
+    terminal.send(b" q");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+    let first = store.list().unwrap().remove(0);
+    assert_eq!(first.review.comparison.base_ref, "master");
+    assert_eq!(first.review.comparison.head_ref, head);
+    assert_eq!(first.review.comparison.base_id, expected.base_id);
+    assert_eq!(first.review.comparison.head_id, expected.head_id);
+    assert_eq!(first.repository, fixture.path().canonicalize().unwrap());
+    assert_eq!(first.review.viewed.len(), 1);
+
+    let mut terminal = Pty::spawn(command());
+    terminal.wait_until(|text| text.contains("Changed files"));
+    let sessions = store.list().unwrap();
+    assert_eq!(sessions.len(), 2);
+    assert_ne!(sessions[0].id, first.id);
+    assert_eq!(sessions[0].review.comparison.base_ref, "master");
+    assert!(sessions[0].review.viewed.is_empty());
+    terminal.send(b" q");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+    let latest = store.list().unwrap().remove(0);
+
+    let mut resume = command();
+    resume.arg("--resume");
+    let mut terminal = Pty::spawn(resume);
+    terminal.wait_until(|text| text.contains(&latest.id));
+    terminal.send(b" ");
+    terminal.wait_until(|_| {
+        let sessions = store.list().unwrap();
+        sessions.len() == 2 && sessions[0].id == latest.id && sessions[0].review.viewed.is_empty()
+    });
+    terminal.send(b"q");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+}
+
 fn exercise_terminal(backend: Backend) {
     let fixture = common::fixture();
     let state = tempfile::tempdir().unwrap();
