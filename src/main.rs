@@ -1,10 +1,10 @@
 use std::{
     io::{self, IsTerminal},
     path::PathBuf,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{layout::Rect, text::Text};
@@ -12,6 +12,7 @@ use review::{
     app::{App, Focus},
     renderer::{RenderOptions, RenderWorker, RendererConfig},
     state::Review,
+    store::{SavedSession, SessionLock, SessionStore},
     ui,
     vcs::{Backend, Repository},
 };
@@ -30,28 +31,89 @@ struct Cli {
     backend: Option<Backend>,
     /// Base branch or single-revision jj expression; compare from its merge base
     #[arg(long)]
-    base: String,
+    base: Option<String>,
     /// Head revision (defaults to HEAD for Git, @ for Jujutsu)
-    #[arg(long)]
+    #[arg(long, requires = "base")]
     head: Option<String>,
+    /// Resume a saved session by ID, or the latest session when omitted
+    #[arg(long, num_args = 0..=1, default_missing_value = "latest", conflicts_with = "base")]
+    resume: Option<String>,
+    /// List this repository's saved review sessions
+    #[arg(long, conflicts_with_all = ["base", "resume"])]
+    list: bool,
+    /// Override the review state directory
+    #[arg(long)]
+    state_dir: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let repo = Repository::discover(&cli.repo, cli.backend)?;
+    let state_dir = match cli.state_dir {
+        Some(directory) => directory,
+        None => {
+            let base = directories::BaseDirs::new()
+                .context("finding the user state directory; use --state-dir")?;
+            base.state_dir()
+                .unwrap_or(base.data_local_dir())
+                .join("review")
+        }
+    };
+    let store = SessionStore::new(&state_dir, &repo)?;
+    if cli.list {
+        for saved in store.list()? {
+            println!(
+                "{}  {} → {}  Viewed {}/{}",
+                saved.id,
+                ui::display_path(&saved.review.comparison.base_ref),
+                ui::display_path(&saved.review.comparison.head_ref),
+                saved.review.viewed.len(),
+                saved.review.changes.len()
+            );
+        }
+        return Ok(());
+    }
+    let resume_id = if cli.base.is_none() {
+        Some(match cli.resume.as_deref() {
+            Some(id) if id != "latest" => id.to_owned(),
+            _ => store
+                .list()?
+                .first()
+                .context("No saved review. Start one with review --base <branch-or-revision>")?
+                .id
+                .clone(),
+        })
+    } else {
+        None
+    };
     ensure!(
         io::stdin().is_terminal() && io::stdout().is_terminal(),
         "review needs an interactive terminal"
     );
-    let repo = Repository::discover(&cli.repo, cli.backend)?;
-    let head = cli.head.as_deref().unwrap_or(match repo.backend {
-        Backend::Git => "HEAD",
-        Backend::Jj => "@",
-    });
-    let comparison = repo.snapshot(&cli.base, head)?;
-    let changes = repo.changes(&comparison)?;
-    let mut app = App::new(Review::new(comparison, changes));
+    let (mut saved, lock) = if let Some(id) = resume_id {
+        store.open(&id)?
+    } else {
+        let head = cli.head.as_deref().unwrap_or(match repo.backend {
+            Backend::Git => "HEAD",
+            Backend::Jj => "@",
+        });
+        let comparison = repo.snapshot(
+            cli.base
+                .as_deref()
+                .expect("base provided for a new session"),
+            head,
+        )?;
+        let changes = repo.changes(&comparison)?;
+        store.create(&repo, Review::new(comparison, changes))?
+    };
+    let mut app = App::new(saved.review.clone());
+    app.message = format!("Session {} · ? help", saved.id);
     let worker = RenderWorker::new(RendererConfig::default());
-    ratatui::run(|terminal| run(terminal, &repo, &mut app, &worker))
+    let result =
+        ratatui::run(|terminal| run(terminal, &repo, &mut app, &worker, &mut saved, &lock));
+    saved.review = app.review;
+    let saved_result = lock.save(&mut saved);
+    result.and(saved_result)
 }
 
 fn run(
@@ -59,11 +121,14 @@ fn run(
     repo: &Repository,
     app: &mut App,
     worker: &RenderWorker,
+    saved: &mut SavedSession,
+    lock: &SessionLock,
 ) -> Result<()> {
     let mut diff = Text::raw("Select a changed file");
     let mut requested = None;
     let mut request_id = 0;
     let mut redraw = true;
+    let mut last_save = Instant::now();
     while !app.quit {
         let size = terminal.size()?;
         let panes = ui::panes(Rect::new(0, 0, size.width, size.height), app);
@@ -115,6 +180,7 @@ fn run(
             terminal.draw(|frame| ui::draw(frame, app, &diff))?;
             redraw = false;
         }
+        let mut force_save = false;
         if event::poll(Duration::from_millis(30))? {
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
@@ -124,6 +190,7 @@ fn run(
                     let search_enter =
                         app.focus == Focus::Diff && app.searching && key.code == KeyCode::Enter;
                     app.handle_key(key, page, diff.lines.len());
+                    force_save = key.code == KeyCode::Char(' ');
                     if search || search_enter {
                         app.search_diff(&diff, key.code != KeyCode::Char('N'));
                     }
@@ -143,22 +210,37 @@ fn run(
                 .and_then(|comparison| Ok((repo.changes(&comparison)?, comparison)))
             {
                 Ok((changes, comparison)) => {
-                    app.review.viewed.retain(|path, hash| {
-                        changes
-                            .iter()
-                            .any(|change| change.path == *path && change.fingerprint() == *hash)
-                    });
-                    app.review.changes = changes;
-                    app.review.comparison = comparison;
+                    let invalidated = app.review.reconcile(comparison, changes);
                     app.rebuild();
-                    app.message = "Snapshots refreshed; matching review progress retained".into();
+                    app.message = format!(
+                        "Snapshots refreshed · {invalidated} viewed files need another look"
+                    );
                     requested = None;
+                    force_save = true;
                 }
                 Err(error) => {
                     app.message = format!("Refresh failed: {error:#}");
                 }
             }
             redraw = true;
+        }
+        if app.dirty
+            && (force_save || app.quit || last_save.elapsed() >= Duration::from_millis(250))
+        {
+            saved.review = app.review.clone();
+            match lock.save(saved) {
+                Ok(()) => {
+                    app.dirty = false;
+                }
+                Err(error) => {
+                    if app.quit {
+                        return Err(error);
+                    }
+                    app.message = format!("Save failed; retrying: {error:#}");
+                    redraw = true;
+                }
+            }
+            last_save = Instant::now();
         }
     }
     Ok(())

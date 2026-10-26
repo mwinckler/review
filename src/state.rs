@@ -30,6 +30,27 @@ pub struct Review {
 }
 
 impl Review {
+    pub fn reconcile(&mut self, comparison: Comparison, changes: Vec<Change>) -> usize {
+        let before: BTreeMap<_, _> = self
+            .changes
+            .iter()
+            .map(|change| (&change.path, change.fingerprint()))
+            .collect();
+        let after: BTreeMap<_, _> = changes
+            .iter()
+            .map(|change| (&change.path, change.fingerprint()))
+            .collect();
+        let count = self.viewed.len();
+        self.viewed
+            .retain(|path, hash| after.get(path) == Some(hash));
+        self.view
+            .positions
+            .retain(|path, _| after.contains_key(path) && before.get(path) == after.get(path));
+        self.changes = changes;
+        self.comparison = comparison;
+        count - self.viewed.len()
+    }
+
     pub fn new(comparison: Comparison, changes: Vec<Change>) -> Self {
         Self {
             comparison,
