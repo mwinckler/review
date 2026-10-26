@@ -136,7 +136,12 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                         ),
                     ])
                 };
-                ListItem::new(line)
+                let style = if row.viewed == row.total {
+                    Style::default().add_modifier(Modifier::DIM)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(line).style(style)
             })
             .collect();
         let title = if app.review.view.unviewed_only {

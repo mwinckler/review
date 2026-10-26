@@ -97,6 +97,7 @@ open session holds an exclusive lock.
 Search and filtering are case-insensitive. Directory counts show progress across
 their changed files. Pressing `Space` on a folder marks all its changed files
 viewed, including nested files and files hidden by filters or collapsed folders.
+Viewed files and fully viewed folders appear slightly dimmed in the tree.
 Narrow terminals display the focused pane at full width.
 
 ## Configuration

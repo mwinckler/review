@@ -1,7 +1,7 @@
 use std::sync::atomic::AtomicU64;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{Terminal, backend::TestBackend, text::Text};
+use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Text};
 use review::{
     app::{App, Focus},
     renderer::{RenderOptions, RendererConfig, render_pair},
@@ -213,6 +213,40 @@ fn ratatui_renders_progress_tree_and_diff_at_small_sizes() {
             assert!(output.contains("README.md"));
             assert!(output.contains("diff body"));
         }
+    }
+}
+
+#[test]
+fn viewed_files_and_fully_viewed_folders_are_dimmed() {
+    for complete in [false, true] {
+        let mut review = review();
+        review.toggle_viewed(0);
+        review.toggle_viewed(1);
+        if complete {
+            review.toggle_viewed(2);
+        }
+        let app = App::new(review);
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
+            .unwrap();
+        for (index, dimmed) in [true, complete, true, complete, complete]
+            .into_iter()
+            .enumerate()
+        {
+            let cell = &terminal.backend().buffer()[(1, index as u16 + 2)];
+            assert_eq!(
+                cell.modifier.contains(Modifier::DIM),
+                dimmed,
+                "{}",
+                app.rows[index].path
+            );
+        }
+        assert!(
+            terminal.backend().buffer()[(1, 2)]
+                .modifier
+                .contains(Modifier::BOLD)
+        );
     }
 }
 
