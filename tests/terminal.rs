@@ -147,11 +147,11 @@ fn jj_no_argument_launch_starts_at_master_in_the_current_repository() {
 }
 
 #[test]
-fn terminal_pane_shortcuts_and_tree_resizing_are_saved() {
+fn terminal_flash_pane_shortcuts_and_tree_resizing_work_together() {
     let fixture = common::fixture();
     let state = tempfile::tempdir().unwrap();
     let config = state.path().join("config.toml");
-    fs::write(&config, "").unwrap();
+    fs::write(&config, "[keybindings]\nv = 'toggle_viewed'\n").unwrap();
     let repo = Repository::discover(fixture.path(), Some(Backend::Git)).unwrap();
     let store = SessionStore::new(state.path(), &repo).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
@@ -169,6 +169,19 @@ fn terminal_pane_shortcuts_and_tree_resizing_are_saved() {
     ]);
     let mut terminal = Pty::spawn(command);
     terminal.wait_until(|text| text.contains("Changed files"));
+    terminal.send(b"\x0c");
+    terminal.wait_until(|_| store.list().unwrap()[0].review.view.diff_focused);
+    terminal.send(b"zs");
+    terminal.wait_until(|_| {
+        let saved = store.list().unwrap().remove(0);
+        !saved.review.view.diff_focused && !saved.review.view.fullscreen
+    });
+    terminal.output.clear();
+    terminal.send(b"v");
+    terminal.wait_until(|text| text.contains('v'));
+    assert!(store.list().unwrap()[0].review.viewed.is_empty());
+    terminal.send(b"\x7fmain\r");
+    terminal.wait_until(|_| store.list().unwrap()[0].review.view.selected == "src/main.rs");
     terminal.send(b"\x0c");
     terminal.wait_until(|_| store.list().unwrap()[0].review.view.diff_focused);
     terminal.send(b"\x1b[1;5C");

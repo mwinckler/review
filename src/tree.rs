@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::Range,
+};
 
 use crate::state::Review;
 
@@ -9,6 +12,23 @@ pub struct Row {
     pub file: Option<usize>,
     pub total: usize,
     pub viewed: usize,
+}
+
+impl Row {
+    pub fn name(&self) -> &str {
+        self.path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or(&self.path)
+    }
+}
+
+pub fn visible_range(rows: usize, selection: usize, height: usize) -> Range<usize> {
+    let offset = selection
+        .saturating_sub(height / 2)
+        .min(rows.saturating_sub(height));
+    offset..offset.saturating_add(height).min(rows)
 }
 
 pub fn rows(review: &Review) -> Vec<Row> {

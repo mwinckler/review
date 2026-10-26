@@ -53,8 +53,8 @@ review --base main       # Start a fresh review
 
 Press `q` or `Ctrl-c` to save and quit. Viewed changes save immediately;
 navigation state autosaves within 250 ms. Resume restores the comparison,
-viewed files, selection, pane focus, directory expansion, filters, layout, tree width,
-and per-file scroll positions.
+viewed files, selection, pane focus, directory expansion, filters, layout,
+tree width, and per-file scroll positions.
 
 Sessions belong to the canonical workspace path and selected backend. Use the
 same backend when resuming a session created with `--backend git` in a colocated
@@ -86,11 +86,12 @@ open session holds an exclusive lock.
 | `]f` / `[f` | Next/previous file, expanding its parents |
 | `]u` / `[u` | Next/previous unviewed file |
 | `/` | Filter filenames in the tree; search text in the diff |
+| `s` | Flash jump to a visible tree entry from either pane |
 | `n` / `N` | Next/previous matching file or diff search result |
 | `u` | Toggle the unviewed-only filter |
 | `i` | Toggle inline and side-by-side rendering |
 | `z` | Toggle a full-width diff |
-| `Esc` | Clear file filters; cancel a search prompt |
+| `Esc` | Clear file filters; cancel a search or Flash prompt |
 | `r` | Refresh the comparison |
 | `?` | Show help and custom key aliases |
 | `q`, `Ctrl-c` | Save and quit |
@@ -100,6 +101,17 @@ their changed files. Pressing `Space` on a folder marks all its changed files
 viewed, including nested files and files hidden by filters or collapsed folders.
 Viewed files and fully viewed folders appear slightly dimmed in the tree.
 Narrow terminals display the focused pane at full width.
+
+### Flash navigation
+
+Press `s` from either pane, type a filename fragment, then press a highlighted
+label to select that file or folder in the tree. Labels are displayed uppercase
+and accept lowercase input. Keep typing to narrow the case-insensitive matches;
+`Backspace` edits the fragment, and `Enter` selects the first match.
+
+Flash searches the visible tree entries, respecting filters and collapsed folders.
+It reveals the tree from a full-width diff and focuses the tree after a jump.
+Press `Esc` to restore the previous pane and layout.
 
 ## Configuration
 
@@ -132,8 +144,8 @@ is limited to 16 MiB per job, with the configured timeout applied to each proces
 Binary changes, renames, symlinks, executable-bit changes, submodule pointers,
 and Jujutsu conflict contents remain visible through file metadata and diffs.
 
-Key aliases supplement the defaults in navigation mode; search prompts accept
-literal text. Keys may be a character, a named key (`Space`, `Enter`, `Tab`,
+Key aliases supplement the defaults in navigation mode; search and Flash prompts
+use typed characters for their own input. Keys may be a character, a named key (`Space`, `Enter`, `Tab`,
 `BackTab`, `Esc`, `Backspace`, arrows, `PageUp`, `PageDown`, `Home`, `End`), or a
 `Ctrl-`/`Alt-` combination. Use uppercase characters for shifted letters.
 `Ctrl-c` always saves and exits.
@@ -141,7 +153,7 @@ literal text. Keys may be a character, a named key (`Space`, `Enter`, `Tab`,
 Actions: `up`, `down`, `left`, `right`, `focus_tree`, `focus_diff`, `first`, `last`,
 `page_down`, `page_up`, `half_page_down`, `half_page_up`, `next_file`,
 `previous_file`, `next_unviewed`, `previous_unviewed`, `toggle_viewed`,
-`toggle_unviewed`, `toggle_inline`, `toggle_fullscreen`, `search`, `next_match`,
+`toggle_unviewed`, `toggle_inline`, `toggle_fullscreen`, `search`, `flash`, `next_match`,
 `previous_match`, `refresh`, `clear_filters`, `help`, `quit`.
 
 ## Development

@@ -71,3 +71,15 @@ fn pane_focus_aliases_use_direct_control_shortcuts() {
         );
     }
 }
+
+#[test]
+fn flash_can_be_aliased() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "[keybindings]\nF = 'flash'\n").unwrap();
+    let config = Config::load(&path, true).unwrap();
+    assert_eq!(
+        config.translate(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT)),
+        [KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)]
+    );
+}

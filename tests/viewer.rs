@@ -304,6 +304,136 @@ fn stored_tree_width_is_clamped_for_smaller_terminals() {
 }
 
 #[test]
+fn flash_jumps_to_tree_matches_from_either_pane() {
+    for focus in [Focus::Tree, Focus::Diff] {
+        let mut app = App::new(review());
+        app.focus = focus;
+        app.review.view.fullscreen = focus == Focus::Diff;
+        key(&mut app, KeyCode::Char('s'));
+        assert!(app.flash.is_some());
+        assert_eq!(app.focus, Focus::Tree);
+        assert!(!app.review.view.fullscreen);
+        key(&mut app, KeyCode::Char('b'));
+        let flash = app.flash.as_ref().unwrap();
+        assert_eq!(flash.query, "b");
+        let label = flash
+            .labels
+            .iter()
+            .find(|(row, _)| app.rows[*row].path == "src/nested/b.rs")
+            .unwrap()
+            .1;
+        key(&mut app, KeyCode::Char(label));
+        assert!(app.flash.is_none());
+        assert_eq!(app.review.view.selected, "src/nested/b.rs");
+        assert_eq!(app.active, Some(2));
+        assert_eq!(app.focus, Focus::Tree);
+    }
+}
+
+#[test]
+fn flash_queries_are_incremental_and_escape_restores_the_previous_layout() {
+    let mut app = App::new(review());
+    key(&mut app, KeyCode::Char('z'));
+    key(&mut app, KeyCode::Char('s'));
+    key(&mut app, KeyCode::Char('r'));
+    key(&mut app, KeyCode::Char('s'));
+    assert_eq!(app.flash.as_ref().unwrap().query, "rs");
+    key(&mut app, KeyCode::Backspace);
+    assert_eq!(app.flash.as_ref().unwrap().query, "r");
+    key(&mut app, KeyCode::Esc);
+    assert!(app.flash.is_none());
+    assert_eq!(app.focus, Focus::Diff);
+    assert!(app.review.view.fullscreen);
+    assert_eq!(app.review.view.selected, "README.md");
+    assert!(app.review.view.filter.is_empty());
+}
+
+#[test]
+fn flash_respects_tree_filters_and_collapsed_folders() {
+    let mut review = review();
+    review.view.collapsed.insert("src/".into());
+    let mut app = App::new(review);
+    key(&mut app, KeyCode::Char('s'));
+    key(&mut app, KeyCode::Char('b'));
+    assert!(app.flash.as_ref().unwrap().matches.is_empty());
+    key(&mut app, KeyCode::Esc);
+    app.review.view.filter = "a.rs".into();
+    app.rebuild();
+    key(&mut app, KeyCode::Char('s'));
+    key(&mut app, KeyCode::Char('b'));
+    assert!(app.flash.as_ref().unwrap().matches.is_empty());
+    key(&mut app, KeyCode::Backspace);
+    key(&mut app, KeyCode::Char('a'));
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.review.view.selected, "src/a.rs");
+    assert_eq!(app.review.view.filter, "a.rs");
+}
+
+#[test]
+fn flash_labels_only_rows_in_the_tree_viewport() {
+    let mut review = review();
+    review.changes = (0..80)
+        .map(|index| change(&format!("folder/file_{index:02}.rs")))
+        .collect();
+    let mut app = App::new(review);
+    key(&mut app, KeyCode::Char('G'));
+    key(&mut app, KeyCode::Char('s'));
+    key(&mut app, KeyCode::Char('_'));
+    let flash = app.flash.as_ref().unwrap();
+    assert_eq!(flash.matches.len(), 10);
+    assert!(flash.labels.iter().all(|(row, _)| *row >= 71));
+    let labels: std::collections::BTreeSet<_> =
+        flash.labels.iter().map(|(_, label)| label).collect();
+    assert_eq!(labels.len(), flash.labels.len());
+}
+
+#[test]
+fn flash_labels_remain_bright_on_viewed_files() {
+    let mut review = review();
+    review.toggle_viewed(2);
+    let mut app = App::new(review);
+    key(&mut app, KeyCode::Char('s'));
+    key(&mut app, KeyCode::Char('b'));
+    let label = app.flash.as_ref().unwrap().labels[0].1;
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    terminal
+        .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
+        .unwrap();
+    let cell = &terminal.backend().buffer()[(5, 6)];
+    assert_eq!(cell.symbol(), label.to_ascii_uppercase().to_string());
+    assert!(cell.modifier.contains(Modifier::BOLD));
+    assert!(!cell.modifier.contains(Modifier::DIM));
+    let footer: String = (0..100)
+        .map(|x| terminal.backend().buffer()[(x, 23)].symbol())
+        .collect();
+    assert!(footer.contains("Flash /b"));
+}
+
+#[test]
+fn flash_supports_unicode_empty_trees_and_literal_prompt_input() {
+    let mut review = review();
+    review.changes.push(change("src/λ.rs"));
+    let mut app = App::new(review);
+    key(&mut app, KeyCode::Char('s'));
+    key(&mut app, KeyCode::Char('λ'));
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.review.view.selected, "src/λ.rs");
+    key(&mut app, KeyCode::Char('/'));
+    key(&mut app, KeyCode::Char('s'));
+    assert!(app.flash.is_none());
+    assert_eq!(app.review.view.filter, "s");
+    key(&mut app, KeyCode::Esc);
+    app.review.changes.clear();
+    app.rebuild();
+    key(&mut app, KeyCode::Char('s'));
+    key(&mut app, KeyCode::Char('q'));
+    assert!(!app.quit);
+    assert!(app.flash.as_ref().unwrap().matches.is_empty());
+    key(&mut app, KeyCode::Esc);
+    assert!(app.flash.is_none());
+}
+
+#[test]
 fn difft_output_is_embedded_with_ansi_colors() {
     let output = render_pair(
         &RendererConfig::default(),

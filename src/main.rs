@@ -213,6 +213,7 @@ fn run(
             }
         }
         if redraw {
+            app.update_flash(panes.tree.height.saturating_sub(2) as usize);
             terminal.draw(|frame| ui::draw(frame, app, &diff))?;
             redraw = false;
         }
@@ -222,6 +223,7 @@ fn run(
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     app.message.clear();
                     let keys = if app.searching
+                        || app.flash.is_some()
                         || app.help
                         || (key.code == KeyCode::Char('c')
                             && key.modifiers.contains(KeyModifiers::CONTROL))

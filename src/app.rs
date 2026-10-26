@@ -11,6 +11,14 @@ pub enum Focus {
     Diff,
 }
 
+pub struct Flash {
+    pub query: String,
+    pub matches: Vec<usize>,
+    pub labels: Vec<(usize, char)>,
+    focus: Focus,
+    fullscreen: bool,
+}
+
 pub struct App {
     pub review: Review,
     pub focus: Focus,
@@ -25,6 +33,7 @@ pub struct App {
     pub diff_search: String,
     pub dirty: bool,
     pub bindings_help: String,
+    pub flash: Option<Flash>,
     prefix: Option<char>,
     search_original: String,
 }
@@ -54,6 +63,7 @@ impl App {
             diff_search: String::new(),
             dirty: false,
             bindings_help: String::new(),
+            flash: None,
             prefix: None,
             search_original: String::new(),
         };
@@ -158,6 +168,10 @@ impl App {
             if self.focus == Focus::Tree {
                 self.rebuild();
             }
+            return;
+        }
+        if self.flash.is_some() {
+            self.handle_flash(key, page);
             return;
         }
         if let Some(prefix) = self.prefix.take() {
@@ -334,6 +348,17 @@ impl App {
                     self.diff_search.clear();
                 }
             }
+            KeyCode::Char('s') => {
+                self.flash = Some(Flash {
+                    query: String::new(),
+                    matches: Vec::new(),
+                    labels: Vec::new(),
+                    focus: self.focus,
+                    fullscreen: self.review.view.fullscreen,
+                });
+                self.focus = Focus::Tree;
+                self.review.view.fullscreen = false;
+            }
             KeyCode::Esc => {
                 self.review.view.filter.clear();
                 self.review.view.unviewed_only = false;
@@ -349,6 +374,66 @@ impl App {
         } else {
             self.position().vertical = position;
         }
+    }
+
+    pub fn update_flash(&mut self, height: usize) {
+        let Some(flash) = &mut self.flash else {
+            return;
+        };
+        let query = flash.query.to_lowercase();
+        let matches: Vec<_> = tree::visible_range(self.rows.len(), self.selection, height)
+            .map(|index| (index, self.rows[index].name().to_lowercase()))
+            .filter(|(_, name)| !query.is_empty() && name.contains(&query))
+            .collect();
+        // Keep query extensions available while assigning home-row-first jump labels.
+        let labels = "asdfghjklqwertyuiopzxcvbnm".chars().filter(|label| {
+            let extension = format!("{query}{label}");
+            matches.iter().all(|(_, name)| !name.contains(&extension))
+        });
+        flash.matches = matches.iter().map(|(index, _)| *index).collect();
+        flash.labels = matches
+            .iter()
+            .map(|(index, _)| *index)
+            .zip(labels)
+            .collect();
+    }
+
+    fn handle_flash(&mut self, key: KeyEvent, height: usize) {
+        let mut flash = self.flash.take().expect("Flash mode is active");
+        match key.code {
+            KeyCode::Esc => {
+                self.focus = flash.focus;
+                self.review.view.fullscreen = flash.fullscreen;
+                return;
+            }
+            KeyCode::Enter => {
+                if let Some(index) = flash.matches.first() {
+                    self.select(*index);
+                    return;
+                }
+            }
+            KeyCode::Backspace => {
+                flash.query.pop();
+            }
+            KeyCode::Char(ch)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                if let Some((index, _)) = flash
+                    .labels
+                    .iter()
+                    .find(|(_, label)| *label == ch.to_ascii_lowercase())
+                {
+                    self.select(*index);
+                    return;
+                }
+                flash.query.push(ch);
+            }
+            _ => {}
+        }
+        self.flash = Some(flash);
+        self.update_flash(height);
     }
 
     fn move_by(&mut self, amount: isize, page: usize, lines: usize) {
