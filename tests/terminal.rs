@@ -147,6 +147,95 @@ fn jj_no_argument_launch_starts_at_master_in_the_current_repository() {
 }
 
 #[test]
+fn git_directory_previews_include_hidden_descendants_and_resume_their_scroll() {
+    exercise_directory_preview(Backend::Git);
+}
+
+#[test]
+fn jj_directory_previews_include_hidden_descendants_and_resume_their_scroll() {
+    exercise_directory_preview(Backend::Jj);
+}
+
+fn exercise_directory_preview(backend: Backend) {
+    let fixture = common::fixture();
+    common::jj(fixture.path(), &["new", "feature"]);
+    fs::create_dir_all(fixture.path().join("src/nested")).unwrap();
+    fs::write(
+        fixture.path().join("src/lib.rs"),
+        "pub const DIRECTORY_TOP: u8 = 1;\n",
+    )
+    .unwrap();
+    let nested = format!("{}// DIRECTORY_END\n", "// DIRECTORY_NESTED\n".repeat(70));
+    fs::write(fixture.path().join("src/nested/lib.rs"), nested).unwrap();
+    common::jj(fixture.path(), &["commit", "-m", "directory changes"]);
+    common::jj(
+        fixture.path(),
+        &["bookmark", "create", "directory", "-r", "@-"],
+    );
+    let state = tempfile::tempdir().unwrap();
+    let config = state.path().join("config.toml");
+    fs::write(&config, "").unwrap();
+    let repo = Repository::discover(fixture.path(), Some(backend)).unwrap();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    let command = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
+        command
+            .env("JJ_CONFIG", "/dev/null")
+            .current_dir(fixture.path())
+            .args([
+                "--backend",
+                match backend {
+                    Backend::Git => "git",
+                    Backend::Jj => "jj",
+                },
+                "--state-dir",
+                state.path().to_str().unwrap(),
+                "--config",
+                config.to_str().unwrap(),
+            ]);
+        command
+    };
+    let mut first = command();
+    first.args(["--base", "main", "--head", "directory"]);
+    let mut terminal = Pty::spawn(first);
+    terminal.wait_until(|text| text.contains("Changed files"));
+    terminal.send(b"/main.rs\rh");
+    terminal.wait_until(|text| text.contains("src/lib.rs") && text.contains("src/nested/lib.rs"));
+    terminal.send(b"\x0cG");
+    terminal.wait_until(|_| {
+        store.list().unwrap()[0]
+            .review
+            .view
+            .positions
+            .get("src/")
+            .is_some_and(|position| position.vertical > 0)
+    });
+    terminal.send(b"q");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+    let saved = store.list().unwrap().remove(0);
+    assert_eq!(saved.review.view.active, "src/");
+    assert_eq!(saved.review.view.selected, "src/");
+    assert_eq!(saved.review.view.filter, "main.rs");
+    fs::write(fixture.path().join("src/lib.rs"), "uncommitted\n").unwrap();
+    fs::write(fixture.path().join("src/nested/lib.rs"), "uncommitted\n").unwrap();
+    let mut resume = command();
+    resume.args(["--resume", &saved.id]);
+    let mut terminal = Pty::spawn(resume);
+    terminal.wait_until(|text| text.contains("DIRECTORY_END"));
+    terminal.send(b"q");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+    let resumed = store.list().unwrap().remove(0);
+    assert_eq!(
+        resumed.review.comparison.head_id,
+        saved.review.comparison.head_id
+    );
+    assert_eq!(
+        resumed.review.view.positions["src/"].vertical,
+        saved.review.view.positions["src/"].vertical
+    );
+}
+
+#[test]
 fn terminal_flash_pane_shortcuts_and_tree_resizing_work_together() {
     let fixture = common::fixture();
     let state = tempfile::tempdir().unwrap();

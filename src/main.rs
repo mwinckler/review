@@ -166,9 +166,9 @@ fn run(
         }
         .saturating_sub(2)
         .max(1) as usize;
-        if let Some(index) = app.active {
+        if !app.review.view.active.is_empty() {
             let key = (
-                index,
+                app.review.view.active.clone(),
                 width,
                 app.review.view.inline,
                 app.review.comparison.base_id.clone(),
@@ -178,7 +178,8 @@ fn run(
                 request_id = worker.request(
                     repo,
                     &app.review.comparison,
-                    &app.review.changes[index],
+                    &app.review.view.active,
+                    app.preview_changes().cloned().collect(),
                     RenderOptions {
                         width,
                         inline: app.review.view.inline,

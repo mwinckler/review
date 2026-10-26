@@ -325,7 +325,7 @@ fn space_on_a_nested_folder_marks_only_its_descendants() {
 }
 
 #[test]
-fn space_in_the_diff_toggles_only_the_active_file_with_a_folder_selected() {
+fn space_in_a_directory_diff_marks_all_descendants_viewed() {
     let mut app = App::new(review());
     key(&mut app, KeyCode::Char(']'));
     key(&mut app, KeyCode::Char('f'));
@@ -335,13 +335,119 @@ fn space_in_the_diff_toggles_only_the_active_file_with_a_folder_selected() {
 
     key(&mut app, KeyCode::Char(' '));
     assert!(app.review.is_viewed(&app.review.changes[1]));
-    assert!(!app.review.is_viewed(&app.review.changes[2]));
-    assert_eq!(app.active, Some(2));
+    assert!(app.review.is_viewed(&app.review.changes[2]));
+    assert!(!app.review.is_viewed(&app.review.changes[0]));
+    assert_eq!(app.review.view.active, "src/");
 
+    key(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.review.viewed.len(), 2);
+}
+
+#[test]
+fn highlighting_a_directory_previews_all_changed_descendants() {
+    for (filter, unviewed_only) in [("", false), ("a.rs", false), ("", true)] {
+        let mut review = review();
+        review.changes.push(change("src-other/c.rs"));
+        review.toggle_viewed(2);
+        review.view.selected = "src/".into();
+        review.view.filter = filter.into();
+        review.view.unviewed_only = unviewed_only;
+        review
+            .view
+            .collapsed
+            .extend(["src/".into(), "src/nested/".into()]);
+        let app = App::new(review);
+
+        assert_eq!(app.review.view.active, "src/");
+        assert_eq!(app.active, None);
+        assert_eq!(
+            app.preview_changes()
+                .map(|change| change.path.as_str())
+                .collect::<Vec<_>>(),
+            ["src/a.rs", "src/nested/b.rs"]
+        );
+    }
+}
+
+#[test]
+fn directory_scroll_positions_are_independent_and_resume_with_the_preview() {
+    let mut app = App::new(review());
+    key(&mut app, KeyCode::Char(']'));
+    key(&mut app, KeyCode::Char('f'));
+    app.position().vertical = 7;
+    key(&mut app, KeyCode::Char('h'));
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Char('j'));
+    assert_eq!(app.review.view.positions["src/"].vertical, 1);
+    assert_eq!(app.review.view.positions["src/a.rs"].vertical, 7);
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Char(']'));
+    key(&mut app, KeyCode::Char('f'));
+    assert_eq!(app.active, Some(1));
+    assert_eq!(app.position().vertical, 7);
+    key(&mut app, KeyCode::Char('h'));
+    key(&mut app, KeyCode::Tab);
+    let mut resumed = App::new(app.review.clone());
+    assert_eq!(resumed.review.view.active, "src/");
+    assert_eq!(resumed.focus, Focus::Diff);
+    assert_eq!(resumed.preview_changes().count(), 2);
+    assert_eq!(resumed.position().vertical, 1);
+}
+
+#[test]
+fn file_jumps_from_a_directory_start_at_its_tree_position() {
+    let mut review = review();
+    review.changes.insert(1, change("docs/a.txt"));
+    review.view.selected = "src/".into();
+    let mut app = App::new(review);
+    key(&mut app, KeyCode::Char(']'));
+    key(&mut app, KeyCode::Char('f'));
+    assert_eq!(app.review.view.active, "src/a.rs");
+    key(&mut app, KeyCode::Char('h'));
     key(&mut app, KeyCode::Char('['));
     key(&mut app, KeyCode::Char('f'));
-    key(&mut app, KeyCode::Char(' '));
-    assert!(app.review.viewed.is_empty());
+    assert_eq!(app.review.view.active, "docs/a.txt");
+}
+
+#[test]
+fn flash_directory_jumps_select_the_combined_preview() {
+    let mut app = App::new(review());
+    key(&mut app, KeyCode::Char('s'));
+    key(&mut app, KeyCode::Char('n'));
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.review.view.active, "src/nested/");
+    assert_eq!(app.active, None);
+    assert_eq!(
+        app.preview_changes()
+            .map(|change| change.path.as_str())
+            .collect::<Vec<_>>(),
+        ["src/nested/b.rs"]
+    );
+}
+
+#[test]
+fn the_directory_preview_title_and_scroll_match_the_selected_folder() {
+    let mut review = review();
+    review.view.selected = "src/".into();
+    let mut app = App::new(review);
+    app.position().vertical = 3;
+    let diff = Text::from(
+        (0..30)
+            .map(|index| ratatui::text::Line::raw(format!("directory line {index}")))
+            .collect::<Vec<_>>(),
+    );
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    terminal.draw(|frame| ui::draw(frame, &app, &diff)).unwrap();
+    let pane = ui::panes(Rect::new(0, 0, 100, 24), &app).diff;
+    let buffer = terminal.backend().buffer();
+    let title: String = (pane.x..pane.right())
+        .map(|x| buffer[(x, pane.y)].symbol())
+        .collect();
+    assert!(title.contains("src/"), "{title}");
+    let body: String = (pane.x..pane.right())
+        .map(|x| buffer[(x, pane.y + 1)].symbol())
+        .collect();
+    assert!(body.contains("directory line 3"));
 }
 
 #[test]
@@ -719,7 +825,7 @@ fn external_renderer_supports_placeholders_exit_one_timeout_and_cancellation() {
 }
 
 #[test]
-fn collapsed_directories_keep_the_active_diff_and_enter_toggles_them() {
+fn collapsed_directories_keep_the_directory_preview_and_enter_toggles_them() {
     let mut app = App::new(review());
     key(&mut app, KeyCode::Char(']'));
     key(&mut app, KeyCode::Char('f'));
@@ -728,14 +834,16 @@ fn collapsed_directories_keep_the_active_diff_and_enter_toggles_them() {
     assert_eq!(app.review.view.selected, "src/");
     key(&mut app, KeyCode::Char('h'));
     assert!(app.review.view.collapsed.contains("src/"));
-    assert_eq!(app.active, Some(1));
+    assert_eq!(app.active, None);
+    assert_eq!(app.preview_changes().count(), 2);
     key(&mut app, KeyCode::Enter);
     assert!(!app.review.view.collapsed.contains("src/"));
     key(&mut app, KeyCode::Enter);
     assert!(app.review.view.collapsed.contains("src/"));
     key(&mut app, KeyCode::Tab);
     let resumed = App::new(app.review.clone());
-    assert_eq!(resumed.active, Some(1));
+    assert_eq!(resumed.active, None);
+    assert_eq!(resumed.review.view.active, "src/");
     assert_eq!(resumed.focus, Focus::Diff);
 }
 

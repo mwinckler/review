@@ -1,6 +1,7 @@
 use crate::{
     app::{App, Focus},
     tree,
+    vcs::Change,
 };
 use ratatui::{
     Frame,
@@ -55,6 +56,36 @@ pub fn display_path(path: &str) -> String {
         }
     }
     displayed
+}
+
+pub fn change_heading(change: &Change) -> (String, String) {
+    let path = if change.old_path != change.path {
+        format!(
+            "{} → {}",
+            display_path(&change.old_path),
+            display_path(&change.path)
+        )
+    } else {
+        display_path(&change.path)
+    };
+    let old = if change.old.kind.is_empty() {
+        "absent"
+    } else {
+        &change.old.kind
+    };
+    let new = if change.new.kind.is_empty() {
+        "absent"
+    } else {
+        &change.new.kind
+    };
+    (
+        format!(" {} {path} ", change.status),
+        format!(
+            " {old}{} → {new}{} ",
+            if change.old.executable { " +x" } else { "" },
+            if change.new.executable { " +x" } else { "" }
+        ),
+    )
 }
 
 pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
@@ -212,33 +243,11 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     }
     if panes.diff.width > 0 {
         let (title, metadata) = if let Some(index) = app.active {
-            let change = &app.review.changes[index];
-            let path = if change.old_path != change.path {
-                format!(
-                    "{} → {}",
-                    display_path(&change.old_path),
-                    display_path(&change.path)
-                )
-            } else {
-                display_path(&change.path)
-            };
-            let old = if change.old.kind.is_empty() {
-                "absent"
-            } else {
-                &change.old.kind
-            };
-            let new = if change.new.kind.is_empty() {
-                "absent"
-            } else {
-                &change.new.kind
-            };
+            change_heading(&app.review.changes[index])
+        } else if app.review.view.active.ends_with('/') {
             (
-                format!(" {} {path} ", change.status),
-                format!(
-                    " {old}{} → {new}{} ",
-                    if change.old.executable { " +x" } else { "" },
-                    if change.new.executable { " +x" } else { "" }
-                ),
+                format!(" {} ", display_path(&app.review.view.active)),
+                format!(" Files: {} ", app.preview_changes().count()),
             )
         } else {
             (" Review ".into(), String::new())

@@ -162,3 +162,33 @@ fn refresh_preserves_identical_changes_and_invalidates_changes_to_either_side() 
     assert_eq!(review.reconcile(comparison, vec![]), 1);
     assert!(review.viewed.is_empty());
 }
+
+#[test]
+fn refresh_preserves_directory_scroll_only_while_its_descendants_are_identical() {
+    let mut review = review();
+    review
+        .view
+        .positions
+        .entry("src/".into())
+        .or_default()
+        .vertical = 20;
+    review
+        .view
+        .positions
+        .entry("src/a.rs".into())
+        .or_default()
+        .vertical = 3;
+    let mut changes = review.changes.clone();
+    let mut outside = changes[0].clone();
+    outside.path = "outside.txt".into();
+    outside.old_path = outside.path.clone();
+    changes.push(outside);
+    review.reconcile(review.comparison.clone(), changes);
+    assert_eq!(review.view.positions["src/"].vertical, 20);
+    assert_eq!(review.view.positions["src/a.rs"].vertical, 3);
+    let mut changes = review.changes.clone();
+    changes[0].new.object_id = "changed".into();
+    review.reconcile(review.comparison.clone(), changes);
+    assert!(!review.view.positions.contains_key("src/"));
+    assert!(!review.view.positions.contains_key("src/a.rs"));
+}

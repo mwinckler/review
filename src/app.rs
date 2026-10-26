@@ -1,6 +1,7 @@
 use crate::{
     state::{Position, Review},
     tree::{self, Row},
+    vcs::Change,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Text;
@@ -45,14 +46,10 @@ impl App {
         } else {
             Focus::Tree
         };
-        let active = review
-            .changes
-            .iter()
-            .position(|change| change.path == review.view.active);
         let mut app = Self {
             review,
             focus,
-            active,
+            active: None,
             help: false,
             quit: false,
             refresh: false,
@@ -80,39 +77,33 @@ impl App {
             .or_else(|| self.rows.iter().position(|row| row.file.is_some()))
             .unwrap_or(0);
         self.select(selection);
-        let filter = self.review.view.filter.to_lowercase();
-        let eligible = |index: usize| {
-            self.review.changes.get(index).is_some_and(|change| {
-                change.path.to_lowercase().contains(&filter)
-                    && (!self.review.view.unviewed_only || !self.review.is_viewed(change))
-            })
-        };
-        if !self.active.is_some_and(eligible) {
-            self.active = (0..self.review.changes.len()).find(|index| eligible(*index));
-        }
-        self.review.view.active = self
-            .active
-            .map(|index| self.review.changes[index].path.clone())
-            .unwrap_or_default();
     }
 
     fn select(&mut self, selection: usize) {
         self.selection = selection.min(self.rows.len().saturating_sub(1));
         if let Some(row) = self.rows.get(self.selection) {
             self.review.view.selected = row.path.clone();
-            if row.file.is_some() {
-                self.active = row.file;
-                self.review.view.active = row.path.clone();
-            }
+            self.active = row.file;
+            self.review.view.active = row.path.clone();
+        } else {
+            self.active = None;
+            self.review.view.active.clear();
         }
     }
 
     pub fn position(&mut self) -> &mut Position {
-        let path = self
-            .active
-            .map(|index| self.review.changes[index].path.clone())
-            .unwrap_or_default();
-        self.review.view.positions.entry(path).or_default()
+        self.review
+            .view
+            .positions
+            .entry(self.review.view.active.clone())
+            .or_default()
+    }
+
+    pub fn preview_changes(&self) -> impl Iterator<Item = &Change> {
+        let path = &self.review.view.active;
+        self.review.changes.iter().filter(move |change| {
+            change.path == *path || (path.ends_with('/') && change.path.starts_with(path))
+        })
     }
 
     pub fn handle_key(
@@ -309,14 +300,12 @@ impl App {
                     {
                         return;
                     }
-                } else if self.focus == Focus::Tree
-                    && let Some(row) = self.rows.get(self.selection)
-                {
+                } else if self.review.view.active.ends_with('/') {
                     self.review.viewed.extend(
                         self.review
                             .changes
                             .iter()
-                            .filter(|change| change.path.starts_with(&row.path))
+                            .filter(|change| change.path.starts_with(&self.review.view.active))
                             .map(|change| (change.path.clone(), change.fingerprint())),
                     );
                 }
@@ -468,7 +457,20 @@ impl App {
 
     fn jump_file(&mut self, forward: bool, unviewed: bool) -> bool {
         let len = self.review.changes.len();
-        let start = self.active.unwrap_or(0);
+        let start = self.active.unwrap_or_else(|| {
+            self.review
+                .changes
+                .iter()
+                .position(|change| change.path.starts_with(&self.review.view.active))
+                .map(|first| {
+                    if forward {
+                        (first + len - 1) % len
+                    } else {
+                        first
+                    }
+                })
+                .unwrap_or(0)
+        });
         let filter = self.review.view.filter.to_lowercase();
         for offset in 1..=len {
             let index = if forward {

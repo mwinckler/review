@@ -57,7 +57,7 @@ review --base main       # Start a fresh review
 Press `q` or `Ctrl-c` to save and quit. Viewed changes save immediately;
 navigation state autosaves within 250 ms. Resume restores the comparison,
 viewed files, selection, pane focus, directory expansion, filters, layout,
-tree width, and per-file scroll positions.
+tree width, and per-file and per-directory scroll positions.
 
 Sessions belong to the canonical workspace path and selected backend. Use the
 same backend when resuming a session created with `--backend git` in a colocated
@@ -106,6 +106,10 @@ layout are retained. Unmarking keeps the current file selected.
 Search and filtering are case-insensitive. Directory counts show progress across
 their changed files. Pressing `Space` on a folder marks all its changed files
 viewed, including nested files and files hidden by filters or collapsed folders.
+Highlighting a folder shows a combined diff of all its changed descendants,
+including collapsed and filtered-out files, with a heading for each file.
+Focus the right pane with `Ctrl-l` or `Tab` to scroll or search the combined diff.
+`Space` in a directory preview marks the directory's files viewed.
 Viewed files and fully viewed folders appear slightly dimmed in the tree.
 Narrow terminals display the focused pane at full width.
 
@@ -147,7 +151,8 @@ conventional diff tools.
 
 Diff jobs run in the background. Superseded jobs are cancelled, completed views
 are cached, and resizing re-renders for the current pane width. Renderer output
-is limited to 16 MiB per job, with the configured timeout applied to each process.
+is limited to 16 MiB per job, with one configured timeout budget for each file or
+directory preview.
 Binary changes, renames, symlinks, executable-bit changes, submodule pointers,
 and Jujutsu conflict contents remain visible through file metadata and diffs.
 

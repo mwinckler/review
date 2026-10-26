@@ -15,10 +15,16 @@ use std::{
 
 use ansi_to_tui::IntoText;
 use anyhow::{Context, Result, bail, ensure};
-use ratatui::text::Text;
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span, Text},
+};
 use serde::{Deserialize, Serialize};
 
-use crate::vcs::{Change, Comparison, Repository};
+use crate::{
+    ui::{change_heading, display_path},
+    vcs::{Change, Comparison, Repository},
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -192,8 +198,82 @@ struct Job {
     id: u64,
     repo: Repository,
     comparison: Comparison,
-    change: Change,
+    path: String,
+    changes: Vec<Change>,
     options: RenderOptions,
+}
+
+fn text_size(text: &Text<'_>) -> usize {
+    text.lines
+        .iter()
+        .map(|line| {
+            std::mem::size_of_val(line)
+                + line
+                    .spans
+                    .iter()
+                    .map(|span| std::mem::size_of_val(span) + span.content.len())
+                    .sum::<usize>()
+        })
+        .sum()
+}
+
+fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Result<Text<'static>> {
+    let directory = job.path.ends_with('/');
+    let started = Instant::now();
+    let mut remaining = config.clone();
+    let mut text = Text::default();
+    let mut size = 0;
+    for change in &job.changes {
+        ensure!(
+            generation.load(Ordering::Relaxed) == job.id,
+            "render cancelled"
+        );
+        let rendered = (|| {
+            let old = job.repo.content(&job.comparison, change, true)?;
+            let new = job.repo.content(&job.comparison, change, false)?;
+            remaining.timeout_ms = config
+                .timeout_ms
+                .saturating_sub(started.elapsed().as_millis() as u64);
+            ensure!(
+                remaining.timeout_ms > 0,
+                "renderer timed out; increase renderer.timeout_ms or choose another renderer"
+            );
+            render_pair(
+                &remaining,
+                change,
+                &old,
+                &new,
+                job.options,
+                generation,
+                job.id,
+            )
+        })()
+        .with_context(|| format!("rendering {}", display_path(&change.path)))?;
+        let mut section = Text::default();
+        if directory {
+            if !text.lines.is_empty() {
+                section.lines.push(Line::default());
+            }
+            let (title, metadata) = change_heading(change);
+            section.lines.push(Line::from(vec![
+                Span::styled(
+                    title,
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(metadata, Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+        section.lines.extend(rendered.lines);
+        size += text_size(&section);
+        ensure!(
+            !directory || size <= 16 * 1024 * 1024,
+            "renderer output exceeded 16 MiB"
+        );
+        text.lines.extend(section.lines);
+    }
+    Ok(text)
 }
 
 pub struct RenderResult {
@@ -227,49 +307,30 @@ impl RenderWorker {
                 if current.load(Ordering::Relaxed) != job.id {
                     continue;
                 }
-                let key = format!(
-                    "{}:{}:{}",
-                    job.change.fingerprint(),
-                    job.options.width,
-                    job.options.inline
-                );
+                let key = blake3::hash(
+                    &serde_json::to_vec(&(
+                        &job.path,
+                        &job.changes,
+                        job.options.width,
+                        job.options.inline,
+                    ))
+                    .expect("render key is serializable"),
+                )
+                .to_hex()
+                .to_string();
                 let result = if let Some(index) = cache.iter().position(|entry| entry.0 == key) {
                     let entry = cache.remove(index).expect("cache index exists");
                     let text = entry.1.clone();
                     cache.push_back(entry);
                     Ok(text)
                 } else {
-                    (|| {
-                        let old = job.repo.content(&job.comparison, &job.change, true)?;
-                        let new = job.repo.content(&job.comparison, &job.change, false)?;
-                        render_pair(
-                            &config,
-                            &job.change,
-                            &old,
-                            &new,
-                            job.options,
-                            &current,
-                            job.id,
-                        )
-                    })()
-                    .map_err(|error: anyhow::Error| format!("{error:#}"))
+                    render_job(&config, &job, &current).map_err(|error| format!("{error:#}"))
                 };
                 if current.load(Ordering::Relaxed) != job.id {
                     continue;
                 }
                 if let Ok(text) = &result {
-                    let size = text
-                        .lines
-                        .iter()
-                        .map(|line| {
-                            std::mem::size_of_val(line)
-                                + line
-                                    .spans
-                                    .iter()
-                                    .map(|span| std::mem::size_of_val(span) + span.content.len())
-                                    .sum::<usize>()
-                        })
-                        .sum::<usize>();
+                    let size = text_size(text);
                     if size <= 8 * 1024 * 1024 && !cache.iter().any(|entry| entry.0 == key) {
                         cache.push_back((key, text.clone(), size));
                         while cache.len() > 16
@@ -302,7 +363,8 @@ impl RenderWorker {
         &self,
         repo: &Repository,
         comparison: &Comparison,
-        change: &Change,
+        path: &str,
+        changes: Vec<Change>,
         options: RenderOptions,
     ) -> u64 {
         let id = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
@@ -310,7 +372,8 @@ impl RenderWorker {
             id,
             repo: repo.clone(),
             comparison: comparison.clone(),
-            change: change.clone(),
+            path: path.to_owned(),
+            changes,
             options,
         };
         let _ = self.sender.as_ref().expect("worker is running").send(job);

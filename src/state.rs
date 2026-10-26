@@ -55,9 +55,18 @@ impl Review {
         let count = self.viewed.len();
         self.viewed
             .retain(|path, hash| after.get(path) == Some(hash));
-        self.view
-            .positions
-            .retain(|path, _| after.contains_key(path) && before.get(path) == after.get(path));
+        self.view.positions.retain(|path, _| {
+            if path.ends_with('/') {
+                before
+                    .iter()
+                    .filter(|(file, _)| file.starts_with(path.as_str()))
+                    .eq(after
+                        .iter()
+                        .filter(|(file, _)| file.starts_with(path.as_str())))
+            } else {
+                after.contains_key(path) && before.get(path) == after.get(path)
+            }
+        });
         self.changes = changes;
         self.comparison = comparison;
         count - self.viewed.len()
