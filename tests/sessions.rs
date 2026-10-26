@@ -3,7 +3,7 @@ use std::{fs, path::Path};
 use review::{
     state::Review,
     store::SessionStore,
-    vcs::{Backend, Change, Comparison, Entry, LineCounts, Repository},
+    vcs::{Backend, Change, Comparison, ComparisonMode, Entry, LineCounts, Repository},
 };
 
 fn repo(root: &Path) -> Repository {
@@ -20,6 +20,7 @@ fn review() -> Review {
             head_ref: "@".into(),
             base_id: "base".into(),
             head_id: "head".into(),
+            mode: ComparisonMode::MergeBase,
             line_counts: Some(LineCounts {
                 added: 12,
                 removed: 3,
@@ -78,6 +79,40 @@ fn session_roundtrip_preserves_snapshots_progress_and_navigation() {
             added: 12,
             removed: 3
         })
+    );
+}
+
+#[test]
+fn sessions_preserve_comparison_modes_and_default_legacy_sessions_to_merge_base() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let store = SessionStore::new(dir.path(), &repo).unwrap();
+    let mut review = review();
+    review.comparison.mode = ComparisonMode::Direct;
+    let (saved, lock) = store.create(review).unwrap();
+    drop(lock);
+    let (loaded, lock) = store.open(&saved.id).unwrap();
+    assert_eq!(loaded.review.comparison.mode, ComparisonMode::Direct);
+    let mut legacy = serde_json::to_value(&loaded).unwrap();
+    legacy["review"]["comparison"]
+        .as_object_mut()
+        .unwrap()
+        .remove("mode");
+    fs::write(
+        store.directory.join(format!("{}.json", saved.id)),
+        serde_json::to_vec(&legacy).unwrap(),
+    )
+    .unwrap();
+    drop(lock);
+    let (loaded, _lock) = store.open(&saved.id).unwrap();
+    assert_eq!(loaded.review.comparison.mode, ComparisonMode::MergeBase);
+    assert_eq!(
+        loaded.review.comparison.base_id,
+        saved.review.comparison.base_id
+    );
+    assert_eq!(
+        loaded.review.comparison.head_id,
+        saved.review.comparison.head_id
     );
 }
 

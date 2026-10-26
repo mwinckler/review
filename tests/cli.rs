@@ -51,13 +51,25 @@ fn lists_saved_sessions_without_a_terminal() {
 }
 
 #[test]
-fn noninteractive_launch_keeps_state_empty_with_default_or_explicit_base() {
+fn noninteractive_launch_accepts_comparisons_and_keeps_state_empty() {
     let repo = common::fixture();
     let state = tempfile::tempdir().unwrap();
-    for args in [&[] as &[&str], &["--base", "main"]] {
+    for args in [
+        &[] as &[&str],
+        &["--base", "main"],
+        &["main..feature"],
+        &["main.."],
+        &["..feature"],
+        &[".."],
+        &["main"],
+        &["@"],
+        &["main...feature"],
+        &["HEAD~1..@"],
+    ] {
         let output = cli(repo.path(), state.path()).args(args).output().unwrap();
         assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal"));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("interactive terminal"), "{args:?}: {error}");
     }
     let repo = Repository::discover(repo.path(), Some(Backend::Git)).unwrap();
     assert!(
@@ -67,6 +79,26 @@ fn noninteractive_launch_keeps_state_empty_with_default_or_explicit_base() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn positional_comparisons_conflict_with_other_comparison_and_session_options() {
+    for args in [
+        vec!["main..feature", "--base", "main"],
+        vec!["--base", "main", "main..feature"],
+        vec!["main..feature", "--head", "feature"],
+        vec!["main..feature", "--resume"],
+        vec!["--resume", "latest", "main..feature"],
+        vec!["main..feature", "--list"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_review"))
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("cannot be used with"), "{args:?}: {error}");
+    }
 }
 
 #[test]

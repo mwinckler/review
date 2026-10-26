@@ -45,7 +45,17 @@ pub struct Comparison {
     pub base_id: String,
     pub head_id: String,
     #[serde(default)]
+    pub mode: ComparisonMode,
+    #[serde(default)]
     pub line_counts: Option<LineCounts>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComparisonMode {
+    #[default]
+    MergeBase,
+    Direct,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,14 +100,79 @@ impl Repository {
     }
 
     pub fn snapshot(&self, base: &str, head: &str) -> Result<Comparison> {
+        self.snapshot_with_mode(base, head, ComparisonMode::MergeBase)
+    }
+
+    pub fn snapshot_expression(&self, expression: &str) -> Result<Comparison> {
+        let expression = expression.trim();
+        ensure!(
+            !expression.is_empty(),
+            "comparison expression cannot be empty"
+        );
+        let (base, head, mode) = match range_separator(expression, self.backend)? {
+            Some((index, length)) => {
+                ensure!(
+                    length == 2 || self.backend == Backend::Git,
+                    "use BASE..HEAD for a Jujutsu comparison"
+                );
+                (
+                    expression[..index].trim(),
+                    expression[index + length..].trim(),
+                    if length == 3 {
+                        ComparisonMode::MergeBase
+                    } else {
+                        ComparisonMode::Direct
+                    },
+                )
+            }
+            None => (expression, "", ComparisonMode::Direct),
+        };
+        let current = match self.backend {
+            Backend::Git => "HEAD",
+            Backend::Jj => "@",
+        };
+        self.snapshot_with_mode(
+            if base.is_empty() { current } else { base },
+            if head.is_empty() { current } else { head },
+            mode,
+        )
+    }
+
+    pub fn refresh(&self, comparison: &Comparison) -> Result<Comparison> {
+        self.snapshot_with_mode(&comparison.base_ref, &comparison.head_ref, comparison.mode)
+    }
+
+    fn snapshot_with_mode(
+        &self,
+        base: &str,
+        head: &str,
+        mode: ComparisonMode,
+    ) -> Result<Comparison> {
         let head_id = self.resolve(head, true)?;
         let base_tip = self.resolve(base, false)?;
+        let base_id = match mode {
+            ComparisonMode::Direct => base_tip,
+            ComparisonMode::MergeBase => self.merge_base(&base_tip, &head_id)?,
+        };
+        let mut comparison = Comparison {
+            base_ref: base.to_owned(),
+            head_ref: head.to_owned(),
+            base_id,
+            head_id,
+            mode,
+            line_counts: None,
+        };
+        comparison.line_counts = Some(self.line_counts(&comparison)?);
+        Ok(comparison)
+    }
+
+    fn merge_base(&self, base: &str, head: &str) -> Result<String> {
         let ancestors = match self.backend {
             Backend::Git => {
-                String::from_utf8(self.run(&["merge-base", "--all", &base_tip, &head_id], false)?)?
+                String::from_utf8(self.run(&["merge-base", "--all", base, head], false)?)?
             }
             Backend::Jj => {
-                let expression = format!("heads(::{base_tip} & ::{head_id})");
+                let expression = format!("heads(::{base} & ::{head})");
                 String::from_utf8(self.run(
                     &[
                         "log",
@@ -117,15 +192,7 @@ impl Repository {
             "comparison requires exactly one merge base, found {}",
             bases.len()
         );
-        let mut comparison = Comparison {
-            base_ref: base.to_owned(),
-            head_ref: head.to_owned(),
-            base_id: bases[0].to_owned(),
-            head_id,
-            line_counts: None,
-        };
-        comparison.line_counts = Some(self.line_counts(&comparison)?);
-        Ok(comparison)
+        Ok(bases[0].to_owned())
     }
 
     pub fn changes(&self, comparison: &Comparison) -> Result<Vec<Change>> {
@@ -289,7 +356,11 @@ impl Repository {
                     "rev-parse",
                     "--verify",
                     "--end-of-options",
-                    &format!("{revision}^{{commit}}"),
+                    &if revision.starts_with(":/") {
+                        revision.to_owned()
+                    } else {
+                        format!("{revision}^{{commit}}")
+                    },
                 ],
                 false,
             )?,
@@ -348,6 +419,71 @@ impl Repository {
         );
         Ok(output.stdout)
     }
+}
+
+fn range_separator(expression: &str, backend: Backend) -> Result<Option<(usize, usize)>> {
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut separator = None;
+    let mut operator_end = 0;
+    for (index, character) in expression.char_indices() {
+        if index < operator_end {
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' && delimiter == '"' {
+                escaped = true;
+            } else if character == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        match character {
+            '\'' | '"' if backend == Backend::Jj => {
+                quote = Some(character);
+            }
+            '(' | '[' if backend == Backend::Jj => {
+                depth += 1;
+            }
+            '{' if backend == Backend::Jj
+                || depth > 0
+                || (index > 0 && matches!(expression.as_bytes()[index - 1], b'@' | b'^')) =>
+            {
+                depth += 1;
+            }
+            ')' | ']' if backend == Backend::Jj => {
+                depth = depth.saturating_sub(1);
+            }
+            '}' => {
+                depth = depth.saturating_sub(1);
+            }
+            ':' if backend == Backend::Git
+                && depth == 0
+                && expression[index..].starts_with(":/") =>
+            {
+                // A Git message-search revision consumes the remaining text as a regex.
+                break;
+            }
+            '.' if depth == 0 && expression[index..].starts_with("..") => {
+                ensure!(
+                    separator.is_none(),
+                    "comparison requires exactly two endpoints"
+                );
+                let length = if expression[index..].starts_with("...") {
+                    3
+                } else {
+                    2
+                };
+                separator = Some((index, length));
+                operator_end = index + length;
+            }
+            _ => {}
+        }
+    }
+    Ok(separator)
 }
 
 fn parse_git_changes(output: &[u8]) -> Result<Vec<Change>> {

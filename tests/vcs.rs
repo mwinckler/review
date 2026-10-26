@@ -3,7 +3,7 @@ mod common;
 use std::fs;
 
 use common::{fixture, jj};
-use review::vcs::{Backend, LineCounts, Repository};
+use review::vcs::{Backend, ComparisonMode, LineCounts, Repository};
 
 #[test]
 fn discovers_jj_first_and_allows_git_override_from_a_subdirectory() {
@@ -189,6 +189,245 @@ fn comparison_uses_merge_base_instead_of_the_current_base_tip() {
             .unwrap();
         assert!(!changes.iter().any(|change| change.path == "unrelated.txt"));
     }
+}
+
+#[test]
+fn positional_ranges_compare_tips_directly_even_when_branches_diverge() {
+    let dir = fixture();
+    jj(dir.path(), &["new", "main"]);
+    fs::write(dir.path().join("base-only.txt"), "new on main\n").unwrap();
+    jj(dir.path(), &["commit", "-m", "advance main"]);
+    jj(dir.path(), &["bookmark", "set", "main", "-r", "@-"]);
+    for backend in [Backend::Git, Backend::Jj] {
+        let repo = Repository::discover(dir.path(), Some(backend)).unwrap();
+        let comparison = repo.snapshot_expression("main..feature").unwrap();
+        assert_eq!(comparison.mode, ComparisonMode::Direct);
+        assert_eq!(
+            comparison.base_id,
+            repo.snapshot("main", "main").unwrap().head_id
+        );
+        assert_eq!(
+            comparison.head_id,
+            repo.snapshot("feature", "feature").unwrap().head_id
+        );
+        let changes = repo.changes(&comparison).unwrap();
+        let deleted = changes
+            .iter()
+            .find(|change| change.path == "base-only.txt")
+            .unwrap();
+        assert_eq!(deleted.status, "D");
+        assert_eq!(
+            repo.content(&comparison, deleted, true).unwrap(),
+            b"new on main\n"
+        );
+        assert!(
+            repo.content(&comparison, deleted, false)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            comparison.line_counts,
+            Some(repo.line_counts(&comparison).unwrap())
+        );
+
+        let merged = repo.snapshot("main", "feature").unwrap();
+        assert_eq!(merged.mode, ComparisonMode::MergeBase);
+        assert_ne!(merged.base_id, comparison.base_id);
+        if backend == Backend::Git {
+            let triple = repo.snapshot_expression("main...feature").unwrap();
+            assert_eq!(triple.mode, ComparisonMode::MergeBase);
+            assert_eq!(triple.base_id, merged.base_id);
+            assert_eq!(triple.head_id, merged.head_id);
+        }
+    }
+}
+
+#[test]
+fn positional_revisions_and_omitted_endpoints_default_to_the_current_revision() {
+    let dir = fixture();
+    for backend in [Backend::Git, Backend::Jj] {
+        let repo = Repository::discover(dir.path(), Some(backend)).unwrap();
+        let current = match backend {
+            Backend::Git => "HEAD",
+            Backend::Jj => "@",
+        };
+        let main_id = repo.snapshot("main", "main").unwrap().head_id;
+        let feature_id = repo.snapshot("feature", "feature").unwrap().head_id;
+        let current_id = repo.snapshot(current, current).unwrap().head_id;
+        for (expression, base, head, base_id, head_id) in [
+            ("main..feature", "main", "feature", &main_id, &feature_id),
+            ("main..@", "main", "@", &main_id, &current_id),
+            ("@..main", "@", "main", &current_id, &main_id),
+            ("main..", "main", current, &main_id, &current_id),
+            ("..feature", current, "feature", &current_id, &feature_id),
+            ("..", current, current, &current_id, &current_id),
+            ("main", "main", current, &main_id, &current_id),
+            ("@", "@", current, &current_id, &current_id),
+            (
+                " main .. feature ",
+                "main",
+                "feature",
+                &main_id,
+                &feature_id,
+            ),
+        ] {
+            let comparison = repo.snapshot_expression(expression).unwrap();
+            assert_eq!(comparison.base_ref, base, "{expression}");
+            assert_eq!(comparison.head_ref, head, "{expression}");
+            assert_eq!(&comparison.base_id, base_id, "{expression}");
+            assert_eq!(&comparison.head_id, head_id, "{expression}");
+            assert_eq!(comparison.mode, ComparisonMode::Direct, "{expression}");
+        }
+    }
+}
+
+#[test]
+fn positional_comparisons_accept_native_revision_expressions_and_short_ids() {
+    let dir = fixture();
+    for backend in [Backend::Git, Backend::Jj] {
+        let repo = Repository::discover(dir.path(), Some(backend)).unwrap();
+        let main_id = repo.snapshot("main", "main").unwrap().head_id;
+        let feature_id = repo.snapshot("feature", "feature").unwrap().head_id;
+        let expressions = match backend {
+            Backend::Git => vec![
+                "main~0..feature^0".to_owned(),
+                "feature^..feature".to_owned(),
+                "main..HEAD^{commit}".to_owned(),
+                format!("{}..{}", &main_id[..12], &feature_id[..12]),
+            ],
+            Backend::Jj => vec![
+                "heads(main..feature)-..heads(main::feature)".to_owned(),
+                "(main | main)..latest(main..feature)".to_owned(),
+                "(description(\"missing..text\") | main)..feature".to_owned(),
+                format!(
+                    "{}..{}",
+                    jj(
+                        dir.path(),
+                        &[
+                            "log",
+                            "--no-graph",
+                            "-r",
+                            "main",
+                            "-T",
+                            "change_id.short(8)"
+                        ]
+                    ),
+                    &feature_id[..12]
+                ),
+            ],
+        };
+        for expression in expressions {
+            let comparison = repo.snapshot_expression(&expression).unwrap();
+            assert_eq!(comparison.base_id, main_id, "{expression}");
+            assert_eq!(comparison.head_id, feature_id, "{expression}");
+        }
+        if backend == Backend::Jj {
+            for expression in [
+                "latest(main..feature)",
+                "description(\"missing..text\") | feature",
+                "description('missing..text') | feature",
+                "description(\"missing \\\"..\\\" text\") | feature",
+            ] {
+                let comparison = repo.snapshot_expression(expression).unwrap();
+                assert_eq!(comparison.base_ref, expression);
+                assert_eq!(comparison.base_id, feature_id);
+            }
+        }
+    }
+}
+
+#[test]
+fn git_ranges_preserve_literal_ref_names_and_message_searches() {
+    let dir = fixture();
+    let names = ["topic(test", "topic{test", "topic'λ"];
+    for name in names {
+        jj(
+            dir.path(),
+            &[
+                "bookmark",
+                "create",
+                &serde_json::to_string(name).unwrap(),
+                "-r",
+                "main",
+            ],
+        );
+    }
+    let repo = Repository::discover(dir.path(), Some(Backend::Git)).unwrap();
+    let main_id = repo.snapshot("main", "main").unwrap().head_id;
+    let feature_id = repo.snapshot("feature", "feature").unwrap().head_id;
+    for expression in names
+        .into_iter()
+        .map(|name| format!("{name}..feature"))
+        .chain([
+            "HEAD^{/b..e}..feature".to_owned(),
+            "main..:/fea..re".to_owned(),
+            ":/b..e".to_owned(),
+        ])
+    {
+        let comparison = repo
+            .snapshot_expression(&expression)
+            .unwrap_or_else(|error| panic!("{expression}: {error:#}"));
+        assert_eq!(comparison.base_id, main_id, "{expression}");
+        assert_eq!(comparison.head_id, feature_id, "{expression}");
+    }
+}
+
+#[test]
+fn invalid_or_ambiguous_positional_comparisons_report_an_error() {
+    let dir = fixture();
+    for backend in [Backend::Git, Backend::Jj] {
+        let repo = Repository::discover(dir.path(), Some(backend)).unwrap();
+        for expression in [
+            "",
+            " ",
+            "missing..feature",
+            "main..missing",
+            "main..feature..@",
+            "main....feature",
+        ] {
+            assert!(
+                repo.snapshot_expression(expression).is_err(),
+                "{expression:?}"
+            );
+        }
+        if backend == Backend::Jj {
+            for expression in [
+                "main | feature",
+                "none()..feature",
+                "main..all()",
+                "main...feature",
+            ] {
+                assert!(
+                    repo.snapshot_expression(expression).is_err(),
+                    "{expression:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn jj_positional_comparisons_snapshot_and_pin_the_working_copy_on_either_side() {
+    let dir = fixture();
+    let repo = Repository::discover(dir.path(), Some(Backend::Jj)).unwrap();
+    fs::write(dir.path().join("working.txt"), "snapshotted\n").unwrap();
+    let comparison = repo.snapshot_expression("@..main").unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let working = changes
+        .iter()
+        .find(|change| change.path == "working.txt")
+        .unwrap();
+    assert_eq!(working.status, "D");
+    fs::write(dir.path().join("working.txt"), "updated\n").unwrap();
+    assert_eq!(
+        repo.content(&comparison, working, true).unwrap(),
+        b"snapshotted\n"
+    );
+    let refreshed = repo.refresh(&comparison).unwrap();
+    assert_ne!(refreshed.base_id, comparison.base_id);
+    let identical = repo.snapshot_expression("@..@").unwrap();
+    assert_eq!(identical.base_id, identical.head_id);
+    assert!(repo.changes(&identical).unwrap().is_empty());
 }
 
 #[cfg(unix)]

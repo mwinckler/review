@@ -21,16 +21,23 @@ use review::{
 #[derive(Debug, Parser)]
 #[command(
     version,
-    about = "Review a whole branch with a file tree, difft, and Vim keys"
+    about = "Review revision comparisons with a file tree, difft, and Vim keys"
 )]
 struct Cli {
+    /// Compare BASE..HEAD directly; REV means REV..@
+    ///
+    /// Endpoints accept the selected backend's single-revision expressions.
+    /// Omitted endpoints and @ select HEAD (Git) or the working copy (Jujutsu).
+    /// Git also accepts BASE...HEAD for a merge-base comparison.
+    #[arg(value_name = "REVSET", conflicts_with_all = ["base", "head", "resume", "list"])]
+    comparison: Option<String>,
     /// Repository directory (defaults to the current directory)
     #[arg(short = 'C', long, default_value = ".")]
     repo: PathBuf,
     /// Override automatic repository detection
     #[arg(long, value_enum)]
     backend: Option<Backend>,
-    /// Base branch or single-revision jj expression; compare from its merge base (defaults to master)
+    /// Compare from the merge base of this revision (defaults to master)
     #[arg(long)]
     base: Option<String>,
     /// Head revision (defaults to HEAD for Git, @ for Jujutsu)
@@ -104,11 +111,15 @@ fn main() -> Result<()> {
     let (mut saved, lock) = if let Some(id) = resume_id {
         store.open(&id)?
     } else {
-        let head = cli.head.as_deref().unwrap_or(match repo.backend {
-            Backend::Git => "HEAD",
-            Backend::Jj => "@",
-        });
-        let comparison = repo.snapshot(cli.base.as_deref().unwrap_or("master"), head)?;
+        let comparison = if let Some(expression) = cli.comparison {
+            repo.snapshot_expression(&expression)?
+        } else {
+            let head = cli.head.as_deref().unwrap_or(match repo.backend {
+                Backend::Git => "HEAD",
+                Backend::Jj => "@",
+            });
+            repo.snapshot(cli.base.as_deref().unwrap_or("master"), head)?
+        };
         let changes = repo.changes(&comparison)?;
         store.create(Review::new(comparison, changes))?
     };
@@ -260,9 +271,8 @@ fn run(
         }
         if app.refresh {
             app.refresh = false;
-            let old = &app.review.comparison;
             match repo
-                .snapshot(&old.base_ref, &old.head_ref)
+                .refresh(&app.review.comparison)
                 .and_then(|comparison| Ok((repo.changes(&comparison)?, comparison)))
             {
                 Ok((changes, comparison)) => {

@@ -19,10 +19,26 @@ cargo install --path .
 # Review the current directory's repository against master
 review
 
+# Compare two change/commit IDs, branches, or bookmarks directly
+review ukr..vqm
+review main..feature/my-change
+
+# Compare against the current revision (@); these forms are equivalent
+review ukr..
+review ukr..@
+review ukr
+
+# Native revision expressions
+review 'trunk()..@'
+review --backend git 'HEAD~3..@'
+
 # Git: review the current branch against its merge base with main
 review --base main
 
-# Explicit branch endpoints
+# Git merge-base shorthand
+review --backend git main...feature/my-change
+
+# Explicit merge-base branch comparison
 review --base origin/main --head feature/my-change
 
 # Jujutsu: review the working-copy revision against trunk
@@ -32,12 +48,21 @@ review --base 'trunk()' --head @
 review -C ../project --backend git --base main
 ```
 
-The base defaults to `master`; use `--base` to choose another branch or revision.
+Positional `BASE..HEAD` compares the two snapshots directly. Either omitted
+endpoint defaults to `@`, and a lone `REV` means `REV..@`. `@` selects Git's
+current `HEAD` or Jujutsu's working-copy revision. Each endpoint accepts the
+selected backend's revision syntax and resolves to one revision, including branch
+names, commit IDs, jj change IDs, and expressions such as `heads(main::feature)`.
+Quote expressions containing shell metacharacters.
+
+Bare `review` defaults to `--base master`. Use `--base` with an optional `--head`
+to compare from their unique merge base; Git's positional `BASE...HEAD` uses the
+same merge-base behavior. This focuses the review on changes made on the head
+branch since the histories diverged.
+
 The nearest repository is detected automatically from the current directory,
-with Jujutsu preferred in a colocated workspace. Each endpoint must resolve to
-one revision; jj revision expressions such as `heads(main::feature)` work. The
-comparison starts at the unique merge base, so unrelated changes on the base
-branch stay outside the review. The header displays the resolved snapshot IDs.
+with Jujutsu preferred in a colocated workspace. The header displays the resolved
+snapshot IDs.
 Added and removed line totals appear at the right edge of the header in green
 and red. These totals cover the full comparison and follow the pinned snapshots
 when resuming or refreshing a review.
@@ -64,8 +89,9 @@ same backend when resuming a session created with `--backend git` in a colocated
 workspace.
 
 **Resume keeps the original snapshots.** Press `r` to resolve the original
-branch/revision expressions again. A viewed marker survives when both sides of
-the file change—including paths, types, and executable bits—are identical.
+branch/revision expressions again using the same comparison mode. A viewed marker
+survives when both sides of the file change—including paths, types, and executable
+bits—are identical.
 Changes to either side reset its marker; equivalent history rewrites preserve it.
 Keep reviewed commits reachable while a session is active: file rendering reads
 their stored objects.

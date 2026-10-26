@@ -41,6 +41,7 @@ fn review() -> Review {
             head_ref: "feature".into(),
             base_id: "aaa".into(),
             head_id: "bbb".into(),
+            mode: Default::default(),
             line_counts: Some(LineCounts::default()),
         },
         vec![

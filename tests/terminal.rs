@@ -147,6 +147,96 @@ fn jj_no_argument_launch_starts_at_master_in_the_current_repository() {
 }
 
 #[test]
+fn git_positional_comparisons_remain_direct_on_resume_and_refresh() {
+    exercise_positional_comparison(Backend::Git);
+}
+
+#[test]
+fn jj_positional_comparisons_remain_direct_on_resume_and_refresh() {
+    exercise_positional_comparison(Backend::Jj);
+}
+
+fn exercise_positional_comparison(backend: Backend) {
+    let fixture = common::fixture();
+    common::jj(fixture.path(), &["new", "main"]);
+    fs::write(fixture.path().join("base-only.txt"), "base branch\n").unwrap();
+    common::jj(fixture.path(), &["commit", "-m", "advance base"]);
+    common::jj(fixture.path(), &["bookmark", "set", "main", "-r", "@-"]);
+    let state = tempfile::tempdir().unwrap();
+    let config = state.path().join("config.toml");
+    fs::write(&config, "").unwrap();
+    let repo = Repository::discover(fixture.path(), Some(backend)).unwrap();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    let base_id = repo.snapshot("main", "main").unwrap().head_id;
+    let command = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
+        command
+            .env("JJ_CONFIG", "/dev/null")
+            .current_dir(fixture.path())
+            .args([
+                "--backend",
+                match backend {
+                    Backend::Git => "git",
+                    Backend::Jj => "jj",
+                },
+                "--state-dir",
+                state.path().to_str().unwrap(),
+                "--config",
+                config.to_str().unwrap(),
+            ]);
+        command
+    };
+    let mut start = command();
+    start.arg("main..feature");
+    let mut terminal = Pty::spawn(start);
+    terminal.wait_until(|text| text.contains("Changed files"));
+    terminal.send(b" q");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+    let saved = store.list().unwrap().remove(0);
+    assert_eq!(saved.review.comparison.base_id, base_id);
+    assert_eq!(saved.review.comparison.base_ref, "main");
+    assert_eq!(saved.review.comparison.head_ref, "feature");
+    assert!(
+        saved
+            .review
+            .changes
+            .iter()
+            .any(|change| { change.path == "base-only.txt" && change.status == "D" })
+    );
+    assert_eq!(saved.review.viewed.len(), 1);
+
+    common::jj(fixture.path(), &["new", "main"]);
+    fs::write(fixture.path().join("new-base-only.txt"), "advanced again\n").unwrap();
+    common::jj(fixture.path(), &["commit", "-m", "advance base again"]);
+    common::jj(fixture.path(), &["bookmark", "set", "main", "-r", "@-"]);
+    let advanced_id = repo.snapshot("main", "main").unwrap().head_id;
+    let mut resume = command();
+    resume.args(["--resume", &saved.id]);
+    let mut terminal = Pty::spawn(resume);
+    terminal.wait_until(|text| text.contains(&saved.id));
+    let pinned = store.list().unwrap().remove(0);
+    assert_eq!(pinned.review.comparison.base_id, base_id);
+    assert_eq!(
+        pinned.review.comparison.head_id,
+        saved.review.comparison.head_id
+    );
+    assert_eq!(pinned.review.viewed, saved.review.viewed);
+    terminal.send(b"r");
+    terminal.wait_until(|_| {
+        let updated = store.list().unwrap().remove(0);
+        updated.review.comparison.base_id == advanced_id
+            && updated
+                .review
+                .changes
+                .iter()
+                .any(|change| change.path == "new-base-only.txt" && change.status == "D")
+    });
+    terminal.send(b"q");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+    assert_eq!(store.list().unwrap()[0].review.viewed, saved.review.viewed);
+}
+
+#[test]
 fn git_directory_previews_include_hidden_descendants_and_resume_their_scroll() {
     exercise_directory_preview(Backend::Git);
 }
