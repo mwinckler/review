@@ -78,7 +78,7 @@ open session holds an exclusive lock.
 | `Tab`, `Ctrl-w h/l` | Switch panes |
 | `gg` / `G`, `Home` / `End` | First/last row or page |
 | `Ctrl-d/u`, `Ctrl-f/b`, `PageDown/Up` | Half/full-page scrolling |
-| `Space` | Toggle a file's viewed marker |
+| `Space` | Toggle a file's viewed marker; mark all files in a folder viewed |
 | `]f` / `[f` | Next/previous file, expanding its parents |
 | `]u` / `[u` | Next/previous unviewed file |
 | `/` | Filter filenames in the tree; search text in the diff |
@@ -92,7 +92,9 @@ open session holds an exclusive lock.
 | `q`, `Ctrl-c` | Save and quit |
 
 Search and filtering are case-insensitive. Directory counts show progress across
-their changed files. Narrow terminals display the focused pane at full width.
+their changed files. Pressing `Space` on a folder marks all its changed files
+viewed, including nested files and files hidden by filters or collapsed folders.
+Narrow terminals display the focused pane at full width.
 
 ## Configuration
 

@@ -277,8 +277,18 @@ impl App {
                 };
                 if let Some(index) = file {
                     self.review.toggle_viewed(index);
-                    self.rebuild();
+                } else if self.focus == Focus::Tree {
+                    if let Some(row) = self.rows.get(self.selection) {
+                        self.review.viewed.extend(
+                            self.review
+                                .changes
+                                .iter()
+                                .filter(|change| change.path.starts_with(&row.path))
+                                .map(|change| (change.path.clone(), change.fingerprint())),
+                        );
+                    }
                 }
+                self.rebuild();
             }
             KeyCode::Char('u') => {
                 self.review.view.unviewed_only = !self.review.view.unviewed_only;

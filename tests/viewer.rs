@@ -88,6 +88,82 @@ fn vim_navigation_marking_and_unviewed_jumps_work() {
 }
 
 #[test]
+fn space_marks_all_descendants_of_a_collapsed_folder_viewed() {
+    let mut review = review();
+    review.changes.push(change("src-other/c.rs"));
+    review.toggle_viewed(1);
+    review.view.selected = "src/".into();
+    review.view.collapsed.insert("src/".into());
+    let mut app = App::new(review);
+
+    key(&mut app, KeyCode::Char(' '));
+
+    assert!(app.review.is_viewed(&app.review.changes[1]));
+    assert!(app.review.is_viewed(&app.review.changes[2]));
+    assert!(!app.review.is_viewed(&app.review.changes[0]));
+    assert!(!app.review.is_viewed(&app.review.changes[3]));
+    let folder = app.rows.iter().find(|row| row.path == "src/").unwrap();
+    assert_eq!((folder.viewed, folder.total), (2, 2));
+    assert!(app.review.view.collapsed.contains("src/"));
+    assert!(app.dirty);
+
+    key(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.review.viewed.len(), 2);
+}
+
+#[test]
+fn space_on_a_folder_includes_files_hidden_by_filters() {
+    for (filter, unviewed_only) in [("a.rs", false), ("", true)] {
+        let mut review = review();
+        review.toggle_viewed(2);
+        review.view.selected = "src/".into();
+        review.view.filter = filter.into();
+        review.view.unviewed_only = unviewed_only;
+        let mut app = App::new(review);
+
+        key(&mut app, KeyCode::Char(' '));
+
+        assert!(app.review.is_viewed(&app.review.changes[1]));
+        assert!(app.review.is_viewed(&app.review.changes[2]));
+        assert!(!app.review.is_viewed(&app.review.changes[0]));
+        if unviewed_only {
+            assert_eq!(app.active, Some(0));
+            assert!(app.rows.iter().all(|row| !row.path.starts_with("src/")));
+        }
+    }
+}
+
+#[test]
+fn space_on_a_nested_folder_marks_only_its_descendants() {
+    let mut review = review();
+    review.changes.push(change("src/nested-other/c.rs"));
+    review.view.selected = "src/nested/".into();
+    let mut app = App::new(review);
+
+    key(&mut app, KeyCode::Char(' '));
+
+    assert!(app.review.is_viewed(&app.review.changes[2]));
+    assert_eq!(app.review.viewed.len(), 1);
+}
+
+#[test]
+fn space_in_the_diff_toggles_only_the_active_file_with_a_folder_selected() {
+    let mut app = App::new(review());
+    key(&mut app, KeyCode::Char(']'));
+    key(&mut app, KeyCode::Char('f'));
+    key(&mut app, KeyCode::Char('h'));
+    assert_eq!(app.review.view.selected, "src/");
+    key(&mut app, KeyCode::Tab);
+
+    key(&mut app, KeyCode::Char(' '));
+    assert!(app.review.is_viewed(&app.review.changes[1]));
+    assert!(!app.review.is_viewed(&app.review.changes[2]));
+
+    key(&mut app, KeyCode::Char(' '));
+    assert!(app.review.viewed.is_empty());
+}
+
+#[test]
 fn ratatui_renders_progress_tree_and_diff_at_small_sizes() {
     for (width, height) in [(100, 24), (30, 8), (1, 1)] {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
