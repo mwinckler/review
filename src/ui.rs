@@ -271,7 +271,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             display_path(&app.review.view.filter)
         )
     } else {
-        "Space viewed · ]u next unviewed · / search · s Flash · z full · i inline · r refresh · ? help".into()
+        "Space viewed + next · ]u next unviewed · / search · s Flash · z full · i inline · r refresh · ? help".into()
     };
     frame.render_widget(
         Paragraph::new(footer).style(Style::default().fg(Color::Cyan)),
@@ -294,7 +294,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "Ctrl-Left/Right  Resize tree\n",
             "gg / G           First/last row or page\n",
             "Ctrl-d/u, f/b    Half/full page down/up\n",
-            "Space            Toggle file / mark folder viewed\n",
+            "Space            Toggle file viewed + next / mark folder\n",
             "]f / [f          Next/previous file\n",
             "]u / [u          Next/previous unviewed file\n",
             "/                Filter filenames / search diff\n",

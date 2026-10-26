@@ -73,7 +73,11 @@ fn vim_navigation_marking_and_unviewed_jumps_work() {
     assert_eq!(app.active, Some(0));
     key(&mut app, KeyCode::Char(' '));
     assert!(app.review.is_viewed(&app.review.changes[0]));
+    assert_eq!(app.active, Some(1));
     key(&mut app, KeyCode::Char(']'));
+    key(&mut app, KeyCode::Char('u'));
+    assert_eq!(app.active, Some(2));
+    key(&mut app, KeyCode::Char('['));
     key(&mut app, KeyCode::Char('u'));
     assert_eq!(app.active, Some(1));
     key(&mut app, KeyCode::Tab);
@@ -121,6 +125,137 @@ fn backspace_focuses_the_tree_but_edits_search_prompts() {
     key(&mut app, KeyCode::Backspace);
     assert!(app.searching);
     assert!(app.review.view.filter.is_empty());
+}
+
+#[test]
+fn marking_a_file_advances_to_the_next_unviewed_file_from_either_pane() {
+    for focus in [Focus::Tree, Focus::Diff] {
+        let mut review = review();
+        review.toggle_viewed(1);
+        review
+            .view
+            .collapsed
+            .extend(["src/".into(), "src/nested/".into()]);
+        review
+            .view
+            .positions
+            .entry("src/nested/b.rs".into())
+            .or_default()
+            .vertical = 7;
+        let mut app = App::new(review);
+        app.focus = focus;
+        app.review.view.fullscreen = focus == Focus::Diff;
+
+        key(&mut app, KeyCode::Char(' '));
+
+        assert!(app.review.is_viewed(&app.review.changes[0]));
+        assert!(!app.review.is_viewed(&app.review.changes[2]));
+        assert_eq!(app.active, Some(2));
+        assert_eq!(app.review.view.selected, "src/nested/b.rs");
+        assert_eq!(app.rows[app.selection].file, Some(2));
+        assert!(app.review.view.collapsed.is_empty());
+        assert_eq!(app.position().vertical, 7);
+        assert_eq!(app.focus, focus);
+        assert_eq!(app.review.view.fullscreen, focus == Focus::Diff);
+    }
+}
+
+#[test]
+fn marking_a_file_wraps_to_an_earlier_unviewed_file() {
+    let mut review = review();
+    review.view.selected = "src/nested/b.rs".into();
+    let mut app = App::new(review);
+
+    key(&mut app, KeyCode::Char(' '));
+
+    assert!(app.review.is_viewed(&app.review.changes[2]));
+    assert_eq!(app.active, Some(0));
+    assert_eq!(app.review.view.selected, "README.md");
+}
+
+#[test]
+fn marking_in_unviewed_only_mode_advances_relative_to_the_marked_file() {
+    for focus in [Focus::Tree, Focus::Diff] {
+        for index in 0..3 {
+            let mut review = review();
+            review.view.selected = review.changes[index].path.clone();
+            review.view.unviewed_only = true;
+            let mut app = App::new(review);
+            app.focus = focus;
+
+            key(&mut app, KeyCode::Char(' '));
+
+            let next = (index + 1) % 3;
+            assert_eq!(app.active, Some(next));
+            assert_eq!(app.review.view.selected, app.review.changes[next].path);
+            assert_eq!(app.rows[app.selection].file, Some(next));
+            assert!(app.review.is_viewed(&app.review.changes[index]));
+            assert!(app.rows.iter().all(|row| row.file != Some(index)));
+            assert_eq!(app.focus, focus);
+        }
+    }
+}
+
+#[test]
+fn automatic_advance_respects_filename_filters() {
+    let mut review = review();
+    review.view.filter = ".rs".into();
+    review.changes = vec![change("a/one.rs"), change("b/skip.txt"), change("c/two.rs")];
+    let mut app = App::new(review);
+
+    key(&mut app, KeyCode::Char(' '));
+
+    assert_eq!(app.active, Some(2));
+    assert_eq!(app.review.view.selected, "c/two.rs");
+    assert!(!app.review.is_viewed(&app.review.changes[1]));
+    assert_eq!(app.review.view.filter, ".rs");
+
+    key(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.active, Some(2));
+    assert_eq!(app.review.view.selected, "c/two.rs");
+    assert!(app.message.contains("All matching files have been viewed"));
+}
+
+#[test]
+fn unmarking_a_file_keeps_it_selected() {
+    for focus in [Focus::Tree, Focus::Diff] {
+        let mut review = review();
+        review.toggle_viewed(1);
+        review.view.selected = "src/a.rs".into();
+        let mut app = App::new(review);
+        app.focus = focus;
+
+        key(&mut app, KeyCode::Char(' '));
+
+        assert!(!app.review.is_viewed(&app.review.changes[1]));
+        assert_eq!(app.active, Some(1));
+        assert_eq!(app.review.view.selected, "src/a.rs");
+        assert_eq!(app.focus, focus);
+    }
+}
+
+#[test]
+fn marking_the_last_unviewed_file_handles_completion_with_or_without_filtering() {
+    for unviewed_only in [false, true] {
+        let mut review = review();
+        review.toggle_viewed(0);
+        review.toggle_viewed(1);
+        review.view.selected = "src/nested/b.rs".into();
+        review.view.unviewed_only = unviewed_only;
+        let mut app = App::new(review);
+
+        key(&mut app, KeyCode::Char(' '));
+
+        assert_eq!(app.review.viewed.len(), 3);
+        assert!(app.message.contains("All matching files have been viewed"));
+        if unviewed_only {
+            assert_eq!(app.active, None);
+            assert!(app.rows.is_empty());
+        } else {
+            assert_eq!(app.active, Some(2));
+            assert_eq!(app.review.view.selected, "src/nested/b.rs");
+        }
+    }
 }
 
 #[test]
@@ -194,7 +329,10 @@ fn space_in_the_diff_toggles_only_the_active_file_with_a_folder_selected() {
     key(&mut app, KeyCode::Char(' '));
     assert!(app.review.is_viewed(&app.review.changes[1]));
     assert!(!app.review.is_viewed(&app.review.changes[2]));
+    assert_eq!(app.active, Some(2));
 
+    key(&mut app, KeyCode::Char('['));
+    key(&mut app, KeyCode::Char('f'));
     key(&mut app, KeyCode::Char(' '));
     assert!(app.review.viewed.is_empty());
 }

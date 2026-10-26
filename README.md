@@ -82,7 +82,7 @@ open session holds an exclusive lock.
 | `Ctrl-Left` / `Ctrl-Right` | Shrink/grow the tree by two columns |
 | `gg` / `G`, `Home` / `End` | First/last row or page |
 | `Ctrl-d/u`, `Ctrl-f/b`, `PageDown/Up` | Half/full-page scrolling |
-| `Space` | Toggle a file's viewed marker; mark all files in a folder viewed |
+| `Space` | Toggle file viewed (advance when marked); mark all files in a folder viewed |
 | `]f` / `[f` | Next/previous file, expanding its parents |
 | `]u` / `[u` | Next/previous unviewed file |
 | `/` | Filter filenames in the tree; search text in the diff |
@@ -95,6 +95,10 @@ open session holds an exclusive lock.
 | `r` | Refresh the comparison |
 | `?` | Show help and custom key aliases |
 | `q`, `Ctrl-c` | Save and quit |
+
+Marking a file viewed advances to the next unviewed file matching the current
+filter, expanding its parent folders and wrapping at the end. Pane focus and
+layout are retained. Unmarking keeps the current file selected.
 
 Search and filtering are case-insensitive. Directory counts show progress across
 their changed files. Pressing `Space` on a folder marks all its changed files

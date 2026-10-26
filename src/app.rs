@@ -304,6 +304,9 @@ impl App {
                 };
                 if let Some(index) = file {
                     self.review.toggle_viewed(index);
+                    if self.review.is_viewed(&self.review.changes[index]) {
+                        self.jump_file(true, true);
+                    }
                 } else if self.focus == Focus::Tree
                     && let Some(row) = self.rows.get(self.selection)
                 {

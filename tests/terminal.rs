@@ -234,6 +234,8 @@ fn exercise_default_launch(backend: Backend) {
     assert_eq!(first.review.comparison.head_id, expected.head_id);
     assert_eq!(first.repository, fixture.path().canonicalize().unwrap());
     assert_eq!(first.review.viewed.len(), 1);
+    assert_eq!(first.review.view.selected, first.review.changes[1].path);
+    assert_eq!(first.review.view.active, first.review.changes[1].path);
 
     let mut terminal = Pty::spawn(command());
     terminal.wait_until(|text| text.contains("Changed files"));
@@ -250,7 +252,7 @@ fn exercise_default_launch(backend: Backend) {
     resume.arg("--resume");
     let mut terminal = Pty::spawn(resume);
     terminal.wait_until(|text| text.contains(&latest.id));
-    terminal.send(b" ");
+    terminal.send(b"gg ");
     terminal.wait_until(|_| {
         let sessions = store.list().unwrap();
         sessions.len() == 2 && sessions[0].id == latest.id && sessions[0].review.viewed.is_empty()
