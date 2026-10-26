@@ -47,7 +47,7 @@ impl SessionStore {
         })
     }
 
-    pub fn create(&self, repo: &Repository, review: Review) -> Result<(SavedSession, SessionLock)> {
+    pub fn create(&self, review: Review) -> Result<(SavedSession, SessionLock)> {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let id = format!(
@@ -59,8 +59,8 @@ impl SessionStore {
         let mut session = SavedSession {
             version: 1,
             id,
-            repository: repo.root.clone(),
-            backend: repo.backend,
+            repository: self.repository.root.clone(),
+            backend: self.repository.backend,
             updated_at: 0,
             review,
         };
@@ -145,7 +145,7 @@ impl SessionLock {
         let directory = self
             .target
             .parent()
-            .context("session directory is missing")?;
+            .expect("session target includes its directory");
         session.updated_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)?
             .as_millis()

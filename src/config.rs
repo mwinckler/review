@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, fs, io::ErrorKind, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs,
+    io::ErrorKind,
+    path::Path,
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -11,6 +16,8 @@ use crate::renderer::RendererConfig;
 pub struct Config {
     pub renderer: RendererConfig,
     pub keybindings: BTreeMap<String, String>,
+    #[serde(skip)]
+    bindings: HashMap<(KeyCode, KeyModifiers), Vec<KeyEvent>>,
 }
 
 impl Config {
@@ -24,7 +31,7 @@ impl Config {
                 return Err(error).with_context(|| format!("reading config {}", path.display()));
             }
         };
-        let config: Self =
+        let mut config: Self =
             toml::from_str(&text).with_context(|| format!("parsing config {}", path.display()))?;
         ensure!(
             config
@@ -39,26 +46,27 @@ impl Config {
             "renderer.timeout_ms must be positive"
         );
         for (source, action) in &config.keybindings {
-            parse_key(source).with_context(|| format!("invalid keybinding {source:?}"))?;
-            ensure!(
-                action_keys(action).is_some(),
-                "unknown keybinding action {action:?}"
-            );
+            let source =
+                parse_key(source).with_context(|| format!("invalid keybinding {source:?}"))?;
+            let keys = action_keys(action)
+                .with_context(|| format!("unknown keybinding action {action:?}"))?;
+            config
+                .bindings
+                .entry(normalized(source))
+                .or_insert_with(|| {
+                    keys.iter()
+                        .map(|key| parse_key(key).expect("builtin binding is valid"))
+                        .collect()
+                });
         }
         Ok(config)
     }
 
     pub fn translate(&self, key: KeyEvent) -> Vec<KeyEvent> {
-        for (source, action) in &self.keybindings {
-            if parse_key(source).is_ok_and(|source| normalized(source) == normalized(key)) {
-                return action_keys(action)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|key| parse_key(key).expect("builtin binding is valid"))
-                    .collect();
-            }
-        }
-        vec![key]
+        self.bindings
+            .get(&normalized(key))
+            .cloned()
+            .unwrap_or_else(|| vec![key])
     }
 }
 

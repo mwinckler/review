@@ -258,7 +258,18 @@ impl RenderWorker {
                     continue;
                 }
                 if let Ok(text) = &result {
-                    let size = text.to_string().len();
+                    let size = text
+                        .lines
+                        .iter()
+                        .map(|line| {
+                            std::mem::size_of_val(line)
+                                + line
+                                    .spans
+                                    .iter()
+                                    .map(|span| std::mem::size_of_val(span) + span.content.len())
+                                    .sum::<usize>()
+                        })
+                        .sum::<usize>();
                     if size <= 8 * 1024 * 1024 && !cache.iter().any(|entry| entry.0 == key) {
                         cache.push_back((key, text.clone(), size));
                         while cache.len() > 16

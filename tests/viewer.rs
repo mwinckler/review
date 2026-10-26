@@ -94,7 +94,7 @@ fn ratatui_renders_progress_tree_and_diff_at_small_sizes() {
         let mut app = App::new(review());
         app.review.toggle_viewed(0);
         terminal
-            .draw(|frame| ui::draw(frame, &mut app, &Text::raw("diff body")))
+            .draw(|frame| ui::draw(frame, &app, &Text::raw("diff body")))
             .unwrap();
         if width == 100 {
             let buffer = terminal.backend().buffer();
@@ -273,9 +273,7 @@ fn diff_viewport_can_scroll_beyond_u16_line_numbers() {
             .collect::<Vec<_>>(),
     );
     let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
-    terminal
-        .draw(|frame| ui::draw(frame, &mut app, &text))
-        .unwrap();
+    terminal.draw(|frame| ui::draw(frame, &app, &text)).unwrap();
     let output: String = terminal
         .backend()
         .buffer()

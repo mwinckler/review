@@ -8,10 +8,10 @@ use ratatui::{
 };
 
 pub struct Panes {
-    pub header: Rect,
+    header: Rect,
     pub tree: Rect,
     pub diff: Rect,
-    pub footer: Rect,
+    footer: Rect,
 }
 
 pub fn panes(area: Rect, app: &App) -> Panes {
@@ -43,18 +43,18 @@ pub fn panes(area: Rect, app: &App) -> Panes {
 }
 
 pub fn display_path(path: &str) -> String {
-    path.chars()
-        .flat_map(|ch| {
-            if ch.is_control() {
-                ch.escape_default().collect::<Vec<_>>()
-            } else {
-                vec![ch]
-            }
-        })
-        .collect()
+    let mut displayed = String::with_capacity(path.len());
+    for ch in path.chars() {
+        if ch.is_control() {
+            displayed.extend(ch.escape_default());
+        } else {
+            displayed.push(ch);
+        }
+    }
+    displayed
 }
 
-pub fn draw(frame: &mut Frame, app: &mut App, diff: &Text<'static>) {
+pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     let panes = panes(frame.area(), app);
     let viewed = app.review.viewed.len();
     let header = Line::from(vec![
@@ -86,9 +86,16 @@ pub fn draw(frame: &mut Frame, app: &mut App, diff: &Text<'static>) {
     ]);
     frame.render_widget(Paragraph::new(header), panes.header);
     if panes.tree.width > 0 {
+        let height = panes.tree.height.saturating_sub(2) as usize;
+        let offset = app
+            .selection
+            .saturating_sub(height / 2)
+            .min(app.rows.len().saturating_sub(height));
         let items: Vec<_> = app
             .rows
             .iter()
+            .skip(offset)
+            .take(height)
             .map(|row| {
                 let indent = "  ".repeat(row.depth);
                 let name = row
@@ -141,10 +148,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, diff: &Text<'static>) {
             .borders(Borders::ALL)
             .title(title)
             .border_style(border(app.focus == Focus::Tree));
-        let mut selection = ListState::default().with_selected(Some(app.selection));
-        *selection.offset_mut() = app
-            .selection
-            .saturating_sub(panes.tree.height.saturating_sub(2) as usize / 2);
+        let mut selection = ListState::default().with_selected(Some(app.selection - offset));
         frame.render_stateful_widget(
             List::new(items).block(block).highlight_style(
                 Style::default()
@@ -193,7 +197,13 @@ pub fn draw(frame: &mut Frame, app: &mut App, diff: &Text<'static>) {
             .title(title)
             .title_bottom(metadata)
             .border_style(border(app.focus == Focus::Diff));
-        let position = app.position().clone();
+        let position = app
+            .review
+            .view
+            .positions
+            .get(&app.review.view.active)
+            .cloned()
+            .unwrap_or_default();
         let visible = Text::from(
             diff.lines
                 .iter()

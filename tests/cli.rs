@@ -38,9 +38,7 @@ fn lists_saved_sessions_without_a_terminal() {
     let comparison = repo.snapshot("main", "feature").unwrap();
     let changes = repo.changes(&comparison).unwrap();
     let store = SessionStore::new(state.path(), &repo).unwrap();
-    let (saved, lock) = store
-        .create(&repo, Review::new(comparison, changes))
-        .unwrap();
+    let (saved, lock) = store.create(Review::new(comparison, changes)).unwrap();
     drop(lock);
     let output = cli(repo_dir.path(), state.path())
         .arg("--list")

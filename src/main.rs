@@ -116,7 +116,7 @@ fn main() -> Result<()> {
             head,
         )?;
         let changes = repo.changes(&comparison)?;
-        store.create(&repo, Review::new(comparison, changes))?
+        store.create(Review::new(comparison, changes))?
     };
     let mut app = App::new(saved.review.clone());
     app.message = format!("Session {} · ? help", saved.id);

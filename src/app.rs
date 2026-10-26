@@ -70,12 +70,10 @@ impl App {
             .or_else(|| self.rows.iter().position(|row| row.file.is_some()))
             .unwrap_or(0);
         self.select(selection);
+        let filter = self.review.view.filter.to_lowercase();
         let eligible = |index: usize| {
             self.review.changes.get(index).is_some_and(|change| {
-                change
-                    .path
-                    .to_lowercase()
-                    .contains(&self.review.view.filter.to_lowercase())
+                change.path.to_lowercase().contains(&filter)
                     && (!self.review.view.unviewed_only || !self.review.is_viewed(change))
             })
         };
@@ -362,6 +360,7 @@ impl App {
     fn jump_file(&mut self, forward: bool, unviewed: bool) {
         let len = self.review.changes.len();
         let start = self.active.unwrap_or(0);
+        let filter = self.review.view.filter.to_lowercase();
         for offset in 1..=len {
             let index = if forward {
                 (start + offset) % len
@@ -369,12 +368,8 @@ impl App {
                 (start + len - offset) % len
             };
             let change = &self.review.changes[index];
-            if (!unviewed || !self.review.is_viewed(change))
-                && (!self.review.view.unviewed_only || !self.review.is_viewed(change))
-                && change
-                    .path
-                    .to_lowercase()
-                    .contains(&self.review.view.filter.to_lowercase())
+            if (!(unviewed || self.review.view.unviewed_only) || !self.review.is_viewed(change))
+                && change.path.to_lowercase().contains(&filter)
             {
                 self.review.view.selected = change.path.clone();
                 self.review

@@ -44,7 +44,7 @@ fn session_roundtrip_preserves_snapshots_progress_and_navigation() {
     let dir = tempfile::tempdir().unwrap();
     let repo = repo(dir.path());
     let store = SessionStore::new(dir.path(), &repo).unwrap();
-    let (mut saved, lock) = store.create(&repo, review()).unwrap();
+    let (mut saved, lock) = store.create(review()).unwrap();
     saved.review.toggle_viewed(0);
     saved.review.view.selected = "src/a.rs".into();
     saved.review.view.collapsed.insert("src/".into());
@@ -75,7 +75,7 @@ fn locks_prevent_concurrent_writers_and_sessions_are_repository_scoped() {
     let second = repo(&dir.path().join("second"));
     let store = SessionStore::new(dir.path(), &first).unwrap();
     let other = SessionStore::new(dir.path(), &second).unwrap();
-    let (saved, lock) = store.create(&first, review()).unwrap();
+    let (saved, lock) = store.create(review()).unwrap();
     assert!(store.open(&saved.id).is_err());
     assert_eq!(store.list().unwrap().len(), 1);
     assert!(other.list().unwrap().is_empty());
@@ -89,7 +89,7 @@ fn corrupt_and_future_sessions_are_reported_without_overwriting() {
     let dir = tempfile::tempdir().unwrap();
     let repo = repo(dir.path());
     let store = SessionStore::new(dir.path(), &repo).unwrap();
-    let (mut saved, lock) = store.create(&repo, review()).unwrap();
+    let (mut saved, lock) = store.create(review()).unwrap();
     saved.version = 999;
     lock.save(&mut saved).unwrap();
     drop(lock);
