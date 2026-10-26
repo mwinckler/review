@@ -68,8 +68,14 @@ Added and removed line totals appear at the right edge of the header in green
 and red. These totals cover the full comparison and follow the pinned snapshots
 when resuming or refreshing a review.
 
-For Jujutsu, starting or refreshing a review snapshots the working copy once
-through `jj`. File contents are then read at fixed revisions.
+Reviews check the selected revisions in the background about once per second.
+Jujutsu `@` follows saved working-copy edits; Git comparisons follow commits as
+`HEAD` or branches advance. File trees, file and directory previews, header IDs,
+and line totals reload together. Updates save automatically, preserving selection,
+pane focus, and scroll positions for unchanged diffs.
+
+Jujutsu checks snapshot the working copy through `jj`, then read file contents at
+fixed revisions.
 
 ## Stop and resume
 
@@ -89,11 +95,12 @@ Sessions belong to the canonical workspace path and selected backend. Use the
 same backend when resuming a session created with `--backend git` in a colocated
 workspace.
 
-**Resume keeps the original snapshots.** Press `r` to resolve the original
-branch/revision expressions again using the same comparison mode. A viewed marker
-survives when both sides of the file change—including paths, types, and executable
-bits—are identical.
-Changes to either side reset its marker; equivalent history rewrites preserve it.
+**Resume restores the original snapshots.** Subsequent changes while the review is
+open trigger an automatic refresh. Press `r` to resolve the original branch/revision
+expressions immediately using the same comparison mode. A viewed marker survives
+when both sides of the file change—including paths, types, and executable bits—are
+identical. Changes to either side reset its marker; equivalent history rewrites
+preserve it. Changed files reappear in the unviewed-only filter.
 Keep reviewed commits reachable while a session is active: file rendering reads
 their stored objects.
 

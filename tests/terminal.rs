@@ -16,6 +16,7 @@ use nix::{
     sys::termios::{LocalFlags, tcgetattr},
 };
 use review::{
+    state::Review,
     store::SessionStore,
     vcs::{Backend, Repository},
 };
@@ -154,6 +155,213 @@ fn git_positional_comparisons_remain_direct_on_resume_and_refresh() {
 #[test]
 fn jj_positional_comparisons_remain_direct_on_resume_and_refresh() {
     exercise_positional_comparison(Backend::Jj);
+}
+
+#[test]
+fn git_automatically_reloads_moving_refs_and_invalidates_only_changed_files() {
+    exercise_automatic_refresh(Backend::Git, "feature");
+}
+
+#[test]
+fn jj_automatically_reloads_moving_refs_and_invalidates_only_changed_files() {
+    exercise_automatic_refresh(Backend::Jj, "feature");
+}
+
+#[test]
+fn jj_automatically_snapshots_working_copy_edits_without_an_external_jj_command() {
+    exercise_automatic_refresh(Backend::Jj, "@");
+}
+
+#[test]
+fn unrelated_automatic_updates_keep_the_current_render_in_flight() {
+    let fixture = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let config = state.path().join("config.toml");
+    let log = state.path().join("renders");
+    fs::write(&log, "").unwrap();
+    fs::write(&config, format!("[renderer]\ncommand = ['sh', '-c', 'printf . >> \"$1\"; sleep 2; cat \"$2\"', 'review-render', '{}', '{{new}}']\n", log.display())).unwrap();
+    let repo = Repository::discover(fixture.path(), Some(Backend::Jj)).unwrap();
+    let comparison = repo.snapshot_expression("main..@").unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let mut review = Review::new(comparison, changes);
+    review.view.selected = "src/main.rs".into();
+    let original_head = review.comparison.head_id.clone();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    let (saved, lock) = store.create(review).unwrap();
+    drop(lock);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
+    command
+        .env("JJ_CONFIG", "/dev/null")
+        .current_dir(fixture.path())
+        .args([
+            "--state-dir",
+            state.path().to_str().unwrap(),
+            "--config",
+            config.to_str().unwrap(),
+            "--resume",
+            &saved.id,
+        ]);
+    let mut terminal = Pty::spawn(command);
+    terminal.wait_until(|_| fs::metadata(&log).unwrap().len() == 1);
+    fs::write(fixture.path().join("image.bin"), [0, 8, 9, 10]).unwrap();
+    terminal.wait_until(|_| store.list().unwrap()[0].review.comparison.head_id != original_head);
+    terminal.wait_until(|text| text.contains("println"));
+    assert_eq!(fs::metadata(&log).unwrap().len(), 1);
+    terminal.send(b"q");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+}
+
+fn exercise_automatic_refresh(backend: Backend, head: &str) {
+    let fixture = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let config = state.path().join("config.toml");
+    fs::write(&config, "[renderer]\ncommand = ['cat', '{new}']\n").unwrap();
+    let repo = Repository::discover(fixture.path(), Some(backend)).unwrap();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    let comparison = repo.snapshot_expression(&format!("main..{head}")).unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let mut review = Review::new(comparison, changes);
+    for index in 0..review.changes.len() {
+        review.toggle_viewed(index);
+    }
+    review.view.selected = "src/".into();
+    review.view.active = "src/".into();
+    review.view.diff_focused = true;
+    review.view.filter = "main.rs".into();
+    review.view.unviewed_only = head == "@";
+    review
+        .view
+        .positions
+        .entry("image.bin".into())
+        .or_default()
+        .vertical = 7;
+    let original = review.clone();
+    let (saved, lock) = store.create(review).unwrap();
+    drop(lock);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
+    command
+        .env("JJ_CONFIG", "/dev/null")
+        .current_dir(fixture.path())
+        .args([
+            "--backend",
+            match backend {
+                Backend::Git => "git",
+                Backend::Jj => "jj",
+            },
+            "--state-dir",
+            state.path().to_str().unwrap(),
+            "--config",
+            config.to_str().unwrap(),
+            "--resume",
+            &saved.id,
+        ]);
+    let mut terminal = Pty::spawn(command);
+    terminal.wait_until(|text| {
+        if head == "@" {
+            text.contains("Unviewed files") && text.contains("complete")
+        } else {
+            text.contains("println")
+        }
+    });
+    terminal.output.clear();
+    if head != "@" {
+        common::jj(fixture.path(), &["new", "feature"]);
+    }
+    fs::write(
+        fixture.path().join("src/main.rs"),
+        "// AUTO_RELOADED\nfn changed() {}\n",
+    )
+    .unwrap();
+    fs::create_dir_all(fixture.path().join("src/nested")).unwrap();
+    fs::write(
+        fixture.path().join("src/nested/new.rs"),
+        "// AUTO_DESCENDANT\n",
+    )
+    .unwrap();
+    fs::write(fixture.path().join("removed.txt"), "remove me\n").unwrap();
+    if head != "@" {
+        common::jj(fixture.path(), &["commit", "-m", "live update"]);
+        common::jj(fixture.path(), &["bookmark", "set", "feature", "-r", "@-"]);
+    }
+    terminal.wait_until(|_| {
+        let updated = store.list().unwrap().remove(0);
+        updated.review.comparison.head_id != original.comparison.head_id
+            && updated
+                .review
+                .changes
+                .iter()
+                .any(|change| change.path == "src/nested/new.rs")
+            && !updated
+                .review
+                .changes
+                .iter()
+                .any(|change| change.path == "removed.txt")
+            && !updated.review.viewed.contains_key("src/main.rs")
+    });
+    terminal.wait_until(|text| text.contains("AUTO_RELOADED") && text.contains("AUTO_DESCENDANT"));
+    let updated = store.list().unwrap().remove(0).review;
+    assert_eq!(updated.comparison.base_id, original.comparison.base_id);
+    assert_eq!(updated.viewed.len(), original.viewed.len() - 2);
+    for change in updated
+        .changes
+        .iter()
+        .filter(|change| !change.path.starts_with("src/"))
+    {
+        assert!(updated.is_viewed(change), "{}", change.path);
+    }
+    assert_eq!(updated.view.selected, "src/");
+    assert_eq!(updated.view.active, "src/");
+    assert!(updated.view.diff_focused);
+    assert_eq!(updated.view.filter, "main.rs");
+    assert_eq!(updated.view.positions["image.bin"].vertical, 7);
+    assert_ne!(
+        updated.comparison.line_counts,
+        original.comparison.line_counts
+    );
+    if head == "@" {
+        assert_eq!(
+            updated.comparison.head_change_id,
+            original.comparison.head_change_id
+        );
+    }
+    terminal.send(b" ");
+    terminal.wait_until(|_| store.list().unwrap()[0].review.viewed.len() == updated.changes.len());
+    if head == "@" {
+        fs::remove_file(fixture.path().join("src/main.rs")).unwrap();
+        fs::remove_file(fixture.path().join("src/nested/new.rs")).unwrap();
+        terminal.wait_until(|_| {
+            let deleted = store.list().unwrap().remove(0).review;
+            deleted.comparison.head_id != updated.comparison.head_id
+                && deleted
+                    .changes
+                    .iter()
+                    .any(|change| change.path == "src/main.rs" && change.status == "D")
+                && !deleted
+                    .changes
+                    .iter()
+                    .any(|change| change.path == "src/nested/new.rs")
+                && !deleted.viewed.contains_key("src/main.rs")
+                && deleted.viewed.len() == updated.changes.len() - 2
+        });
+    } else {
+        common::jj(fixture.path(), &["new", "main"]);
+        fs::write(
+            fixture.path().join("src/main.rs"),
+            "// changed on the base side\n",
+        )
+        .unwrap();
+        common::jj(fixture.path(), &["commit", "-m", "live base update"]);
+        common::jj(fixture.path(), &["bookmark", "set", "main", "-r", "@-"]);
+        terminal.wait_until(|_| {
+            let changed_base = store.list().unwrap().remove(0).review;
+            changed_base.comparison.base_id != updated.comparison.base_id
+                && changed_base.comparison.head_id == updated.comparison.head_id
+                && !changed_base.viewed.contains_key("src/main.rs")
+                && changed_base.viewed.len() == updated.changes.len() - 1
+        });
+    }
+    terminal.send(b"q");
+    assert!(terminal.finish().success(), "{}", terminal.output);
 }
 
 fn exercise_positional_comparison(backend: Backend) {

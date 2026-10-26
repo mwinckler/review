@@ -11,6 +11,7 @@ use ratatui::{layout::Rect, text::Text};
 use review::{
     app::{App, Focus},
     config::Config,
+    refresh::RefreshWorker,
     renderer::{RenderOptions, RenderWorker},
     state::Review,
     store::{SavedSession, SessionLock, SessionStore},
@@ -164,6 +165,7 @@ fn run(
     let mut request_id = 0;
     let mut redraw = true;
     let mut last_save = Instant::now();
+    let refresher = RefreshWorker::new(repo, &app.review.comparison);
     while !app.quit {
         let size = terminal.size()?;
         let panes = ui::panes(Rect::new(0, 0, size.width, size.height), app);
@@ -186,8 +188,6 @@ fn run(
                 app.review.view.active.clone(),
                 width,
                 app.review.view.inline,
-                app.review.comparison.base_id.clone(),
-                app.review.comparison.head_id.clone(),
             );
             if requested.as_ref() != Some(&key) {
                 request_id = worker.request(
@@ -275,19 +275,34 @@ fn run(
         }
         if app.refresh {
             app.refresh = false;
-            match repo
-                .refresh(&app.review.comparison)
-                .and_then(|comparison| Ok((repo.changes(&comparison)?, comparison)))
-            {
-                Ok((changes, comparison)) => {
+            refresher.request();
+        }
+        for result in refresher.results.try_iter() {
+            match result.snapshot {
+                Ok((comparison, changes)) => {
+                    let previous_preview: Vec<_> = app.preview_changes().cloned().collect();
                     let invalidated = app.review.reconcile(comparison, changes);
                     app.rebuild();
-                    app.message = format!("Snapshots refreshed · {invalidated} viewed marks reset");
-                    requested = None;
+                    let action = if result.manual {
+                        "Snapshots refreshed"
+                    } else {
+                        "Changes reloaded"
+                    };
+                    app.message = format!("{action} · {invalidated} viewed marks reset");
+                    if result.manual || !previous_preview.iter().eq(app.preview_changes()) {
+                        request_id = worker.cancel();
+                        requested = None;
+                    }
+                    app.dirty = true;
                     force_save = true;
                 }
                 Err(error) => {
-                    app.message = format!("Refresh failed: {error:#}");
+                    let action = if result.manual {
+                        "Refresh failed"
+                    } else {
+                        "Auto-refresh failed"
+                    };
+                    app.message = format!("{action}: {error}");
                 }
             }
             redraw = true;

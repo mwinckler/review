@@ -192,6 +192,32 @@ fn comparison_uses_merge_base_instead_of_the_current_base_tip() {
 }
 
 #[test]
+fn incremental_refresh_detects_endpoint_changes_and_ignores_unchanged_merge_bases() {
+    for backend in [Backend::Git, Backend::Jj] {
+        let dir = fixture();
+        let repo = Repository::discover(dir.path(), Some(backend)).unwrap();
+        let merged = repo.snapshot("main", "feature").unwrap();
+        let direct = repo.snapshot_expression("main..feature").unwrap();
+        assert!(repo.refresh_if_changed(&merged).unwrap().is_none());
+        assert!(repo.refresh_if_changed(&direct).unwrap().is_none());
+        jj(dir.path(), &["new", "main"]);
+        fs::write(dir.path().join("base-only.txt"), "new on base\n").unwrap();
+        jj(dir.path(), &["commit", "-m", "advance base"]);
+        jj(dir.path(), &["bookmark", "set", "main", "-r", "@-"]);
+        assert!(repo.refresh_if_changed(&merged).unwrap().is_none());
+        let updated = repo.refresh_if_changed(&direct).unwrap().unwrap();
+        assert_ne!(updated.base_id, direct.base_id);
+        assert_eq!(updated.head_id, direct.head_id);
+        assert_eq!(updated.mode, direct.mode);
+        assert_eq!(
+            updated.line_counts,
+            Some(repo.line_counts(&updated).unwrap())
+        );
+        assert!(repo.refresh_if_changed(&updated).unwrap().is_none());
+    }
+}
+
+#[test]
 fn jj_change_ids_identify_the_pinned_endpoints_for_direct_and_merge_base_comparisons() {
     let dir = fixture();
     jj(dir.path(), &["new", "main"]);

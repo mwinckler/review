@@ -146,19 +146,37 @@ impl Repository {
         self.snapshot_with_mode(&comparison.base_ref, &comparison.head_ref, comparison.mode)
     }
 
+    pub fn refresh_if_changed(&self, comparison: &Comparison) -> Result<Option<Comparison>> {
+        let mut updated =
+            self.resolve_snapshot(&comparison.base_ref, &comparison.head_ref, comparison.mode)?;
+        if updated.base_id == comparison.base_id && updated.head_id == comparison.head_id {
+            return Ok(None);
+        }
+        self.fill_change_ids(&mut updated)?;
+        updated.line_counts = Some(self.line_counts(&updated)?);
+        Ok(Some(updated))
+    }
+
     fn snapshot_with_mode(
         &self,
         base: &str,
         head: &str,
         mode: ComparisonMode,
     ) -> Result<Comparison> {
+        let mut comparison = self.resolve_snapshot(base, head, mode)?;
+        self.fill_change_ids(&mut comparison)?;
+        comparison.line_counts = Some(self.line_counts(&comparison)?);
+        Ok(comparison)
+    }
+
+    fn resolve_snapshot(&self, base: &str, head: &str, mode: ComparisonMode) -> Result<Comparison> {
         let head_id = self.resolve(head, true)?;
         let base_tip = self.resolve(base, false)?;
         let base_id = match mode {
             ComparisonMode::Direct => base_tip,
             ComparisonMode::MergeBase => self.merge_base(&base_tip, &head_id)?,
         };
-        let mut comparison = Comparison {
+        Ok(Comparison {
             base_ref: base.to_owned(),
             head_ref: head.to_owned(),
             base_id,
@@ -167,10 +185,7 @@ impl Repository {
             head_change_id: None,
             mode,
             line_counts: None,
-        };
-        self.fill_change_ids(&mut comparison)?;
-        comparison.line_counts = Some(self.line_counts(&comparison)?);
-        Ok(comparison)
+        })
     }
 
     pub fn fill_change_ids(&self, comparison: &mut Comparison) -> Result<bool> {
