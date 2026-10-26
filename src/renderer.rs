@@ -26,6 +26,9 @@ use crate::{
     vcs::{Change, Comparison, Repository},
 };
 
+const MAX_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_CACHE_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RendererConfig {
@@ -146,7 +149,7 @@ pub fn render_pair(
             Some("render cancelled")
         } else if started.elapsed() >= Duration::from_millis(config.timeout_ms) {
             Some("renderer timed out; increase renderer.timeout_ms or choose another renderer")
-        } else if stdout.metadata()?.len() + stderr.metadata()?.len() > 16 * 1024 * 1024 {
+        } else if stdout.metadata()?.len() + stderr.metadata()?.len() > MAX_OUTPUT_BYTES {
             Some("renderer output exceeded 16 MiB")
         } else {
             None
@@ -171,9 +174,9 @@ pub fn render_pair(
     );
     stdout.seek(SeekFrom::Start(0))?;
     let mut bytes = Vec::new();
-    stdout.take(16 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    stdout.take(MAX_OUTPUT_BYTES + 1).read_to_end(&mut bytes)?;
     ensure!(
-        bytes.len() <= 16 * 1024 * 1024,
+        bytes.len() <= MAX_OUTPUT_BYTES as usize,
         "renderer output exceeded 16 MiB"
     );
     if bytes.is_empty() {
@@ -249,26 +252,27 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
             )
         })()
         .with_context(|| format!("rendering {}", display_path(&change.path)))?;
-        let mut section = Text::default();
-        if directory {
-            if !text.lines.is_empty() {
-                section.lines.push(Line::default());
-            }
-            let (title, metadata) = change_heading(change);
-            section.lines.push(Line::from(vec![
-                Span::styled(
-                    title,
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(metadata, Style::default().fg(Color::DarkGray)),
-            ]));
+        if !directory {
+            return Ok(rendered);
         }
+        let mut section = Text::default();
+        if !text.lines.is_empty() {
+            section.lines.push(Line::default());
+        }
+        let (title, metadata) = change_heading(change);
+        section.lines.push(Line::from(vec![
+            Span::styled(
+                title,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(metadata, Style::default().fg(Color::DarkGray)),
+        ]));
         section.lines.extend(rendered.lines);
         size += text_size(&section);
         ensure!(
-            !directory || size <= 16 * 1024 * 1024,
+            size <= MAX_OUTPUT_BYTES as usize,
             "renderer output exceeded 16 MiB"
         );
         text.lines.extend(section.lines);
@@ -331,10 +335,10 @@ impl RenderWorker {
                 }
                 if let Ok(text) = &result {
                     let size = text_size(text);
-                    if size <= 8 * 1024 * 1024 && !cache.iter().any(|entry| entry.0 == key) {
+                    if size <= MAX_CACHE_BYTES && !cache.iter().any(|entry| entry.0 == key) {
                         cache.push_back((key, text.clone(), size));
                         while cache.len() > 16
-                            || cache.iter().map(|entry| entry.2).sum::<usize>() > 8 * 1024 * 1024
+                            || cache.iter().map(|entry| entry.2).sum::<usize>() > MAX_CACHE_BYTES
                         {
                             cache.pop_front();
                         }

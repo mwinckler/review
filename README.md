@@ -178,5 +178,6 @@ cargo clippy --all-targets -- -D warnings
 ```
 
 Integration tests use temporary repositories created through Jujutsu and require
-Git, `jj`, `difft`, and standard `diff`/`sleep` tools. Unix PTY tests exercise the
-real application, autosave, key aliases, pinned resume, and terminal restoration.
+Git, `jj`, `difft`, standard `diff`/`sleep`/`cat` tools, and a POSIX shell.
+Unix PTY tests cover the application, autosave, resumed file and directory
+previews, key aliases, and terminal restoration.
