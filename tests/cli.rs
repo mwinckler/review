@@ -54,7 +54,7 @@ fn lists_saved_sessions_without_a_terminal() {
 fn noninteractive_launch_keeps_state_empty_with_default_or_explicit_base() {
     let repo = common::fixture();
     let state = tempfile::tempdir().unwrap();
-    for args in [vec![], vec!["--base", "main"]] {
+    for args in [&[] as &[&str], &["--base", "main"]] {
         let output = cli(repo.path(), state.path()).args(args).output().unwrap();
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal"));

@@ -115,7 +115,7 @@ fn space_marks_all_descendants_of_a_collapsed_folder_viewed() {
 fn space_on_a_folder_includes_files_hidden_by_filters() {
     for (filter, unviewed_only) in [("a.rs", false), ("", true)] {
         let mut review = review();
-        review.toggle_viewed(2);
+        review.toggle_viewed(1);
         review.view.selected = "src/".into();
         review.view.filter = filter.into();
         review.view.unviewed_only = unviewed_only;
