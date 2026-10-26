@@ -56,6 +56,7 @@ fn session_roundtrip_preserves_snapshots_progress_and_navigation() {
         .or_default()
         .vertical = 300;
     saved.review.view.inline = true;
+    saved.review.view.tree_width = Some(40);
     lock.save(&mut saved).unwrap();
     let id = saved.id.clone();
     drop(lock);
@@ -66,6 +67,7 @@ fn session_roundtrip_preserves_snapshots_progress_and_navigation() {
     assert_eq!(loaded.review.view.positions["src/a.rs"].vertical, 300);
     assert!(loaded.review.view.collapsed.contains("src/"));
     assert!(loaded.review.view.inline);
+    assert_eq!(loaded.review.view.tree_width, Some(40));
 }
 
 #[test]

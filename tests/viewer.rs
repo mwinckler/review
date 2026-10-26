@@ -1,7 +1,7 @@
 use std::sync::atomic::AtomicU64;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Text};
+use ratatui::{Terminal, backend::TestBackend, layout::Rect, style::Modifier, text::Text};
 use review::{
     app::{App, Focus},
     renderer::{RenderOptions, RendererConfig, render_pair},
@@ -45,7 +45,7 @@ fn review() -> Review {
 }
 
 fn key(app: &mut App, code: KeyCode) {
-    app.handle_key(KeyEvent::new(code, KeyModifiers::NONE), 10, 100);
+    app.handle_key(KeyEvent::new(code, KeyModifiers::NONE), 10, 100, 100);
 }
 
 #[test]
@@ -94,6 +94,7 @@ fn control_h_and_l_focus_panes_directly() {
         KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
         10,
         100,
+        100,
     );
     assert_eq!(app.focus, Focus::Diff);
     assert!(app.review.view.diff_focused);
@@ -101,6 +102,7 @@ fn control_h_and_l_focus_panes_directly() {
     app.handle_key(
         KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
         10,
+        100,
         100,
     );
     assert_eq!(app.focus, Focus::Tree);
@@ -247,6 +249,57 @@ fn viewed_files_and_fully_viewed_folders_are_dimmed() {
                 .modifier
                 .contains(Modifier::BOLD)
         );
+    }
+}
+
+#[test]
+fn control_arrows_resize_the_tree_from_either_pane_and_keep_both_panes_usable() {
+    let area = Rect::new(0, 0, 100, 24);
+    for focus in [Focus::Tree, Focus::Diff] {
+        let mut app = App::new(review());
+        app.focus = focus;
+        let right = KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL);
+        let left = KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL);
+        app.handle_key(right, 20, 100, area.width);
+        assert_eq!(ui::panes(area, &app).tree.width, 35);
+        assert_eq!(app.focus, focus);
+        assert_eq!(app.position().horizontal, 0);
+        let resumed = App::new(app.review.clone());
+        assert_eq!(ui::panes(area, &resumed).tree.width, 35);
+
+        for _ in 0..100 {
+            app.handle_key(right, 20, 100, area.width);
+        }
+        assert_eq!(ui::panes(area, &app).diff.width, 24);
+        app.handle_key(left, 20, 100, area.width);
+        assert_eq!(ui::panes(area, &app).diff.width, 26);
+        for _ in 0..100 {
+            app.handle_key(left, 20, 100, area.width);
+        }
+        assert_eq!(ui::panes(area, &app).tree.width, 24);
+    }
+}
+
+#[test]
+fn stored_tree_width_is_clamped_for_smaller_terminals() {
+    let mut review = review();
+    review.view.tree_width = Some(80);
+    let mut app = App::new(review);
+    let area = Rect::new(0, 0, 60, 24);
+    let panes = ui::panes(area, &app);
+    assert_eq!((panes.tree.width, panes.diff.width), (36, 24));
+    for width in [30, 1, 0] {
+        app.handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL),
+            10,
+            100,
+            width,
+        );
+        assert_eq!(app.review.view.tree_width, Some(80));
+        let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+        terminal
+            .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
+            .unwrap();
     }
 }
 

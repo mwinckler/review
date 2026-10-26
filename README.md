@@ -53,7 +53,7 @@ review --base main       # Start a fresh review
 
 Press `q` or `Ctrl-c` to save and quit. Viewed changes save immediately;
 navigation state autosaves within 250 ms. Resume restores the comparison,
-viewed files, selection, pane focus, directory expansion, filters, layout,
+viewed files, selection, pane focus, directory expansion, filters, layout, tree width,
 and per-file scroll positions.
 
 Sessions belong to the canonical workspace path and selected backend. Use the
@@ -79,6 +79,7 @@ open session holds an exclusive lock.
 | `h` / `l` | Collapse/expand directories or scroll horizontally |
 | `Enter` | Toggle a directory or focus the selected file's diff |
 | `Tab`, `Ctrl-h` / `Ctrl-l` | Switch panes; focus the tree / diff |
+| `Ctrl-Left` / `Ctrl-Right` | Shrink/grow the tree by two columns |
 | `gg` / `G`, `Home` / `End` | First/last row or page |
 | `Ctrl-d/u`, `Ctrl-f/b`, `PageDown/Up` | Half/full-page scrolling |
 | `Space` | Toggle a file's viewed marker; mark all files in a folder viewed |

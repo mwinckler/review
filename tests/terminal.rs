@@ -146,6 +146,42 @@ fn jj_no_argument_launch_starts_at_master_in_the_current_repository() {
     exercise_default_launch(Backend::Jj);
 }
 
+#[test]
+fn terminal_pane_shortcuts_and_tree_resizing_are_saved() {
+    let fixture = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let config = state.path().join("config.toml");
+    fs::write(&config, "").unwrap();
+    let repo = Repository::discover(fixture.path(), Some(Backend::Git)).unwrap();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
+    command.current_dir(fixture.path()).args([
+        "--backend",
+        "git",
+        "--base",
+        "main",
+        "--head",
+        "feature",
+        "--state-dir",
+        state.path().to_str().unwrap(),
+        "--config",
+        config.to_str().unwrap(),
+    ]);
+    let mut terminal = Pty::spawn(command);
+    terminal.wait_until(|text| text.contains("Changed files"));
+    terminal.send(b"\x0c");
+    terminal.wait_until(|_| store.list().unwrap()[0].review.view.diff_focused);
+    terminal.send(b"\x1b[1;5C");
+    terminal.wait_until(|_| store.list().unwrap()[0].review.view.tree_width == Some(38));
+    terminal.send(b"\x1b[1;5D\x08");
+    terminal.wait_until(|_| {
+        let saved = store.list().unwrap().remove(0);
+        saved.review.view.tree_width == Some(36) && !saved.review.view.diff_focused
+    });
+    terminal.send(b"q");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+}
+
 fn exercise_default_launch(backend: Backend) {
     let fixture = common::fixture();
     let state = tempfile::tempdir().unwrap();

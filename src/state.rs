@@ -22,6 +22,15 @@ pub struct ViewState {
     pub unviewed_only: bool,
     pub inline: bool,
     pub fullscreen: bool,
+    pub tree_width: Option<u16>,
+}
+
+impl ViewState {
+    pub fn tree_width(&self, terminal_width: u16) -> u16 {
+        self.tree_width
+            .unwrap_or((terminal_width / 3).clamp(24, 42))
+            .clamp(24, terminal_width.saturating_sub(24).max(24))
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

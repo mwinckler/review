@@ -28,7 +28,7 @@ pub fn panes(area: Rect, app: &App) -> Panes {
             (body, Rect::default())
         } else {
             let [tree, diff] = Layout::horizontal([
-                Constraint::Length((area.width / 3).clamp(24, 42)),
+                Constraint::Length(app.review.view.tree_width(area.width)),
                 Constraint::Min(1),
             ])
             .areas(body);
@@ -258,6 +258,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         let mut text = String::from(
             "j/k, arrows      Move in tree / scroll diff\nh/l              Collapse/expand / horizontal scroll\nTab, Ctrl-h/l    Focus tree/diff\ngg / G           First/last row or page\nCtrl-d/u, f/b    Half/full page down/up\nSpace            Toggle file / mark folder viewed\n]f / [f          Next/previous file\n]u / [u          Next/previous unviewed file\n/                Filter filenames / search diff\nn / N            Next/previous search match\nu                Toggle unviewed-only files\ni / z            Toggle inline / full-width diff\nr                Refresh revisions, keep matching progress\nEsc              Clear filters\nq / Ctrl-c       Save and quit\n",
         );
+        text.push_str("Ctrl-Left/Right  Resize tree\n");
         if !app.bindings_help.is_empty() {
             text.push_str(&format!("\nCustom: {}\n", display_path(&app.bindings_help)));
         }

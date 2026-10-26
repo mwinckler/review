@@ -237,7 +237,7 @@ fn run(
                             && matches!(key.code, KeyCode::Char('n' | 'N'));
                         let search_enter =
                             app.focus == Focus::Diff && app.searching && key.code == KeyCode::Enter;
-                        app.handle_key(key, page, diff.lines.len());
+                        app.handle_key(key, page, diff.lines.len(), size.width);
                         force_save |= key.code == KeyCode::Char(' ');
                         if search || search_enter {
                             app.search_diff(&diff, key.code != KeyCode::Char('N'));

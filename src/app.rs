@@ -105,12 +105,18 @@ impl App {
         self.review.view.positions.entry(path).or_default()
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent, page: usize, diff_lines: usize) {
-        self.handle_input(key, page, diff_lines);
+    pub fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        page: usize,
+        diff_lines: usize,
+        terminal_width: u16,
+    ) {
+        self.handle_input(key, page, diff_lines, terminal_width);
         self.review.view.diff_focused = self.focus == Focus::Diff;
     }
 
-    fn handle_input(&mut self, key: KeyEvent, page: usize, diff_lines: usize) {
+    fn handle_input(&mut self, key: KeyEvent, page: usize, diff_lines: usize, terminal_width: u16) {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.quit = true;
             return;
@@ -179,6 +185,14 @@ impl App {
                 }
                 KeyCode::Char('l') => {
                     self.focus = Focus::Diff;
+                }
+                KeyCode::Left | KeyCode::Right if terminal_width >= 55 => {
+                    let width = self.review.view.tree_width(terminal_width);
+                    self.review.view.tree_width = Some(if key.code == KeyCode::Left {
+                        width.saturating_sub(2).max(24)
+                    } else {
+                        width.saturating_add(2).min(terminal_width - 24)
+                    });
                 }
                 KeyCode::Char('d') => {
                     self.move_by((page as isize / 2).max(1), page, diff_lines);
