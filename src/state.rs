@@ -11,8 +11,11 @@ pub struct Position {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ViewState {
     pub selected: String,
+    pub active: String,
+    pub diff_focused: bool,
     pub collapsed: BTreeSet<String>,
     pub positions: BTreeMap<String, Position>,
     pub filter: String,

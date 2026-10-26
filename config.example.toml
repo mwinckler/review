@@ -1,0 +1,14 @@
+# Default Difftastic renderer, using its Git-compatible invocation for path labels.
+[renderer]
+command = [
+    "difft", "--color=always", "--width", "{width}", "--display", "{display}",
+    "{path}", "{old}", "0", "100644", "{new}", "0", "100644",
+]
+timeout_ms = 30000
+
+# Navigation-mode aliases. See README.md for all actions and key names.
+[keybindings]
+J = "next_file"
+K = "previous_file"
+v = "toggle_viewed"
+"Ctrl-j" = "next_unviewed"

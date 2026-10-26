@@ -65,9 +65,19 @@ pub fn draw(frame: &mut Frame, app: &mut App, diff: &Text<'static>) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(format!(
-            "{} → {}  ",
+            "{} ({}) → {} ({})  ",
             display_path(&app.review.comparison.base_ref),
-            display_path(&app.review.comparison.head_ref)
+            app.review
+                .comparison
+                .base_id
+                .get(..8)
+                .unwrap_or(&app.review.comparison.base_id),
+            display_path(&app.review.comparison.head_ref),
+            app.review
+                .comparison
+                .head_id
+                .get(..8)
+                .unwrap_or(&app.review.comparison.head_id),
         )),
         Span::styled(
             format!("Viewed {viewed}/{}", app.review.changes.len()),
@@ -222,7 +232,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, diff: &Text<'static>) {
     );
     if app.help {
         let width = frame.area().width.min(74);
-        let height = frame.area().height.min(20);
+        let height = frame.area().height.min(23);
         let area = Rect::new(
             frame.area().x + (frame.area().width - width) / 2,
             frame.area().y + (frame.area().height - height) / 2,
@@ -230,7 +240,13 @@ pub fn draw(frame: &mut Frame, app: &mut App, diff: &Text<'static>) {
             height,
         );
         frame.render_widget(Clear, area);
-        let text = "j/k, arrows      Move in tree / scroll diff\nh/l              Collapse/expand / horizontal scroll\nTab, Ctrl-w h/l  Focus tree/diff\ngg / G           First/last row or page\nCtrl-d/u, f/b    Half/full page down/up\nSpace            Toggle file viewed\n]f / [f          Next/previous file\n]u / [u          Next/previous unviewed file\n/                Filter filenames / search diff\nn / N            Next/previous search match\nu                Toggle unviewed-only files\ni / z            Toggle inline / full-width diff\nr                Refresh revisions, keep matching progress\nEsc              Clear filters\nq / Ctrl-c       Save and quit\n\nPress any key to close";
+        let mut text = String::from(
+            "j/k, arrows      Move in tree / scroll diff\nh/l              Collapse/expand / horizontal scroll\nTab, Ctrl-w h/l  Focus tree/diff\ngg / G           First/last row or page\nCtrl-d/u, f/b    Half/full page down/up\nSpace            Toggle file viewed\n]f / [f          Next/previous file\n]u / [u          Next/previous unviewed file\n/                Filter filenames / search diff\nn / N            Next/previous search match\nu                Toggle unviewed-only files\ni / z            Toggle inline / full-width diff\nr                Refresh revisions, keep matching progress\nEsc              Clear filters\nq / Ctrl-c       Save and quit\n",
+        );
+        if !app.bindings_help.is_empty() {
+            text.push_str(&format!("\nCustom: {}\n", display_path(&app.bindings_help)));
+        }
+        text.push_str("\nPress any key to close");
         frame.render_widget(
             Paragraph::new(text).block(
                 Block::default()

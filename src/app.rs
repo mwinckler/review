@@ -24,16 +24,26 @@ pub struct App {
     pub searching: bool,
     pub diff_search: String,
     pub dirty: bool,
+    pub bindings_help: String,
     prefix: Option<char>,
     search_original: String,
 }
 
 impl App {
     pub fn new(review: Review) -> Self {
+        let focus = if review.view.fullscreen || review.view.diff_focused {
+            Focus::Diff
+        } else {
+            Focus::Tree
+        };
+        let active = review
+            .changes
+            .iter()
+            .position(|change| change.path == review.view.active);
         let mut app = Self {
             review,
-            focus: Focus::Tree,
-            active: None,
+            focus,
+            active,
             help: false,
             quit: false,
             refresh: false,
@@ -43,6 +53,7 @@ impl App {
             searching: false,
             diff_search: String::new(),
             dirty: false,
+            bindings_help: String::new(),
             prefix: None,
             search_original: String::new(),
         };
@@ -59,13 +70,22 @@ impl App {
             .or_else(|| self.rows.iter().position(|row| row.file.is_some()))
             .unwrap_or(0);
         self.select(selection);
-        if !self
-            .rows
-            .iter()
-            .any(|row| row.file == self.active && row.file.is_some())
-        {
-            self.active = self.rows.iter().find_map(|row| row.file);
+        let eligible = |index: usize| {
+            self.review.changes.get(index).is_some_and(|change| {
+                change
+                    .path
+                    .to_lowercase()
+                    .contains(&self.review.view.filter.to_lowercase())
+                    && (!self.review.view.unviewed_only || !self.review.is_viewed(change))
+            })
+        };
+        if !self.active.is_some_and(eligible) {
+            self.active = (0..self.review.changes.len()).find(|index| eligible(*index));
         }
+        self.review.view.active = self
+            .active
+            .map(|index| self.review.changes[index].path.clone())
+            .unwrap_or_default();
     }
 
     fn select(&mut self, selection: usize) {
@@ -74,6 +94,7 @@ impl App {
             self.review.view.selected = row.path.clone();
             if row.file.is_some() {
                 self.active = row.file;
+                self.review.view.active = row.path.clone();
             }
         }
     }
@@ -87,6 +108,11 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent, page: usize, diff_lines: usize) {
+        self.handle_input(key, page, diff_lines);
+        self.review.view.diff_focused = self.focus == Focus::Diff;
+    }
+
+    fn handle_input(&mut self, key: KeyEvent, page: usize, diff_lines: usize) {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.quit = true;
             return;
@@ -162,10 +188,10 @@ impl App {
                     self.prefix = Some('w');
                 }
                 KeyCode::Char('d') => {
-                    self.move_by(page as isize / 2, page, diff_lines);
+                    self.move_by((page as isize / 2).max(1), page, diff_lines);
                 }
                 KeyCode::Char('u') => {
-                    self.move_by(-(page as isize / 2), page, diff_lines);
+                    self.move_by(-(page as isize / 2).max(1), page, diff_lines);
                 }
                 KeyCode::Char('f') => {
                     self.move_by(page as isize, page, diff_lines);
@@ -232,7 +258,13 @@ impl App {
                     self.position().horizontal = self.position().horizontal.saturating_add(4);
                 } else if let Some(row) = self.rows.get(self.selection) {
                     if row.file.is_none() {
-                        self.review.view.collapsed.remove(&row.path);
+                        if key.code == KeyCode::Enter
+                            && !self.review.view.collapsed.contains(&row.path)
+                        {
+                            self.review.view.collapsed.insert(row.path.clone());
+                        } else {
+                            self.review.view.collapsed.remove(&row.path);
+                        }
                         self.rebuild();
                     } else {
                         self.focus = Focus::Diff;
@@ -263,6 +295,9 @@ impl App {
             }
             KeyCode::Char('r') => {
                 self.refresh = true;
+            }
+            KeyCode::Char('n' | 'N') if self.focus == Focus::Tree => {
+                self.jump_file(key.code == KeyCode::Char('n'), false);
             }
             KeyCode::Char('/') => {
                 self.searching = true;

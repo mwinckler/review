@@ -185,3 +185,39 @@ fn jj_conflicts_have_content_sensitive_fingerprints() {
     let content = repo.content(&comparison, conflict, false).unwrap();
     assert!(String::from_utf8_lossy(&content).contains("left"));
 }
+
+#[test]
+fn discovers_standalone_git_and_non_colocated_jj_repositories() {
+    let dir = fixture();
+    fs::rename(dir.path().join(".jj"), dir.path().join("saved-jj")).unwrap();
+    let repo = Repository::discover(dir.path(), None).unwrap();
+    assert_eq!(repo.backend, Backend::Git);
+    assert!(
+        !repo
+            .changes(&repo.snapshot("main", "feature").unwrap())
+            .unwrap()
+            .is_empty()
+    );
+    fs::rename(dir.path().join("saved-jj"), dir.path().join(".jj")).unwrap();
+    jj(dir.path(), &["git", "colocation", "disable"]);
+    let repo = Repository::discover(dir.path(), None).unwrap();
+    assert_eq!(repo.backend, Backend::Jj);
+    assert!(
+        !repo
+            .changes(&repo.snapshot("main", "feature").unwrap())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn repository_roots_preserve_whitespace() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join(" repository ");
+    fs::create_dir(&root).unwrap();
+    jj(&root, &["git", "init", "--colocate", "."]);
+    for backend in [Backend::Git, Backend::Jj] {
+        let repo = Repository::discover(&root, Some(backend)).unwrap();
+        assert_eq!(repo.root, root.canonicalize().unwrap());
+    }
+}

@@ -93,15 +93,31 @@ pub fn render_pair(
     } else {
         "side-by-side"
     };
-    let arguments: Vec<_> = config.command[1..]
+    let width = options.width.max(1).to_string();
+    let old_path = old_path.to_string_lossy();
+    let new_path = new_path.to_string_lossy();
+    let replacements = [
+        ("{old}", old_path.as_ref()),
+        ("{new}", new_path.as_ref()),
+        ("{width}", &width),
+        ("{display}", display),
+        ("{path}", &change.path),
+    ];
+    let arguments: Vec<String> = config.command[1..]
         .iter()
         .map(|argument| {
             argument
-                .replace("{old}", &old_path.to_string_lossy())
-                .replace("{new}", &new_path.to_string_lossy())
-                .replace("{width}", &options.width.max(1).to_string())
-                .replace("{display}", display)
-                .replace("{path}", &change.path)
+                .split_inclusive('}')
+                .map(|part| {
+                    if let Some((token, value)) =
+                        replacements.iter().find(|(token, _)| part.ends_with(token))
+                    {
+                        format!("{}{value}", &part[..part.len() - token.len()])
+                    } else {
+                        part.to_owned()
+                    }
+                })
+                .collect()
         })
         .collect();
     let mut stdout = tempfile::tempfile()?;
@@ -193,6 +209,10 @@ pub struct RenderWorker {
 }
 
 impl RenderWorker {
+    pub fn cancel(&self) -> u64 {
+        self.generation.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
     pub fn new(config: RendererConfig) -> Self {
         let (sender, jobs) = mpsc::channel::<Job>();
         let (output, results) = mpsc::channel();

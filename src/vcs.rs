@@ -76,8 +76,8 @@ impl Repository {
             Backend::Git => vec!["rev-parse", "--show-toplevel"],
             Backend::Jj => vec!["root"],
         };
-        repo.root =
-            PathBuf::from(String::from_utf8(repo.run(&args, false)?)?.trim()).canonicalize()?;
+        let root = String::from_utf8(repo.run(&args, false)?)?;
+        repo.root = PathBuf::from(root.strip_suffix('\n').unwrap_or(&root)).canonicalize()?;
         Ok(repo)
     }
 

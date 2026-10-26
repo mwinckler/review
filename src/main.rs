@@ -6,11 +6,12 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{layout::Rect, text::Text};
 use review::{
     app::{App, Focus},
-    renderer::{RenderOptions, RenderWorker, RendererConfig},
+    config::Config,
+    renderer::{RenderOptions, RenderWorker},
     state::Review,
     store::{SavedSession, SessionLock, SessionStore},
     ui,
@@ -44,6 +45,9 @@ struct Cli {
     /// Override the review state directory
     #[arg(long)]
     state_dir: Option<PathBuf>,
+    /// Load a TOML config (defaults to $XDG_CONFIG_HOME/review/config.toml)
+    #[arg(long)]
+    config: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -90,6 +94,14 @@ fn main() -> Result<()> {
         io::stdin().is_terminal() && io::stdout().is_terminal(),
         "review needs an interactive terminal"
     );
+    let config_path = match &cli.config {
+        Some(path) => path.clone(),
+        None => directories::BaseDirs::new()
+            .context("finding the config directory; use --config")?
+            .config_dir()
+            .join("review/config.toml"),
+    };
+    let config = Config::load(&config_path, cli.config.is_some())?;
     let (mut saved, lock) = if let Some(id) = resume_id {
         store.open(&id)?
     } else {
@@ -108,9 +120,18 @@ fn main() -> Result<()> {
     };
     let mut app = App::new(saved.review.clone());
     app.message = format!("Session {} · ? help", saved.id);
-    let worker = RenderWorker::new(RendererConfig::default());
-    let result =
-        ratatui::run(|terminal| run(terminal, &repo, &mut app, &worker, &mut saved, &lock));
+    app.bindings_help = config
+        .keybindings
+        .iter()
+        .map(|(key, action)| format!("{key}: {action}"))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let worker = RenderWorker::new(config.renderer.clone());
+    let result = ratatui::run(|terminal| {
+        run(
+            terminal, &repo, &mut app, &worker, &mut saved, &lock, &config,
+        )
+    });
     saved.review = app.review;
     let saved_result = lock.save(&mut saved);
     result.and(saved_result)
@@ -123,6 +144,7 @@ fn run(
     worker: &RenderWorker,
     saved: &mut SavedSession,
     lock: &SessionLock,
+    config: &Config,
 ) -> Result<()> {
     let mut diff = Text::raw("Select a changed file");
     let mut requested = None;
@@ -132,8 +154,20 @@ fn run(
     while !app.quit {
         let size = terminal.size()?;
         let panes = ui::panes(Rect::new(0, 0, size.width, size.height), app);
-        let width = panes.diff.width.saturating_sub(2).max(1);
-        let page = panes.diff.height.saturating_sub(2).max(1) as usize;
+        let width = if panes.diff.width > 0 {
+            panes.diff.width
+        } else {
+            size.width
+        }
+        .saturating_sub(2)
+        .max(1);
+        let page = if app.focus == Focus::Tree {
+            panes.tree.height
+        } else {
+            panes.diff.height
+        }
+        .saturating_sub(2)
+        .max(1) as usize;
         if let Some(index) = app.active {
             let key = (
                 index,
@@ -157,17 +191,25 @@ fn run(
                 redraw = true;
             }
         } else {
+            if requested.take().is_some() {
+                request_id = worker.cancel();
+                redraw = true;
+            }
             diff = Text::raw(if app.review.changes.is_empty() {
                 "Comparison complete — the snapshots are identical"
+            } else if app.review.view.unviewed_only
+                && app.review.viewed.len() == app.review.changes.len()
+            {
+                "Review complete — every file has been viewed. Press u to show all files."
             } else {
-                "All matching files have been viewed. Press u or Esc to show more files."
+                "0 files match the current filters. Press Esc to clear them."
             });
         }
         for result in worker.results.try_iter() {
             if result.id == request_id {
                 diff = match result.text {
                     Ok(text) => text,
-                    Err(error) => Text::raw(format!("Diff error\n\n{error}")),
+                    Err(error) => Text::raw(format!("Diff error\n\n{}", ui::display_path(&error))),
                 };
                 app.position().vertical = app
                     .position()
@@ -184,15 +226,28 @@ fn run(
         if event::poll(Duration::from_millis(30))? {
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
-                    let search = app.focus == Focus::Diff
-                        && !app.searching
-                        && matches!(key.code, KeyCode::Char('n' | 'N'));
-                    let search_enter =
-                        app.focus == Focus::Diff && app.searching && key.code == KeyCode::Enter;
-                    app.handle_key(key, page, diff.lines.len());
-                    force_save = key.code == KeyCode::Char(' ');
-                    if search || search_enter {
-                        app.search_diff(&diff, key.code != KeyCode::Char('N'));
+                    app.message.clear();
+                    let keys = if app.searching
+                        || app.help
+                        || (key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL))
+                    {
+                        vec![key]
+                    } else {
+                        config.translate(key)
+                    };
+                    for key in keys {
+                        let search = app.focus == Focus::Diff
+                            && !app.searching
+                            && !app.help
+                            && matches!(key.code, KeyCode::Char('n' | 'N'));
+                        let search_enter =
+                            app.focus == Focus::Diff && app.searching && key.code == KeyCode::Enter;
+                        app.handle_key(key, page, diff.lines.len());
+                        force_save |= key.code == KeyCode::Char(' ');
+                        if search || search_enter {
+                            app.search_diff(&diff, key.code != KeyCode::Char('N'));
+                        }
                     }
                     redraw = true;
                 }
@@ -212,9 +267,7 @@ fn run(
                 Ok((changes, comparison)) => {
                     let invalidated = app.review.reconcile(comparison, changes);
                     app.rebuild();
-                    app.message = format!(
-                        "Snapshots refreshed · {invalidated} viewed files need another look"
-                    );
+                    app.message = format!("Snapshots refreshed · {invalidated} viewed marks reset");
                     requested = None;
                     force_save = true;
                 }

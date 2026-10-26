@@ -191,3 +191,97 @@ fn external_renderer_supports_placeholders_exit_one_timeout_and_cancellation() {
         .is_err()
     );
 }
+
+#[test]
+fn collapsed_directories_keep_the_active_diff_and_enter_toggles_them() {
+    let mut app = App::new(review());
+    key(&mut app, KeyCode::Char(']'));
+    key(&mut app, KeyCode::Char('f'));
+    assert_eq!(app.active, Some(1));
+    key(&mut app, KeyCode::Char('h'));
+    assert_eq!(app.review.view.selected, "src/");
+    key(&mut app, KeyCode::Char('h'));
+    assert!(app.review.view.collapsed.contains("src/"));
+    assert_eq!(app.active, Some(1));
+    key(&mut app, KeyCode::Enter);
+    assert!(!app.review.view.collapsed.contains("src/"));
+    key(&mut app, KeyCode::Enter);
+    assert!(app.review.view.collapsed.contains("src/"));
+    key(&mut app, KeyCode::Tab);
+    let resumed = App::new(app.review.clone());
+    assert_eq!(resumed.active, Some(1));
+    assert_eq!(resumed.focus, Focus::Diff);
+}
+
+#[test]
+fn placeholders_in_filenames_are_treated_literally() {
+    let config = RendererConfig {
+        command: vec!["diff".into(), "-u".into(), "{old}".into(), "{new}".into()],
+        timeout_ms: 1_000,
+    };
+    let output = render_pair(
+        &config,
+        &change("{new}.rs"),
+        b"old\n",
+        b"new\n",
+        RenderOptions {
+            width: 80,
+            inline: false,
+        },
+        &AtomicU64::new(1),
+        1,
+    )
+    .unwrap();
+    assert!(output.to_string().contains("+new"));
+}
+
+#[test]
+fn empty_reviews_and_no_match_filters_are_keyboard_safe() {
+    let mut empty = review();
+    empty.changes.clear();
+    let mut app = App::new(empty);
+    for code in [
+        KeyCode::Char(']'),
+        KeyCode::Char('u'),
+        KeyCode::Char(' '),
+        KeyCode::Char('G'),
+        KeyCode::Char('h'),
+        KeyCode::Enter,
+    ] {
+        key(&mut app, code);
+    }
+    assert_eq!(app.active, None);
+    let mut app = App::new(review());
+    key(&mut app, KeyCode::Char('/'));
+    for ch in "missing".chars() {
+        key(&mut app, KeyCode::Char(ch));
+    }
+    key(&mut app, KeyCode::Enter);
+    assert!(app.rows.is_empty());
+    assert_eq!(app.active, None);
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.active, Some(0));
+}
+
+#[test]
+fn diff_viewport_can_scroll_beyond_u16_line_numbers() {
+    let mut app = App::new(review());
+    app.position().vertical = 66_000;
+    let text = Text::from(
+        (0..66_030)
+            .map(|line| ratatui::text::Line::raw(format!("line {line}")))
+            .collect::<Vec<_>>(),
+    );
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    terminal
+        .draw(|frame| ui::draw(frame, &mut app, &text))
+        .unwrap();
+    let output: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(output.contains("line 66000"));
+}
