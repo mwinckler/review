@@ -188,8 +188,8 @@ impl Repository {
     }
 
     pub fn line_counts(&self, comparison: &Comparison) -> Result<LineCounts> {
-        let args = match self.backend {
-            Backend::Git => vec![
+        let args: &[&str] = match self.backend {
+            Backend::Git => &[
                 "diff",
                 "--shortstat",
                 "--color=never",
@@ -200,7 +200,7 @@ impl Repository {
                 &comparison.head_id,
                 "--",
             ],
-            Backend::Jj => vec![
+            Backend::Jj => &[
                 "diff",
                 "--from",
                 &comparison.base_id,
@@ -209,7 +209,7 @@ impl Repository {
                 "--stat",
             ],
         };
-        let output = String::from_utf8(self.run(&args, false)?)?;
+        let output = String::from_utf8(self.run(args, false)?)?;
         let mut counts = LineCounts::default();
         for field in output.lines().last().unwrap_or_default().split(',') {
             let count = if field.ends_with("(+)") {
