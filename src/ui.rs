@@ -281,17 +281,19 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                     );
                 }
                 if let Some((_, label)) = flash.labels.iter().find(|(row, _)| *row == index) {
+                    let label = Span::styled(
+                        label.to_ascii_uppercase().to_string(),
+                        flash_style.fg(Color::Black).bg(Color::Yellow),
+                    );
                     for (_, column) in &matches {
+                        // Keep every match and its following character readable.
                         if *column < inner.width as usize
                             && matches
                                 .iter()
                                 .all(|(range, next)| !(range.start..*next).contains(column))
                         {
                             frame.render_widget(
-                                Span::styled(
-                                    label.to_ascii_uppercase().to_string(),
-                                    flash_style.fg(Color::Black).bg(Color::Yellow),
-                                ),
+                                &label,
                                 Rect::new(inner.x + *column as u16, y, 1, 1),
                             );
                         }

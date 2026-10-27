@@ -33,6 +33,7 @@ impl Flash {
             return Vec::new();
         }
         let lowercase = name.to_lowercase();
+        // Case folding can change byte lengths; retain the original UTF-8 boundaries.
         let mut boundaries = Vec::new();
         let mut offset = 0;
         for (index, ch) in name.char_indices() {
@@ -538,24 +539,25 @@ impl App {
         let Some(flash) = &mut self.flash else {
             return;
         };
-        let matches: Vec<_> = tree::visible_range(self.rows.len(), self.selection, height)
-            .map(|index| (index, flash.ranges(self.rows[index].name())))
-            .filter(|(_, ranges)| !ranges.is_empty())
-            .collect();
-        let continuations: BTreeSet<_> = matches
-            .iter()
-            .flat_map(|(index, ranges)| {
+        flash.matches.clear();
+        let mut continuations = BTreeSet::new();
+        for index in tree::visible_range(self.rows.len(), self.selection, height) {
+            let name = self.rows[index].name();
+            let ranges = flash.ranges(name);
+            if !ranges.is_empty() {
+                flash.matches.push(index);
+            }
+            continuations.extend(
                 ranges
-                    .iter()
-                    .filter_map(|range| self.rows[*index].name()[range.end..].chars().next())
-            })
-            .flat_map(char::to_lowercase)
-            .collect();
+                    .into_iter()
+                    .filter_map(|range| name[range.end..].chars().next())
+                    .flat_map(char::to_lowercase),
+            );
+        }
         // Keep query extensions available while assigning home-row-first jump labels.
         let labels = "asdfghjklqwertyuiopzxcvbnm"
             .chars()
             .filter(|label| !continuations.contains(label));
-        flash.matches = matches.iter().map(|(index, _)| *index).collect();
         flash.labels = flash.matches.iter().copied().zip(labels).collect();
     }
 
