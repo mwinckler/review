@@ -398,21 +398,10 @@ fn run(
                     };
                 }
                 SessionAction::Forget(ids) => {
-                    let result = store.forget(&ids);
-                    let dialog = app.session_dialog.as_mut().expect("session dialog is open");
-                    let reloaded = dialog.reload(store);
-                    dialog.message = match result {
-                        Ok(count) => format!(
-                            "Forgot {count} review session{}.",
-                            if count == 1 { "" } else { "s" }
-                        ),
-                        Err(error) => format!("Forget failed: {error:#}"),
-                    };
-                    if let Err(error) = reloaded {
-                        dialog
-                            .message
-                            .push_str(&format!(" · Reload failed: {error:#}"));
-                    }
+                    app.session_dialog
+                        .as_mut()
+                        .expect("session dialog is open")
+                        .forget(store, &ids);
                 }
             }
             redraw = true;

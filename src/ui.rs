@@ -462,11 +462,7 @@ fn draw_session_dialog(frame: &mut Frame, dialog: &SessionDialog) {
         Constraint::Length(1),
     ])
     .areas(inner);
-    let available = dialog
-        .sessions
-        .iter()
-        .filter(|saved| !dialog.open.contains(&saved.id))
-        .count();
+    let available = dialog.closed_sessions().count();
     frame.render_widget(
         Paragraph::new(format!(
             "{} selected · {available} available · open sessions protected",

@@ -219,21 +219,12 @@ fn reloading_reconciles_deleted_and_newly_open_sessions_before_another_deletion(
     key(&mut dialog, KeyCode::Char('a'));
     assert_eq!(dialog.selected.len(), 3);
     let (_, lock) = store.open("000000000001").unwrap();
-    assert!(
-        store
-            .forget(&dialog.selected.iter().cloned().collect::<Vec<_>>())
-            .is_err()
-    );
-    dialog.reload(&store).unwrap();
+    dialog.forget(&store, &dialog.selected.iter().cloned().collect::<Vec<_>>());
+    assert!(dialog.message.contains("Forget failed"));
     assert_eq!(dialog.selected.len(), 2);
     assert!(dialog.open.contains("000000000001"));
-    assert_eq!(
-        store
-            .forget(&dialog.selected.iter().cloned().collect::<Vec<_>>())
-            .unwrap(),
-        2
-    );
-    dialog.reload(&store).unwrap();
+    dialog.forget(&store, &dialog.selected.iter().cloned().collect::<Vec<_>>());
+    assert!(dialog.message.contains("Forgot 2"));
     assert_eq!(dialog.sessions.len(), 2);
     assert!(dialog.selected.is_empty());
     drop(lock);

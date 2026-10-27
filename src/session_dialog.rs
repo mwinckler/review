@@ -54,12 +54,17 @@ impl SessionDialog {
         Ok(Self::new(sessions, current_id.to_owned(), open))
     }
 
+    pub fn closed_sessions(&self) -> impl Iterator<Item = &SavedSession> {
+        self.sessions
+            .iter()
+            .filter(|saved| !self.open.contains(&saved.id))
+    }
+
     pub fn reload(&mut self, store: &SessionStore) -> Result<()> {
         let mut updated = Self::load(store, &self.current_id)?;
         updated.selected = updated
-            .sessions
-            .iter()
-            .filter(|saved| self.selected.contains(&saved.id) && !updated.open.contains(&saved.id))
+            .closed_sessions()
+            .filter(|saved| self.selected.contains(&saved.id))
             .map(|saved| saved.id.clone())
             .collect();
         updated.selection = self
@@ -74,6 +79,22 @@ impl SessionDialog {
             .unwrap_or(self.selection.min(updated.sessions.len().saturating_sub(1)));
         *self = updated;
         Ok(())
+    }
+
+    pub fn forget(&mut self, store: &SessionStore, ids: &[String]) {
+        let result = store.forget(ids);
+        let reloaded = self.reload(store);
+        self.message = match result {
+            Ok(count) => format!(
+                "Forgot {count} review session{}.",
+                if count == 1 { "" } else { "s" }
+            ),
+            Err(error) => format!("Forget failed: {error:#}"),
+        };
+        if let Err(error) = reloaded {
+            self.message
+                .push_str(&format!(" · Reload failed: {error:#}"));
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent, page: usize) -> Option<SessionAction> {
@@ -139,9 +160,7 @@ impl SessionDialog {
             }
             KeyCode::Char('a') => {
                 let all: BTreeSet<_> = self
-                    .sessions
-                    .iter()
-                    .filter(|saved| !self.open.contains(&saved.id))
+                    .closed_sessions()
                     .map(|saved| saved.id.clone())
                     .collect();
                 if self.selected == all {
