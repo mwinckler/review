@@ -1,7 +1,9 @@
 use std::{
     collections::BTreeMap,
+    io::{BufRead, BufReader, Read, Seek},
+    iter::Sum,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -69,6 +71,16 @@ pub enum ComparisonMode {
 pub struct LineCounts {
     pub added: u64,
     pub removed: u64,
+}
+
+impl Sum for LineCounts {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::default(), |mut total, counts| {
+            total.added += counts.added;
+            total.removed += counts.removed;
+            total
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -362,8 +374,11 @@ impl Repository {
                 false,
             )?,
             Backend::Jj => {
-                let output = self.run(
-                    &[
+                let changes = self.changes(comparison)?;
+                let mut errors = tempfile::tempfile()?;
+                let mut child = self
+                    .command(false)
+                    .args([
                         "diff",
                         "--from",
                         &comparison.base_id,
@@ -372,10 +387,25 @@ impl Repository {
                         "--git",
                         "--context",
                         "0",
-                    ],
-                    false,
-                )?;
-                return parse_jj_line_counts(&output, &self.changes(comparison)?);
+                    ])
+                    .stdout(Stdio::piped())
+                    .stderr(errors.try_clone()?)
+                    .spawn()
+                    .context("running jj diff for line counts")?;
+                let counts = parse_jj_line_counts(
+                    BufReader::new(child.stdout.take().expect("diff stdout is piped")),
+                    &changes,
+                );
+                if counts.is_err() {
+                    let _ = child.kill();
+                }
+                let status = child.wait()?;
+                let counts = counts?;
+                errors.rewind()?;
+                let mut stderr = String::new();
+                errors.take(64 * 1024).read_to_string(&mut stderr)?;
+                ensure!(status.success(), "jj diff: {}", stderr.trim());
+                return Ok(counts);
             }
         };
         parse_numstat(&output)
@@ -388,7 +418,10 @@ impl Repository {
             updated = true;
         }
         if comparison.line_counts.is_none() {
-            comparison.line_counts = Some(self.line_counts(comparison)?);
+            comparison.line_counts = comparison
+                .file_line_counts
+                .as_ref()
+                .map(|files| files.values().copied().sum());
             updated = true;
         }
         Ok(updated)
@@ -484,7 +517,7 @@ impl Repository {
         Ok(revisions[0].to_owned())
     }
 
-    fn run(&self, args: &[&str], snapshot: bool) -> Result<Vec<u8>> {
+    fn command(&self, snapshot: bool) -> Command {
         let program = match self.backend {
             Backend::Git => "git",
             Backend::Jj => "jj",
@@ -505,6 +538,12 @@ impl Repository {
                 }
             }
         }
+        command
+    }
+
+    fn run(&self, args: &[&str], snapshot: bool) -> Result<Vec<u8>> {
+        let mut command = self.command(snapshot);
+        let program = command.get_program().to_string_lossy().into_owned();
         let output = command
             .args(args)
             .output()
@@ -606,12 +645,11 @@ fn parse_git_changes(output: &[u8]) -> Result<Vec<Change>> {
 }
 
 fn parse_numstat(output: &[u8]) -> Result<BTreeMap<String, LineCounts>> {
-    let mut fields = output.split(|byte| *byte == 0).peekable();
+    let mut fields = output
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty());
     let mut files = BTreeMap::<String, LineCounts>::new();
     while let Some(field) = fields.next() {
-        if field.is_empty() && fields.peek().is_none() {
-            break;
-        }
         let mut parts = field.splitn(3, |byte| *byte == b'\t');
         let added = parts.next().context("missing added line count")?;
         let removed = parts.next().context("missing removed line count")?;
@@ -635,7 +673,10 @@ fn parse_numstat(output: &[u8]) -> Result<BTreeMap<String, LineCounts>> {
     Ok(files)
 }
 
-fn parse_jj_line_counts(output: &[u8], changes: &[Change]) -> Result<BTreeMap<String, LineCounts>> {
+fn parse_jj_line_counts(
+    mut reader: impl BufRead,
+    changes: &[Change],
+) -> Result<BTreeMap<String, LineCounts>> {
     let headers: BTreeMap<_, _> = changes
         .iter()
         .map(|change| {
@@ -645,31 +686,32 @@ fn parse_jj_line_counts(output: &[u8], changes: &[Change]) -> Result<BTreeMap<St
             )
         })
         .collect();
-    let mut files = BTreeMap::<String, LineCounts>::new();
-    let mut remaining = output;
+    let mut files: BTreeMap<_, _> = changes
+        .iter()
+        .map(|change| (change.path.clone(), LineCounts::default()))
+        .collect();
+    let mut line = Vec::new();
     let mut current: Option<&Change> = None;
-    'lines: while !remaining.is_empty() {
-        if remaining.starts_with(b"diff --git ") {
+    let mut metadata = Vec::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        if line.starts_with(b"diff --git ") {
             // jj writes paths literally, including embedded newlines. Match the
             // complete header against the structured diff's paths.
-            let mut length = 0;
             let change = loop {
-                let next = remaining[length..]
-                    .split_inclusive(|byte| *byte == b'\n')
-                    .next()
-                    .context("missing Jujutsu diff header")?;
-                length += next.len();
-                if let Some(change) = headers.get(&remaining[..length]) {
+                if let Some(change) = headers.get(&line) {
                     break *change;
                 }
+                ensure!(
+                    reader.read_until(b'\n', &mut line)? > 0,
+                    "missing Jujutsu diff header"
+                );
             };
-            remaining = &remaining[length..];
-            files.entry(change.path.clone()).or_default();
             current = Some(change);
-            continue;
-        }
-        if let Some(change) = current {
-            for metadata in [
+            metadata = vec![
                 format!("--- a/{}\n", change.old_path),
                 format!("+++ b/{}\n", change.path),
                 format!("rename from {}\n", change.old_path),
@@ -680,25 +722,40 @@ fn parse_jj_line_counts(output: &[u8], changes: &[Change]) -> Result<BTreeMap<St
                     "Binary files a/{} and b/{} differ\n",
                     change.old_path, change.path
                 ),
-            ] {
-                if let Some(rest) = remaining.strip_prefix(metadata.as_bytes()) {
-                    remaining = rest;
-                    continue 'lines;
-                }
-            }
+            ];
+            continue;
         }
-        let line = remaining
-            .split_inclusive(|byte| *byte == b'\n')
-            .next()
-            .unwrap();
-        remaining = &remaining[line.len()..];
+        if let Some(header) = metadata
+            .iter()
+            .find(|header| header.as_bytes().starts_with(&line))
+        {
+            let start = line.len();
+            line.resize(header.len(), 0);
+            reader.read_exact(&mut line[start..])?;
+            ensure!(line == header.as_bytes(), "invalid Jujutsu diff metadata");
+            continue;
+        }
         if line.starts_with(b"@@ ") {
             let change = current.context("missing Jujutsu diff path")?;
             let counts = files.get_mut(&change.path).unwrap();
             let mut ranges = line.split(|byte| *byte == b' ').skip(1);
-            counts.removed +=
-                hunk_line_count(ranges.next().context("missing removed hunk range")?)?;
-            counts.added += hunk_line_count(ranges.next().context("missing added hunk range")?)?;
+            let removed = hunk_line_count(ranges.next().context("missing removed hunk range")?)?;
+            let added = hunk_line_count(ranges.next().context("missing added hunk range")?)?;
+            counts.removed += removed;
+            counts.added += added;
+            // Zero-context ranges give exact counts. Stream past the contents,
+            // including no-final-newline notices, without buffering large lines.
+            let mut remaining = added + removed;
+            while remaining > 0 {
+                let prefix = *reader
+                    .fill_buf()?
+                    .first()
+                    .context("incomplete Jujutsu diff hunk")?;
+                reader.skip_until(b'\n')?;
+                if prefix != b'\\' {
+                    remaining -= 1;
+                }
+            }
         }
     }
     Ok(files)

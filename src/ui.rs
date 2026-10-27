@@ -148,12 +148,8 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     ]);
     let selected_counts = comparison.file_line_counts.as_ref().and_then(|files| {
         app.preview_changes()
-            .try_fold(LineCounts::default(), |mut total, change| {
-                let counts = files.get(&change.path)?;
-                total.added += counts.added;
-                total.removed += counts.removed;
-                Some(total)
-            })
+            .map(|change| files.get(&change.path).copied())
+            .sum()
     });
     let selected_counts = Line::from(line_count_spans(selected_counts));
     let mut counts = vec![Span::raw("(")];
