@@ -555,9 +555,9 @@ impl App {
             );
         }
         // Keep query extensions available while assigning home-row-first jump labels.
-        let labels = "asdfghjklqwertyuiopzxcvbnm"
+        let labels = "asdfghjklqwertyuiopzxcvbnmASDFGHJKLQWERTYUIOPZXCVBNM"
             .chars()
-            .filter(|label| !continuations.contains(label));
+            .filter(|label| !continuations.contains(&label.to_ascii_lowercase()));
         flash.labels = flash.matches.iter().copied().zip(labels).collect();
     }
 
@@ -583,11 +583,7 @@ impl App {
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                if let Some((index, _)) = flash
-                    .labels
-                    .iter()
-                    .find(|(_, label)| *label == ch.to_ascii_lowercase())
-                {
+                if let Some((index, _)) = flash.labels.iter().find(|(_, label)| *label == ch) {
                     self.select(*index);
                     return;
                 }

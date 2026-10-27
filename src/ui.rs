@@ -282,7 +282,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 }
                 if let Some((_, label)) = flash.labels.iter().find(|(row, _)| *row == index) {
                     let label = Span::styled(
-                        label.to_ascii_uppercase().to_string(),
+                        label.to_string(),
                         flash_style.fg(Color::Black).bg(Color::Yellow),
                     );
                     for (_, column) in &matches {

@@ -182,9 +182,10 @@ locations. For wrapper scripts, set `[renderer] hunk_format = "difftastic"` or
 ### Flash navigation
 
 Press `s` from either pane, type a filename fragment, then press a highlighted
-label to select that file or folder in the tree. Labels are displayed uppercase
-and accept lowercase input. Keep typing to narrow the case-insensitive matches;
-`Backspace` edits the fragment, and `Enter` selects the first match.
+label to select that file or folder in the tree. Jump keys are case-sensitive,
+using lowercase labels first, then uppercase labels for additional matches.
+Press each label exactly as displayed. Keep typing to narrow the case-insensitive
+matches; `Backspace` edits the fragment, and `Enter` selects the first match.
 
 The typed fragment highlights within each matching name. Jump labels overlay the
 second character after each match, keeping its next character visible. Repeated

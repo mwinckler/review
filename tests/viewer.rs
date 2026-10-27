@@ -1029,6 +1029,94 @@ fn flash_labels_only_rows_in_the_tree_viewport() {
 }
 
 #[test]
+fn flash_jump_keys_require_the_displayed_case() {
+    let mut app = App::new(review());
+    key(&mut app, KeyCode::Char('s'));
+    key(&mut app, KeyCode::Char('b'));
+    let label = app.flash.as_ref().unwrap().labels[0].1;
+    assert!(label.is_ascii_lowercase());
+    app.handle_key(
+        KeyEvent::new(
+            KeyCode::Char(label.to_ascii_uppercase()),
+            KeyModifiers::SHIFT,
+        ),
+        10,
+        100,
+        100,
+    );
+    assert_eq!(
+        app.flash.as_ref().unwrap().query,
+        format!("b{}", label.to_ascii_uppercase())
+    );
+    assert_eq!(app.review.view.selected, "README.md");
+    key(&mut app, KeyCode::Backspace);
+    assert_eq!(app.flash.as_ref().unwrap().query, "b");
+    key(&mut app, KeyCode::Char(label));
+    assert!(app.flash.is_none());
+    assert_eq!(app.review.view.selected, "src/nested/b.rs");
+}
+
+#[test]
+fn flash_uses_lowercase_then_uppercase_labels_to_jump_to_distinct_rows() {
+    let mut review = review();
+    review.changes = (0..60)
+        .map(|index| change(&format!("file_{index:02}_x_.rs")))
+        .collect();
+    let mut app = App::new(review);
+    for ch in "sX".chars() {
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+            60,
+            100,
+            100,
+        );
+    }
+    let flash = app.flash.as_ref().unwrap();
+    assert_eq!(flash.matches.len(), 60);
+    assert_eq!(
+        flash
+            .labels
+            .iter()
+            .map(|(_, label)| label)
+            .collect::<String>(),
+        "asdfghjklqwertyuiopzxcvbnmASDFGHJKLQWERTYUIOPZXCVBNM"
+    );
+    let mut terminal = Terminal::new(TestBackend::new(100, 64)).unwrap();
+    terminal
+        .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    for (row, label) in &flash.labels {
+        let cell = &buffer[(13, *row as u16 + 2)];
+        assert_eq!(cell.symbol(), label.to_string());
+        assert_eq!(cell.bg, Color::Yellow);
+    }
+    assert_eq!(buffer[(13, 54)].symbol(), ".");
+    key(&mut app, KeyCode::Esc);
+    for (label, expected_row, modifiers) in [
+        ('A', 26, KeyModifiers::SHIFT),
+        ('a', 0, KeyModifiers::NONE),
+        ('M', 51, KeyModifiers::SHIFT),
+        ('m', 25, KeyModifiers::NONE),
+    ] {
+        for ch in "sx".chars() {
+            app.handle_key(
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                60,
+                100,
+                100,
+            );
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char(label), modifiers), 60, 100, 100);
+        assert!(app.flash.is_none());
+        assert_eq!(
+            app.review.view.selected,
+            format!("file_{expected_row:02}_x_.rs")
+        );
+    }
+}
+
+#[test]
 fn flash_highlights_each_typed_match_and_overlays_labels_after_the_next_letter() {
     let mut review = review();
     review.changes = vec![change("xxTESTabc_TESTdef.rs")];
@@ -1039,7 +1127,7 @@ fn flash_highlights_each_typed_match_and_overlays_labels_after_the_next_letter()
         key(&mut app, KeyCode::Char(ch));
         let flash = app.flash.as_ref().unwrap();
         assert_eq!(flash.query.len(), length + 1);
-        let label = flash.labels[0].1.to_ascii_uppercase().to_string();
+        let label = flash.labels[0].1.to_string();
         terminal
             .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
             .unwrap();
@@ -1094,10 +1182,7 @@ fn flash_labels_preserve_overlapping_matches_and_their_continuations() {
     }
     assert_eq!(buffer[(6, 2)].symbol(), "d");
     assert_ne!(buffer[(6, 2)].fg, Color::Yellow);
-    assert_eq!(
-        buffer[(7, 2)].symbol(),
-        label.to_ascii_uppercase().to_string()
-    );
+    assert_eq!(buffer[(7, 2)].symbol(), label.to_string());
     key(&mut app, KeyCode::Char('D'));
     assert_eq!(app.flash.as_ref().unwrap().query, "aaD");
 }
@@ -1134,7 +1219,7 @@ fn flash_label_offsets_follow_unicode_width_case_folding_and_escaped_names() {
         assert_ne!(buffer[(start + width, 2)].fg, Color::Yellow, "{name}");
         assert_eq!(
             buffer[(label_column, 2)].symbol(),
-            label.to_ascii_uppercase().to_string(),
+            label.to_string(),
             "{name}"
         );
         assert_eq!(buffer[(label_column, 2)].bg, Color::Yellow, "{name}");
@@ -1157,10 +1242,7 @@ fn flash_labels_at_name_ends_preserve_file_and_folder_metadata_positions() {
             .unwrap();
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(10, 2)].symbol(), next);
-        assert_eq!(
-            buffer[(11, 2)].symbol(),
-            label.to_ascii_uppercase().to_string()
-        );
+        assert_eq!(buffer[(11, 2)].symbol(), label.to_string());
         assert_eq!(buffer[(12, 2)].symbol(), metadata);
     }
 }
@@ -1168,7 +1250,7 @@ fn flash_labels_at_name_ends_preserve_file_and_folder_metadata_positions() {
 #[test]
 fn flash_labels_exclude_continuations_on_every_visible_match_including_unlabeled_rows() {
     let mut review = review();
-    review.changes = (0..30)
+    review.changes = (0..60)
         .map(|index| change(&format!("file_{index:02}_x_.rs")))
         .chain([change("last_xA_xS_xD.rs")])
         .collect();
@@ -1176,26 +1258,37 @@ fn flash_labels_exclude_continuations_on_every_visible_match_including_unlabeled
     for ch in "sx".chars() {
         app.handle_key(
             KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
-            40,
+            80,
             100,
             100,
         );
     }
     let flash = app.flash.as_ref().unwrap();
-    assert_eq!(flash.matches.len(), 31);
+    assert_eq!(flash.matches.len(), 61);
+    assert_eq!(flash.labels.len(), 46);
+    assert!(
+        flash.labels[..23]
+            .iter()
+            .all(|(_, label)| label.is_ascii_lowercase())
+    );
+    assert!(
+        flash.labels[23..]
+            .iter()
+            .all(|(_, label)| label.is_ascii_uppercase())
+    );
     assert!(
         flash
             .labels
             .iter()
-            .all(|(_, label)| !['a', 's', 'd'].contains(label))
+            .all(|(_, label)| !['a', 's', 'd'].contains(&label.to_ascii_lowercase()))
     );
-    assert!(flash.labels.iter().all(|(row, _)| *row != 30));
+    assert!(flash.labels.iter().all(|(row, _)| *row != 60));
     key(&mut app, KeyCode::Char('S'));
     assert_eq!(app.flash.as_ref().unwrap().query, "xS");
     key(&mut app, KeyCode::Backspace);
     assert_eq!(app.flash.as_ref().unwrap().query, "x");
     let label = app.flash.as_ref().unwrap().labels[0].1;
-    key(&mut app, KeyCode::Char(label.to_ascii_uppercase()));
+    key(&mut app, KeyCode::Char(label));
     assert!(app.flash.is_none());
     assert_eq!(app.review.view.selected, "file_00_x_.rs");
 }
@@ -1249,7 +1342,7 @@ fn flash_labels_remain_bright_on_viewed_files() {
     assert_ne!(buffer[(8, 6)].fg, Color::Yellow);
     assert!(buffer[(8, 6)].modifier.contains(Modifier::DIM));
     let cell = &buffer[(9, 6)];
-    assert_eq!(cell.symbol(), label.to_ascii_uppercase().to_string());
+    assert_eq!(cell.symbol(), label.to_string());
     assert!(cell.modifier.contains(Modifier::BOLD));
     assert!(!cell.modifier.contains(Modifier::DIM));
     let footer: String = (0..100)
