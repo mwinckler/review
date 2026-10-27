@@ -4,6 +4,8 @@ A keyboard-driven branch review TUI built with Rust and Ratatui. Browse a file
 tree, read syntax-aware diffs from [Difftastic](https://difftastic.wilfred.me.uk/),
 mark files viewed, and pick up where you left off.
 
+![Screenshot](./review-screenshot.png)
+
 ## Install
 
 Requires Rust 1.88+, Git, and `difft` on `PATH`. Jujutsu reviews use `jj` 0.46+
@@ -21,7 +23,7 @@ review
 
 # Compare two change/commit IDs, branches, or bookmarks directly
 review ukr..vqm
-review main..feature/my-change
+review master..feature/my-change
 
 # Compare against the current revision (@); these forms are equivalent
 review ukr..
@@ -32,27 +34,27 @@ review ukr
 review 'trunk()..@'
 review --backend git 'HEAD~3..@'
 
-# Git: review the current branch against its merge base with main
-review --base main
+# Git: review the current branch against its merge base with master
+review --base master
 
 # Git merge-base shorthand
-review --backend git main...feature/my-change
+review --backend git master...feature/my-change
 
 # Explicit merge-base branch comparison
-review --base origin/main --head feature/my-change
+review --base origin/master --head feature/my-change
 
 # Jujutsu: review the working-copy revision against trunk
 review --base 'trunk()' --head @
 
 # Select a repository and backend explicitly
-review -C ../project --backend git --base main
+review -C ../project --backend git --base master
 ```
 
 Positional `BASE..HEAD` compares the two snapshots directly. Either omitted
 endpoint defaults to `@`, and a lone `REV` means `REV..@`. `@` selects Git's
 current `HEAD` or Jujutsu's working-copy revision. Each endpoint accepts the
 selected backend's revision syntax and resolves to one revision, including branch
-names, commit IDs, jj change IDs, and expressions such as `heads(main::feature)`.
+names, commit IDs, jj change IDs, and expressions such as `heads(master::feature)`.
 Quote expressions containing shell metacharacters.
 
 Bare `review` defaults to `--base master`. Use `--base` with an optional `--head`
@@ -63,7 +65,7 @@ branch since the histories diverged.
 The nearest repository is detected automatically from the current directory,
 with Jujutsu preferred in a colocated workspace. The header displays the resolved
 snapshot IDs. Jujutsu reviews show each endpoint's change ID and Git commit hash,
-such as `main (ukrwmnxy abcdef12)`.
+such as `master (ukrwmnxy abcdef12)`.
 Added and removed line counts appear at the right edge of the header in green
 and red: `+12 -3 (+120 -45)`. The first pair covers the highlighted file or folder;
 folder counts include all changed descendants, including viewed files and files
@@ -85,7 +87,7 @@ fixed revisions.
 review --resume          # Resume the most recently saved session
 review --list            # List saved sessions for this repository/backend
 review --resume <id>     # Resume a particular session
-review --base main       # Start a fresh review
+review --base master       # Start a fresh review
 ```
 
 Press `q` or `Ctrl-c` to save and quit. Viewed changes save immediately;
