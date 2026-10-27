@@ -1,5 +1,6 @@
 use crate::{
     app::{App, Focus},
+    session_dialog::SessionDialog,
     tree,
     vcs::{Change, LineCounts},
 };
@@ -377,7 +378,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             display_path(&app.review.view.filter)
         )
     } else {
-        "Space viewed + next · ]u next unviewed · ]h/[h hunks · e editor · / search · ? help".into()
+        "Space viewed + next · ]h/[h hunks · e editor · S sessions · / search · ? help".into()
     };
     frame.render_widget(
         Paragraph::new(footer).style(Style::default().fg(Color::Cyan)),
@@ -385,7 +386,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     );
     if app.help {
         let width = frame.area().width.min(74);
-        let height = frame.area().height.min(25);
+        let height = frame.area().height.min(26);
         let area = Rect::new(
             frame.area().x + (frame.area().width - width) / 2,
             frame.area().y + (frame.area().height - height) / 2,
@@ -407,6 +408,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "e                Open selected hunk/file in editor\n",
             "/                Filter filenames / search diff\n",
             "s                Flash jump in the tree from either pane\n",
+            "S                Manage / forget saved review sessions\n",
             "n / N            Next/previous search match\n",
             "u                Toggle unviewed-only files\n",
             "i / z            Toggle inline / full-width diff\n",
@@ -426,6 +428,143 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                     .border_style(Style::default().fg(Color::Cyan)),
             ),
             area,
+        );
+    }
+    if let Some(dialog) = &app.session_dialog {
+        draw_session_dialog(frame, dialog);
+    }
+}
+
+pub fn session_dialog_area(area: Rect) -> Rect {
+    let width = area.width.min(100);
+    let height = area.height.min(22);
+    Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    )
+}
+
+fn draw_session_dialog(frame: &mut Frame, dialog: &SessionDialog) {
+    let area = session_dialog_area(frame.area());
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Forget review sessions ")
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let [info, list, message, controls] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    let available = dialog
+        .sessions
+        .iter()
+        .filter(|saved| !dialog.open.contains(&saved.id))
+        .count();
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{} selected · {available} available · open sessions protected",
+            dialog.selected.len()
+        )),
+        info,
+    );
+    let visible = tree::visible_range(
+        dialog.sessions.len(),
+        dialog.selection,
+        list.height as usize,
+    );
+    let offset = visible.start;
+    let items: Vec<_> = dialog
+        .sessions
+        .iter()
+        .skip(offset)
+        .take(visible.len())
+        .map(|saved| {
+            let open = dialog.open.contains(&saved.id);
+            let mark = if open {
+                "[-] "
+            } else if dialog.selected.contains(&saved.id) {
+                "[x] "
+            } else {
+                "[ ] "
+            };
+            let prefix = saved.unique_prefix(&dialog.sessions);
+            let mut spans = vec![
+                Span::raw(mark),
+                Span::styled(
+                    prefix,
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    &saved.id[prefix.len()..],
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::raw(format!(
+                    "  {} → {}  Viewed {}/{}",
+                    display_path(&saved.review.comparison.base_ref),
+                    display_path(&saved.review.comparison.head_ref),
+                    saved.review.viewed.len(),
+                    saved.review.changes.len()
+                )),
+            ];
+            if saved.id == dialog.current_id {
+                spans.push(Span::styled(
+                    "  (current)",
+                    Style::default().fg(Color::Cyan),
+                ));
+            } else if open {
+                spans.push(Span::styled("  (open)", Style::default().fg(Color::Yellow)));
+            }
+            let style = if open {
+                Style::default().add_modifier(Modifier::DIM)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(spans)).style(style)
+        })
+        .collect();
+    let mut selection =
+        ListState::default().with_selected(Some(dialog.selection.saturating_sub(offset)));
+    frame.render_stateful_widget(
+        List::new(items).highlight_style(Style::default().bg(Color::Rgb(35, 45, 60))),
+        list,
+        &mut selection,
+    );
+    if dialog.sessions.is_empty() {
+        frame.render_widget(Paragraph::new("No saved review sessions."), list);
+    }
+    if dialog.confirming {
+        frame.render_widget(
+            Paragraph::new(format!(
+                "Permanently delete {} selected saved reviews?",
+                dialog.selected.len()
+            ))
+            .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            message,
+        );
+        frame.render_widget(
+            Paragraph::new("y delete · n / Esc cancel").style(Style::default().fg(Color::Yellow)),
+            controls,
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(display_path(&dialog.message)).style(Style::default().fg(Color::Yellow)),
+            message,
+        );
+        frame.render_widget(
+            Paragraph::new(
+                "j/k move · Space toggle · a all/none · d delete · r reload · Esc close",
+            )
+            .style(Style::default().fg(Color::Cyan)),
+            controls,
         );
     }
 }

@@ -5,6 +5,7 @@ use std::{
 
 use crate::{
     hunks::{Hunk, HunkLocation},
+    session_dialog::{SessionAction, SessionDialog},
     state::{Position, Review},
     tree::{self, Row},
     vcs::Change,
@@ -75,6 +76,8 @@ pub struct App {
     pub hunk_selection: Option<HunkLocation>,
     pub editor_requested: bool,
     pub rendering: bool,
+    pub session_dialog: Option<SessionDialog>,
+    pub session_action: Option<SessionAction>,
     hunk_actions: VecDeque<bool>,
     prefix: Option<char>,
     search_original: String,
@@ -106,6 +109,8 @@ impl App {
             hunk_selection: None,
             editor_requested: false,
             rendering: false,
+            session_dialog: None,
+            session_action: None,
             hunk_actions: VecDeque::new(),
             prefix: None,
             search_original: String::new(),
@@ -272,6 +277,10 @@ impl App {
             self.quit = true;
             return;
         }
+        if let Some(dialog) = &mut self.session_dialog {
+            self.session_action = dialog.handle_key(key, page);
+            return;
+        }
         self.dirty = true;
         if self.help {
             self.help = false;
@@ -375,6 +384,9 @@ impl App {
             return;
         }
         match key.code {
+            KeyCode::Char('S') => {
+                self.session_action = Some(SessionAction::Open);
+            }
             KeyCode::Char('e') => {
                 self.editor_requested = true;
             }

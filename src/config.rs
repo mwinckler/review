@@ -152,6 +152,7 @@ fn action_keys(action: &str) -> Option<&'static [&'static str]> {
         "toggle_fullscreen" => &["z"],
         "search" => &["/"],
         "flash" => &["s"],
+        "manage_sessions" => &["S"],
         "next_match" => &["n"],
         "previous_match" => &["N"],
         "refresh" => &["r"],

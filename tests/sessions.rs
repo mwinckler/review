@@ -121,6 +121,92 @@ fn new_session_ids_are_compact_lowercase_hex_and_distinct() {
 }
 
 #[test]
+fn forgetting_sessions_resolves_and_deduplicates_prefixes_and_preserves_shared_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let store = SessionStore::new(dir.path(), &repo).unwrap();
+    for id in ["a1", "b2", "c3"] {
+        session_fixture::write(&store, &repo, id, review());
+    }
+    fs::create_dir(store.directory.join("snapshots")).unwrap();
+    fs::write(
+        store.directory.join("snapshots/editor.rs"),
+        "reviewed contents",
+    )
+    .unwrap();
+    fs::write(dir.path().join("working-file"), "working contents").unwrap();
+    assert_eq!(
+        store
+            .forget(&["a".into(), "a1".into(), "b".into()])
+            .unwrap(),
+        2
+    );
+    assert_eq!(store.list().unwrap()[0].id, "c3");
+    assert!(store.directory.join("a1.lock").exists());
+    assert!(store.directory.join("b2.lock").exists());
+    assert_eq!(
+        fs::read_to_string(store.directory.join("snapshots/editor.rs")).unwrap(),
+        "reviewed contents"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("working-file")).unwrap(),
+        "working contents"
+    );
+    assert!(store.open("a1").is_err());
+}
+
+#[test]
+fn forgetting_preflights_all_ids_and_locks_before_removing_any_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let store = SessionStore::new(dir.path(), &repo).unwrap();
+    for id in ["a1", "b2", "b3"] {
+        session_fixture::write(&store, &repo, id, review());
+    }
+    let (_, lock) = store.open("b2").unwrap();
+    assert!(store.is_open("b2").unwrap());
+    for ids in [
+        vec!["a", "b"],
+        vec!["a", "b2"],
+        vec!["a", "f"],
+        vec!["a", "../"],
+        vec![],
+    ] {
+        let ids: Vec<String> = ids.into_iter().map(str::to_owned).collect();
+        assert!(store.forget(&ids).is_err());
+        assert_eq!(store.list().unwrap().len(), 3);
+        assert!(!store.is_open("a1").unwrap());
+    }
+    drop(lock);
+    assert!(!store.is_open("b2").unwrap());
+    assert_eq!(store.forget(&["a".into(), "b2".into()]).unwrap(), 2);
+    assert_eq!(store.list().unwrap()[0].id, "b3");
+}
+
+#[test]
+fn forgetting_corrupt_records_is_scoped_to_the_repository_and_backend() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let store = SessionStore::new(dir.path(), &repo).unwrap();
+    let other_repo = Repository {
+        root: dir.path().join("other"),
+        backend: repo.backend,
+    };
+    let other = SessionStore::new(dir.path(), &other_repo).unwrap();
+    let git_repo = Repository {
+        backend: Backend::Git,
+        ..repo.clone()
+    };
+    let git = SessionStore::new(dir.path(), &git_repo).unwrap();
+    session_fixture::write(&other, &other_repo, "a1", review());
+    session_fixture::write(&git, &git_repo, "a1", review());
+    fs::write(store.directory.join("a1.json"), "broken JSON").unwrap();
+    assert_eq!(store.forget(&["a".into()]).unwrap(), 1);
+    assert_eq!(other.list().unwrap()[0].id, "a1");
+    assert_eq!(git.list().unwrap()[0].id, "a1");
+}
+
+#[test]
 fn unique_prefixes_open_and_save_the_full_session_under_the_same_lock() {
     let dir = tempfile::tempdir().unwrap();
     let repo = repo(dir.path());

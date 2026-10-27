@@ -1,5 +1,6 @@
 use std::{
-    io::{self, IsTerminal},
+    collections::BTreeSet,
+    io::{self, IsTerminal, Write},
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -17,6 +18,7 @@ use review::{
     editor::EditorWorker,
     refresh::RefreshWorker,
     renderer::{RenderOptions, RenderWorker},
+    session_dialog::{SessionAction, SessionDialog},
     state::Review,
     store::{SavedSession, SessionLock, SessionStore},
     ui,
@@ -26,7 +28,8 @@ use review::{
 #[derive(Debug, Parser)]
 #[command(
     version,
-    about = "Review revision comparisons with a file tree, difft, and Vim keys"
+    about = "Review revision comparisons with a file tree, difft, and Vim keys",
+    group(clap::ArgGroup::new("forget_selection").args(["forget", "forget_all"]))
 )]
 struct Cli {
     /// Compare BASE..HEAD directly; REV means REV..@
@@ -34,7 +37,7 @@ struct Cli {
     /// Endpoints accept the selected backend's single-revision expressions.
     /// Omitted endpoints and @ select HEAD (Git) or the working copy (Jujutsu).
     /// Git also accepts BASE...HEAD for a merge-base comparison.
-    #[arg(value_name = "REVSET", conflicts_with_all = ["base", "head", "resume", "list"])]
+    #[arg(value_name = "REVSET", conflicts_with_all = ["base", "head", "resume", "list", "forget_selection"])]
     comparison: Option<String>,
     /// Repository directory (defaults to the current directory)
     #[arg(short = 'C', long, default_value = ".")]
@@ -54,6 +57,15 @@ struct Cli {
     /// List this repository's saved review sessions
     #[arg(long, conflicts_with_all = ["base", "resume"])]
     list: bool,
+    /// Permanently forget saved sessions by full ID or unique prefix
+    #[arg(long, value_name = "ID", num_args = 1.., conflicts_with_all = ["base", "head", "resume", "list"])]
+    forget: Vec<String>,
+    /// Permanently forget all closed sessions for this repository/backend
+    #[arg(long, conflicts_with_all = ["base", "head", "resume", "list"])]
+    forget_all: bool,
+    /// Confirm forgetting sessions without prompting
+    #[arg(short = 'y', long, requires = "forget_selection")]
+    yes: bool,
     /// Override the review state directory
     #[arg(long)]
     state_dir: Option<PathBuf>,
@@ -76,6 +88,50 @@ fn main() -> Result<()> {
         }
     };
     let store = SessionStore::new(&state_dir, &repo)?;
+    if cli.forget_all || !cli.forget.is_empty() {
+        let mut ids = BTreeSet::new();
+        if cli.forget_all {
+            for saved in store.list()? {
+                if !store.is_open(&saved.id)? {
+                    ids.insert(saved.id);
+                }
+            }
+        } else {
+            for prefix in &cli.forget {
+                ids.insert(store.resolve(prefix)?);
+            }
+        }
+        if ids.is_empty() {
+            println!("No closed review sessions to forget.");
+            return Ok(());
+        }
+        if !cli.yes {
+            ensure!(
+                io::stdin().is_terminal() && io::stdout().is_terminal(),
+                "Forgetting sessions requires confirmation; pass --yes to confirm without a terminal"
+            );
+            println!("Permanently forget {} saved review sessions:", ids.len());
+            for id in &ids {
+                println!("  {id}");
+            }
+            print!("Delete saved review progress? [y/N] ");
+            io::stdout().flush()?;
+            let mut reply = String::new();
+            io::stdin().read_line(&mut reply)?;
+            if !reply.trim().eq_ignore_ascii_case("y") && !reply.trim().eq_ignore_ascii_case("yes")
+            {
+                println!("Cancelled.");
+                return Ok(());
+            }
+        }
+        let ids: Vec<_> = ids.into_iter().collect();
+        let count = store.forget(&ids)?;
+        println!(
+            "Forgot {count} review session{}.",
+            if count == 1 { "" } else { "s" }
+        );
+        return Ok(());
+    }
     if cli.list {
         let sessions = store.list()?;
         let color = io::stdout().is_terminal() && !Colored::ansi_color_disabled();
@@ -158,8 +214,7 @@ fn main() -> Result<()> {
             &repo,
             &mut app,
             (&worker, &editor),
-            &mut saved,
-            &lock,
+            (&store, &mut saved, &lock),
             &config,
         )
     });
@@ -173,11 +228,11 @@ fn run(
     repo: &Repository,
     app: &mut App,
     workers: (&RenderWorker, &EditorWorker),
-    saved: &mut SavedSession,
-    lock: &SessionLock,
+    session: (&SessionStore, &mut SavedSession, &SessionLock),
     config: &Config,
 ) -> Result<()> {
     let (worker, editor) = workers;
+    let (store, saved, lock) = session;
     let mut diff = Text::raw("Select a changed file");
     let mut requested = None;
     let mut request_id = 0;
@@ -286,6 +341,7 @@ fn run(
                     app.message.clear();
                     let keys = if app.searching
                         || app.flash.is_some()
+                        || app.session_dialog.is_some()
                         || app.help
                         || (key.code == KeyCode::Char('c')
                             && key.modifiers.contains(KeyModifiers::CONTROL))
@@ -296,13 +352,25 @@ fn run(
                     };
                     for key in keys {
                         let search = app.focus == Focus::Diff
+                            && app.session_dialog.is_none()
                             && !app.searching
                             && !app.help
                             && matches!(key.code, KeyCode::Char('n' | 'N'));
-                        let search_enter =
-                            app.focus == Focus::Diff && app.searching && key.code == KeyCode::Enter;
-                        app.handle_key(key, page, diff.lines.len(), size.width);
-                        force_save |= key.code == KeyCode::Char(' ');
+                        let search_enter = app.focus == Focus::Diff
+                            && app.searching
+                            && app.session_dialog.is_none()
+                            && key.code == KeyCode::Enter;
+                        let input_page = if app.session_dialog.is_some() {
+                            ui::session_dialog_area(Rect::new(0, 0, size.width, size.height))
+                                .height
+                                .saturating_sub(5)
+                                .max(1) as usize
+                        } else {
+                            page
+                        };
+                        app.handle_key(key, input_page, diff.lines.len(), size.width);
+                        force_save |=
+                            key.code == KeyCode::Char(' ') && app.session_dialog.is_none();
                         if search || search_enter {
                             app.search_diff(&diff, key.code != KeyCode::Char('N'));
                         }
@@ -314,6 +382,40 @@ fn run(
                 }
                 _ => {}
             }
+        }
+        if let Some(action) = app.session_action.take() {
+            match action {
+                SessionAction::Open => match SessionDialog::load(store, &saved.id) {
+                    Ok(dialog) => app.session_dialog = Some(dialog),
+                    Err(error) => app.message = format!("Loading sessions failed: {error:#}"),
+                },
+                SessionAction::Close => app.session_dialog = None,
+                SessionAction::Reload => {
+                    let dialog = app.session_dialog.as_mut().expect("session dialog is open");
+                    dialog.message = match dialog.reload(store) {
+                        Ok(()) => "Sessions reloaded.".into(),
+                        Err(error) => format!("Reload failed: {error:#}"),
+                    };
+                }
+                SessionAction::Forget(ids) => {
+                    let result = store.forget(&ids);
+                    let dialog = app.session_dialog.as_mut().expect("session dialog is open");
+                    let reloaded = dialog.reload(store);
+                    dialog.message = match result {
+                        Ok(count) => format!(
+                            "Forgot {count} review session{}.",
+                            if count == 1 { "" } else { "s" }
+                        ),
+                        Err(error) => format!("Forget failed: {error:#}"),
+                    };
+                    if let Err(error) = reloaded {
+                        dialog
+                            .message
+                            .push_str(&format!(" · Reload failed: {error:#}"));
+                    }
+                }
+            }
+            redraw = true;
         }
         if app.refresh {
             app.refresh = false;

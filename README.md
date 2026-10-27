@@ -119,6 +119,30 @@ State lives in `$XDG_STATE_HOME/review/` (normally `~/.local/state/review/`). Us
 `--state-dir <directory>` for a different location. Saves are atomic, and each
 open session holds an exclusive lock.
 
+### Forget saved sessions
+
+```sh
+review --forget a3             # Forget one session by ID or unique prefix
+review --forget a3 b7          # Forget several sessions
+review --forget-all            # Forget every closed session in this repository/backend
+review --forget-all --yes      # Confirm immediately, suitable for scripts
+```
+
+The CLI asks for confirmation; `-y` / `--yes` confirms explicitly for automation.
+All requested IDs and session locks are checked before deletion. Open sessions
+are protected, and `--forget-all` selects closed sessions.
+
+Press `S` from either pane to open the session dialog. It shows session IDs,
+comparisons, viewed progress, and current/open indicators. Use `j` / `k` or arrows
+to move, `Space` to toggle selections, and `a` to select all closed sessions or
+clear the selection, including sessions outside the viewport. `gg` / `G` and the
+page-scrolling keys also work. Press `d`, `Delete`, or `Enter` to review the
+confirmation, then `y` to delete or `n` / `Esc` to cancel. `r` reloads the list;
+`Esc` / `q` closes the dialog and returns to the review.
+
+Forgetting permanently removes the session's saved progress and navigation state.
+Repository content and persistent editor snapshots are preserved.
+
 ## Keyboard controls
 
 | Keys | Action |
@@ -137,6 +161,7 @@ open session holds an exclusive lock.
 | `e` | Open the selected hunk or file in the editor |
 | `/` | Filter filenames in the tree; search text in the diff |
 | `s` | Flash jump to a visible tree entry from either pane |
+| `S` | Manage and forget saved sessions with multiselect |
 | `n` / `N` | Next/previous matching file or diff search result |
 | `u` | Toggle the unviewed-only filter |
 | `i` | Toggle inline and side-by-side rendering |
@@ -259,6 +284,7 @@ Actions: `up`, `down`, `left`, `right`, `focus_tree`, `focus_diff`, `first`, `la
 `previous_file`, `next_unviewed`, `previous_unviewed`, `next_hunk`, `previous_hunk`,
 `open_editor`, `toggle_viewed`,
 `toggle_unviewed`, `toggle_inline`, `toggle_fullscreen`, `search`, `flash`,
+`manage_sessions`,
 `next_match`, `previous_match`, `refresh`, `clear_filters`, `help`, `quit`.
 
 ## Development

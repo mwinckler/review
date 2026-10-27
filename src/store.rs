@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -97,6 +98,56 @@ impl SessionStore {
         let lock = self.lock(&id)?;
         let session = self.load(&lock.target)?;
         Ok((session, lock))
+    }
+
+    pub fn is_open(&self, id: &str) -> Result<bool> {
+        let id = self.resolve(id)?;
+        match self.lock(&id) {
+            Ok(_) => Ok(false),
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock) =>
+            {
+                Ok(true)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn forget(&self, prefixes: &[String]) -> Result<usize> {
+        ensure!(
+            !prefixes.is_empty(),
+            "Select at least one session to forget"
+        );
+        let ids = prefixes
+            .iter()
+            .map(|prefix| self.resolve(prefix))
+            .collect::<Result<BTreeSet<_>>>()?;
+        let locks = ids
+            .iter()
+            .map(|id| self.lock(id))
+            .collect::<Result<Vec<_>>>()?;
+        for lock in &locks {
+            ensure!(
+                lock.target.try_exists()?,
+                "Session disappeared before deletion: {}",
+                lock.target.display()
+            );
+        }
+        for (deleted, lock) in locks.iter().enumerate() {
+            fs::remove_file(&lock.target).with_context(|| {
+                format!(
+                    "forgetting session {} after removing {deleted}",
+                    lock.target.display()
+                )
+            })?;
+        }
+        #[cfg(unix)]
+        {
+            File::open(&self.directory)?.sync_all()?;
+        }
+        Ok(locks.len())
     }
 
     pub fn resolve(&self, prefix: &str) -> Result<String> {

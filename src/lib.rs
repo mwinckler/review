@@ -5,6 +5,7 @@ pub mod editor;
 pub mod hunks;
 pub mod refresh;
 pub mod renderer;
+pub mod session_dialog;
 pub mod state;
 pub mod store;
 pub mod tree;

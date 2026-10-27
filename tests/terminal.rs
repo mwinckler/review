@@ -218,6 +218,108 @@ fn session_list_highlights_unique_prefixes_and_resume_accepts_them() {
 }
 
 #[test]
+fn session_manager_multiselect_confirms_deletion_and_preserves_active_reviews() {
+    let fixture = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let repo = Repository::discover(fixture.path(), Some(Backend::Git)).unwrap();
+    let comparison = repo.snapshot_expression("HEAD~1..HEAD").unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    for id in ["a1", "b2", "c3", "d4"] {
+        session_fixture::write(
+            &store,
+            &repo,
+            id,
+            Review::new(comparison.clone(), changes.clone()),
+        );
+    }
+    let (_, _other_lock) = store.open("d4").unwrap();
+    let config = state.path().join("config.toml");
+    fs::write(
+        &config,
+        "[keybindings]\nM = 'manage_sessions'\na = 'quit'\nSpace = 'quit'\ny = 'quit'\n",
+    )
+    .unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
+    command
+        .current_dir(fixture.path())
+        .env("JJ_CONFIG", "/dev/null")
+        .args([
+            "--backend",
+            "git",
+            "--resume",
+            "a1",
+            "--state-dir",
+            state.path().to_str().unwrap(),
+            "--config",
+            config.to_str().unwrap(),
+        ]);
+    let mut terminal = Pty::spawn(command);
+    terminal.wait_until(|text| text.contains("Changed files"));
+    terminal.send(b"M");
+    terminal.wait_until(|text| text.contains("Forget review sessions"));
+    terminal.send(b"jj ad");
+    terminal.wait_until(|text| text.contains("Permanently delete 2"));
+    terminal.output.clear();
+    terminal.send(b"n");
+    terminal.wait_until(|text| text.contains("all/none"));
+    assert_eq!(store.list().unwrap().len(), 4);
+    let (_, selected_lock) = store.open("b2").unwrap();
+    terminal.output.clear();
+    terminal.send(b"d");
+    terminal.wait_until(|text| text.contains("Permanently delete"));
+    terminal.send(b"y");
+    terminal.wait_until(|text| text.contains("Forget failed"));
+    assert_eq!(store.list().unwrap().len(), 4);
+    drop(selected_lock);
+    terminal.output.clear();
+    terminal.send(b"rad");
+    terminal.wait_until(|text| text.contains("Permanently delete 2"));
+    terminal.send(b"y");
+    terminal.wait_until(|text| text.contains("Forgot 2") && store.list().unwrap().len() == 2);
+    terminal.send(b"qq");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+    let remaining = store.list().unwrap();
+    assert_eq!(
+        remaining
+            .iter()
+            .map(|saved| saved.id.as_str())
+            .collect::<Vec<_>>(),
+        ["a1", "d4"]
+    );
+    assert!(remaining[0].review.viewed.is_empty());
+    assert!(!store.directory.join("b2.json").exists());
+    assert!(!store.directory.join("c3.json").exists());
+}
+
+#[test]
+fn command_line_forgetting_prompts_and_accepts_both_cancellation_and_confirmation() {
+    let fixture = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let repo = Repository::discover(fixture.path(), Some(Backend::Git)).unwrap();
+    let comparison = repo.snapshot_expression("HEAD~1..HEAD").unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    session_fixture::write(&store, &repo, "a1", Review::new(comparison, changes));
+    for (reply, remaining) in [(b"n\n", 1), (b"y\n", 0)] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
+        command.current_dir(fixture.path()).args([
+            "--backend",
+            "git",
+            "--forget",
+            "a",
+            "--state-dir",
+            state.path().to_str().unwrap(),
+        ]);
+        let mut terminal = Pty::spawn(command);
+        terminal.wait_until(|text| text.contains("[y/N]"));
+        terminal.send(reply);
+        assert!(terminal.finish().success(), "{}", terminal.output);
+        assert_eq!(store.list().unwrap().len(), remaining);
+    }
+}
+
+#[test]
 fn git_positional_comparisons_remain_direct_on_resume_and_refresh() {
     exercise_positional_comparison(Backend::Git);
 }
