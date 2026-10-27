@@ -103,6 +103,7 @@ fn directory_cache_keys_include_every_descendant() {
             "{new}".into(),
         ],
         timeout_ms: 5_000,
+        ..Default::default()
     };
     let worker = RenderWorker::new(config);
     let repo = Repository::discover(dir.path(), Some(Backend::Git)).unwrap();
@@ -137,6 +138,7 @@ fn directory_jobs_share_one_timeout_budget() {
     let worker = RenderWorker::new(RendererConfig {
         command: vec!["sleep".into(), "0.07".into()],
         timeout_ms: 160,
+        ..Default::default()
     });
     let error = render(&worker, &repo, &comparison, "src/").unwrap_err();
     assert!(error.contains("timed out"), "{error}");
@@ -151,6 +153,7 @@ fn selecting_a_file_cancels_a_directory_job() {
     let worker = RenderWorker::new(RendererConfig {
         command: vec!["sleep".into(), "0.2".into()],
         timeout_ms: 2_000,
+        ..Default::default()
     });
     worker.request(
         &repo,
@@ -189,6 +192,7 @@ fn directory_jobs_bound_the_combined_output_size() {
     let worker = RenderWorker::new(RendererConfig {
         command: vec!["cat".into(), "{new}".into()],
         timeout_ms: 30_000,
+        ..Default::default()
     });
     let error = render(&worker, &repo, &comparison, "src/").unwrap_err();
     assert!(error.contains("exceeded 16 MiB"), "{error}");

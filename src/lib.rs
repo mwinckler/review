@@ -1,5 +1,7 @@
 pub mod app;
 pub mod config;
+pub mod editor;
+pub mod hunks;
 pub mod refresh;
 pub mod renderer;
 pub mod state;

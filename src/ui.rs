@@ -299,9 +299,23 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         let visible = Text::from(
             diff.lines
                 .iter()
+                .enumerate()
                 .skip(position.vertical)
                 .take(panes.diff.height.saturating_sub(2) as usize)
-                .cloned()
+                .map(|(index, line)| {
+                    let mut line = line.clone();
+                    if app
+                        .selected_hunk()
+                        .is_some_and(|hunk| hunk.rows.contains(&index))
+                    {
+                        let background = Color::Rgb(35, 45, 60);
+                        line.style = line.style.bg(background);
+                        for span in &mut line.spans {
+                            span.style = span.style.bg(background);
+                        }
+                    }
+                    line
+                })
                 .collect::<Vec<_>>(),
         );
         frame.render_widget(
@@ -336,7 +350,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             display_path(&app.review.view.filter)
         )
     } else {
-        "Space viewed + next · ]u next unviewed · / search · s Flash · z full · i inline · r refresh · ? help".into()
+        "Space viewed + next · ]u next unviewed · ]h/[h hunks · e editor · / search · ? help".into()
     };
     frame.render_widget(
         Paragraph::new(footer).style(Style::default().fg(Color::Cyan)),
@@ -344,7 +358,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     );
     if app.help {
         let width = frame.area().width.min(74);
-        let height = frame.area().height.min(23);
+        let height = frame.area().height.min(25);
         let area = Rect::new(
             frame.area().x + (frame.area().width - width) / 2,
             frame.area().y + (frame.area().height - height) / 2,
@@ -362,6 +376,8 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "Space            Toggle file viewed + next / mark folder\n",
             "]f / [f          Next/previous file\n",
             "]u / [u          Next/previous unviewed file\n",
+            "]h / [h          Select next/previous diff hunk\n",
+            "e                Open selected hunk/file in editor\n",
             "/                Filter filenames / search diff\n",
             "s                Flash jump in the tree from either pane\n",
             "n / N            Next/previous search match\n",

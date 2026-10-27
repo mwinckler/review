@@ -9,12 +9,13 @@ use anyhow::{Context, Result, bail, ensure};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
 
-use crate::renderer::RendererConfig;
+use crate::{editor::EditorConfig, renderer::RendererConfig};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub renderer: RendererConfig,
+    pub editor: EditorConfig,
     pub keybindings: BTreeMap<String, String>,
     #[serde(skip)]
     bindings: HashMap<(KeyCode, KeyModifiers), Vec<KeyEvent>>,
@@ -44,6 +45,14 @@ impl Config {
         ensure!(
             config.renderer.timeout_ms > 0,
             "renderer.timeout_ms must be positive"
+        );
+        ensure!(
+            config
+                .editor
+                .command
+                .first()
+                .is_some_and(|program| !program.is_empty()),
+            "editor.command must contain an executable"
         );
         for (source, action) in &config.keybindings {
             let source =
@@ -134,6 +143,9 @@ fn action_keys(action: &str) -> Option<&'static [&'static str]> {
         "previous_file" => &["[", "f"],
         "next_unviewed" => &["]", "u"],
         "previous_unviewed" => &["[", "u"],
+        "next_hunk" => &["]", "h"],
+        "previous_hunk" => &["[", "h"],
+        "open_editor" => &["e"],
         "toggle_viewed" => &["Space"],
         "toggle_unviewed" => &["u"],
         "toggle_inline" => &["i"],

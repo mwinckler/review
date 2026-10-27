@@ -158,6 +158,178 @@ fn jj_positional_comparisons_remain_direct_on_resume_and_refresh() {
 }
 
 #[test]
+fn git_difftastic_hunks_open_the_selected_location_and_survive_rerendering() {
+    exercise_hunk_editor(Backend::Git, true);
+}
+
+#[test]
+fn jj_unified_hunks_open_the_selected_location_and_survive_rerendering() {
+    exercise_hunk_editor(Backend::Jj, false);
+}
+
+fn exercise_hunk_editor(backend: Backend, difftastic: bool) {
+    let fixture = common::fixture();
+    common::jj(fixture.path(), &["new", "main"]);
+    fs::create_dir_all(fixture.path().join("src/nested")).unwrap();
+    let old = (1..=70)
+        .map(|line| format!("let value_{line} = \"old_{line}\";\n"))
+        .collect::<String>();
+    fs::write(fixture.path().join("src/one.rs"), &old).unwrap();
+    fs::write(
+        fixture.path().join("src/nested/two.rs"),
+        "const OLD: u8 = 1;\n",
+    )
+    .unwrap();
+    common::jj(fixture.path(), &["bookmark", "create", "before", "-r", "@"]);
+    common::jj(fixture.path(), &["new"]);
+    let new = old
+        .replace("old_10\"", "new_10\"")
+        .replace("old_60\"", "new_60\"");
+    fs::write(fixture.path().join("src/one.rs"), &new).unwrap();
+    fs::write(
+        fixture.path().join("src/nested/two.rs"),
+        "const NEW: u8 = 2;\n",
+    )
+    .unwrap();
+    common::jj(fixture.path(), &["bookmark", "create", "after", "-r", "@"]);
+    common::jj(fixture.path(), &["new"]);
+    let repo = Repository::discover(fixture.path(), Some(backend)).unwrap();
+    let comparison = repo.snapshot_expression("before..after").unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let mut review = Review::new(comparison, changes);
+    for index in 0..review.changes.len() {
+        review.toggle_viewed(index);
+    }
+    review.view.selected = "src/".into();
+    let viewed = review.viewed.clone();
+    let state = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    let (saved, lock) = store.create(review).unwrap();
+    drop(lock);
+    let log = state.path().join("editor-arguments");
+    let editor = [
+        "sh",
+        "-c",
+        "printf '%s\\0' \"$@\" >> \"$0\"",
+        log.to_str().unwrap(),
+        "{file}",
+        "{line}",
+        "{column}",
+        "mode={read_only}",
+    ];
+    let renderer = if difftastic {
+        review::renderer::RendererConfig::default().command
+    } else {
+        ["diff", "-u", "{old}", "{new}"].map(str::to_owned).to_vec()
+    };
+    let config = state.path().join("config.toml");
+    fs::write(
+        &config,
+        format!(
+            "[renderer]\ncommand = {}\n[editor]\ncommand = {}\n",
+            serde_json::to_string(&renderer).unwrap(),
+            serde_json::to_string(&editor).unwrap()
+        ),
+    )
+    .unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
+    command
+        .current_dir(fixture.path())
+        .env("JJ_CONFIG", "/dev/null")
+        .args([
+            "--backend",
+            match backend {
+                Backend::Git => "git",
+                Backend::Jj => "jj",
+            },
+            "--resume",
+            &saved.id,
+            "--state-dir",
+            state.path().to_str().unwrap(),
+            "--config",
+            config.to_str().unwrap(),
+        ]);
+    let mut terminal = Pty::spawn(command);
+    terminal.wait_until(|text| {
+        if difftastic {
+            text.contains("2/2 --- Rust")
+        } else {
+            text.contains("new_10")
+        }
+    });
+    terminal.send(b"]h]h]he");
+    terminal.wait_until(|_| {
+        fs::read(&log).is_ok_and(|bytes| bytes.iter().filter(|byte| **byte == 0).count() == 4)
+    });
+    let arguments = || {
+        fs::read(&log)
+            .unwrap()
+            .split(|byte| *byte == 0)
+            .filter(|field| !field.is_empty())
+            .map(|field| String::from_utf8(field.to_vec()).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let args = arguments();
+    assert_eq!(
+        &args[..4],
+        &[
+            fixture.path().join("src/one.rs").to_str().unwrap(),
+            "60",
+            "1",
+            "mode="
+        ]
+    );
+    terminal.send(b"ie");
+    terminal.wait_until(|_| {
+        fs::read(&log)
+            .unwrap()
+            .iter()
+            .filter(|byte| **byte == 0)
+            .count()
+            == 8
+    });
+    assert_eq!(&arguments()[4..8], &args[..4]);
+    fs::write(
+        fixture.path().join("src/one.rs"),
+        format!("{}{new}", "// inserted\n".repeat(5)),
+    )
+    .unwrap();
+    terminal.send(b"e");
+    terminal.wait_until(|_| {
+        fs::read(&log)
+            .unwrap()
+            .iter()
+            .filter(|byte| **byte == 0)
+            .count()
+            == 12
+    });
+    assert_eq!(arguments()[9], "65");
+    fs::remove_file(fixture.path().join("src/nested/two.rs")).unwrap();
+    terminal.send(b"[h[he");
+    terminal.wait_until(|_| {
+        fs::read(&log)
+            .unwrap()
+            .iter()
+            .filter(|byte| **byte == 0)
+            .count()
+            == 16
+    });
+    let args = arguments();
+    let snapshot = std::path::PathBuf::from(&args[12]);
+    assert!(
+        snapshot.starts_with(store.directory.join("snapshots")),
+        "{args:?}"
+    );
+    assert_eq!(args[13], "1");
+    assert_eq!(args[15], "mode=-R");
+    assert!(fs::metadata(&snapshot).unwrap().permissions().readonly());
+    terminal.send(b"q");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+    assert_eq!(store.list().unwrap()[0].review.viewed, viewed);
+    assert_eq!(fs::read(snapshot).unwrap(), b"const NEW: u8 = 2;\n");
+}
+
+#[test]
 fn git_automatically_reloads_moving_refs_and_invalidates_only_changed_files() {
     exercise_automatic_refresh(Backend::Git, "feature");
 }

@@ -1,4 +1,7 @@
+use std::collections::VecDeque;
+
 use crate::{
+    hunks::{Hunk, HunkLocation},
     state::{Position, Review},
     tree::{self, Row},
     vcs::Change,
@@ -35,6 +38,11 @@ pub struct App {
     pub dirty: bool,
     pub bindings_help: String,
     pub flash: Option<Flash>,
+    pub hunks: Vec<Hunk>,
+    pub hunk_selection: Option<HunkLocation>,
+    pub editor_requested: bool,
+    pub rendering: bool,
+    hunk_actions: VecDeque<bool>,
     prefix: Option<char>,
     search_original: String,
 }
@@ -61,6 +69,11 @@ impl App {
             dirty: false,
             bindings_help: String::new(),
             flash: None,
+            hunks: Vec::new(),
+            hunk_selection: None,
+            editor_requested: false,
+            rendering: false,
+            hunk_actions: VecDeque::new(),
             prefix: None,
             search_original: String::new(),
         };
@@ -82,12 +95,22 @@ impl App {
     fn select(&mut self, selection: usize) {
         self.selection = selection.min(self.rows.len().saturating_sub(1));
         if let Some(row) = self.rows.get(self.selection) {
+            if self.review.view.active != row.path {
+                self.hunks.clear();
+                self.hunk_selection = None;
+                self.editor_requested = false;
+                self.hunk_actions.clear();
+            }
             self.review.view.selected = row.path.clone();
             self.active = row.file;
             self.review.view.active = row.path.clone();
         } else {
             self.active = None;
             self.review.view.active.clear();
+            self.hunks.clear();
+            self.hunk_selection = None;
+            self.editor_requested = false;
+            self.hunk_actions.clear();
         }
     }
 
@@ -104,6 +127,98 @@ impl App {
         self.review.changes.iter().filter(move |change| {
             change.path == *path || (path.ends_with('/') && change.path.starts_with(path))
         })
+    }
+
+    pub fn selected_hunk(&self) -> Option<&Hunk> {
+        self.hunk_selection
+            .as_ref()
+            .and_then(|location| self.hunks.iter().find(|hunk| &hunk.location == location))
+    }
+
+    pub fn editor_location(&self) -> Option<HunkLocation> {
+        if let Some(hunk) = self.selected_hunk() {
+            return Some(hunk.location.clone());
+        }
+        if self.focus == Focus::Diff {
+            let position = self
+                .review
+                .view
+                .positions
+                .get(&self.review.view.active)
+                .map(|position| position.vertical)
+                .unwrap_or(0);
+            if let Some(hunk) = self
+                .hunks
+                .iter()
+                .find(|hunk| hunk.rows.end > position)
+                .or_else(|| self.hunks.last())
+            {
+                return Some(hunk.location.clone());
+            }
+        }
+        self.active.map(|index| {
+            let change = &self.review.changes[index];
+            HunkLocation {
+                path: change.path.clone(),
+                old_line: (!change.old.kind.is_empty()).then_some(1),
+                new_line: (!change.new.kind.is_empty()).then_some(1),
+            }
+        })
+    }
+
+    pub fn apply_hunk_navigation(&mut self, page: usize, lines: usize) -> bool {
+        if self.rendering || self.hunk_actions.is_empty() {
+            return false;
+        }
+        while let Some(forward) = self.hunk_actions.pop_front() {
+            self.jump_hunk(forward, page, lines);
+        }
+        true
+    }
+
+    fn jump_hunk(&mut self, forward: bool, page: usize, lines: usize) {
+        if self.hunks.is_empty() {
+            self.message = "Renderer has no mapped hunks for this preview".into();
+            return;
+        }
+        let len = self.hunks.len();
+        let position = self.position().vertical;
+        let selected = self.hunk_selection.as_ref().and_then(|location| {
+            self.hunks
+                .iter()
+                .position(|hunk| &hunk.location == location)
+        });
+        let index = if let Some(index) = selected {
+            if forward {
+                (index + 1) % len
+            } else {
+                (index + len - 1) % len
+            }
+        } else if forward {
+            self.hunks
+                .iter()
+                .position(|hunk| hunk.rows.end > position)
+                .unwrap_or(0)
+        } else {
+            self.hunks
+                .iter()
+                .rposition(|hunk| hunk.rows.start <= position)
+                .unwrap_or(len - 1)
+        };
+        let hunk = &self.hunks[index];
+        let start = hunk.rows.start;
+        let location = hunk.location.clone();
+        self.message = format!(
+            "Hunk {}/{} · {}:{}",
+            index + 1,
+            len,
+            crate::ui::display_path(&location.path),
+            location.new_line.or(location.old_line).unwrap_or(1)
+        );
+        self.hunk_selection = Some(location);
+        self.position().vertical = start.min(lines.saturating_sub(page));
+        self.position().horizontal = 0;
+        self.focus = Focus::Diff;
     }
 
     pub fn handle_key(
@@ -167,6 +282,15 @@ impl App {
         }
         if let Some(prefix) = self.prefix.take() {
             match (prefix, key.code) {
+                ('[' | ']', KeyCode::Char('h')) => {
+                    if self.rendering {
+                        self.hunk_actions.push_back(prefix == ']');
+                        self.focus = Focus::Diff;
+                    } else {
+                        self.jump_hunk(prefix == ']', page, diff_lines);
+                    }
+                    return;
+                }
                 (']', KeyCode::Char('f' | 'u')) => {
                     self.jump_file(true, key.code == KeyCode::Char('u'));
                     return;
@@ -216,6 +340,9 @@ impl App {
             return;
         }
         match key.code {
+            KeyCode::Char('e') => {
+                self.editor_requested = true;
+            }
             KeyCode::Backspace => {
                 self.focus = Focus::Tree;
                 self.review.view.fullscreen = false;
@@ -354,6 +481,9 @@ impl App {
                 self.review.view.fullscreen = false;
             }
             KeyCode::Esc => {
+                self.hunk_selection = None;
+                self.hunk_actions.clear();
+                self.editor_requested = false;
                 self.review.view.filter.clear();
                 self.review.view.unviewed_only = false;
                 self.rebuild();

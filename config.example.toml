@@ -5,6 +5,11 @@ command = [
     "{path}", "{old}", "0", "100644", "{new}", "0", "100644",
 ]
 timeout_ms = 30000
+hunk_format = "auto"
+
+# Open the source location in a new LazyVim/Neovim terminal window.
+[editor]
+command = ["xdg-terminal-exec", "--", "nvim", "+{line}", "{read_only}", "--", "{file}"]
 
 # Navigation-mode aliases. See README.md for all actions and key names.
 [keybindings]

@@ -124,6 +124,8 @@ open session holds an exclusive lock.
 | `Space` | Toggle file viewed (advance when marked); mark all files in a folder viewed |
 | `]f` / `[f` | Next/previous file, expanding its parents |
 | `]u` / `[u` | Next/previous unviewed file |
+| `]h` / `[h` | Select and highlight the next/previous diff hunk |
+| `e` | Open the selected hunk or file in the editor |
 | `/` | Filter filenames in the tree; search text in the diff |
 | `s` | Flash jump to a visible tree entry from either pane |
 | `n` / `N` | Next/previous matching file or diff search result |
@@ -149,6 +151,31 @@ Focus the right pane with `Ctrl-l` or `Tab` to scroll or search the combined dif
 Viewed files and fully viewed folders appear slightly dimmed in the tree.
 Narrow terminals display the focused pane at full width.
 
+### Hunk selection and LazyVim
+
+Use `]h` / `[h` to select a hunk in the configured renderer's output. Selection
+wraps, focuses the diff pane, and highlights the hunk while preserving syntax
+colors. Folder previews select hunks across all their changed descendants.
+Selection follows the same source location when resizing or switching layouts.
+`Esc` clears the hunk selection.
+
+Press `e` to open the selected hunk at its source line. With the diff pane focused,
+`e` also opens the nearest displayed hunk; from the file tree it opens the file.
+The default command launches a new terminal window running `nvim`, using your
+normal Neovim/LazyVim configuration. It requires `xdg-terminal-exec` and `nvim`.
+
+Locations follow the reviewed snapshots. Lines shifted by working-copy edits are
+mapped to their current location on disk. Deleted files, replaced lines, and
+old-side-only locations open a read-only snapshot stored under the repository's
+review state directory. Snapshot files retain their filename extension and remain
+available after review exits.
+
+Hunk adapters recognize Difftastic, `diff`, and Git unified output automatically.
+Difftastic's colored line numbers identify changed lines (`--color=always`, as in
+the default configuration). Plain Difftastic output provides old-side hunk-start
+locations. For wrapper scripts, set `[renderer] hunk_format = "difftastic"` or
+`"unified"`. `"none"` uses file-level editor opening.
+
 ### Flash navigation
 
 Press `s` from either pane, type a filename fragment, then press a highlighted
@@ -171,6 +198,9 @@ Create `$XDG_CONFIG_HOME/review/config.toml` (normally
 command = ["diff", "-u", "{old}", "{new}"]
 timeout_ms = 30000
 
+[editor]
+command = ["xdg-terminal-exec", "--", "nvim", "+{line}", "{read_only}", "--", "{file}"]
+
 [keybindings]
 J = "next_file"
 K = "previous_file"
@@ -184,6 +214,14 @@ Supported placeholders are `{old}`, `{new}`, `{path}`, `{width}`, and `{display}
 (`inline` or `side-by-side`). Filenames/extensions are preserved for language
 detection. ANSI colors are rendered inside the TUI. Exit codes 0 and 1 support
 conventional diff tools.
+
+Editor arguments are also passed directly, with `{file}`, `{line}`, `{column}`,
+and `{repo}` placeholders. `{read_only}` expands to `-R` for snapshots; a
+standalone `{read_only}` argument is omitted for working files. The launcher also
+receives `REVIEW_EDITOR_READ_ONLY=1` for snapshots and `0` for working files.
+Use an editor bridge script to customize window selection or editor integration.
+Editor preparation and launching run in the background; failures appear in the
+footer.
 
 Diff jobs run in the background. Superseded jobs are cancelled, completed views
 are cached, and resizing re-renders for the current pane width. Renderer output
@@ -201,7 +239,8 @@ characters for shifted letters.
 
 Actions: `up`, `down`, `left`, `right`, `focus_tree`, `focus_diff`, `first`, `last`,
 `page_down`, `page_up`, `half_page_down`, `half_page_up`, `next_file`,
-`previous_file`, `next_unviewed`, `previous_unviewed`, `toggle_viewed`,
+`previous_file`, `next_unviewed`, `previous_unviewed`, `next_hunk`, `previous_hunk`,
+`open_editor`, `toggle_viewed`,
 `toggle_unviewed`, `toggle_inline`, `toggle_fullscreen`, `search`, `flash`,
 `next_match`, `previous_match`, `refresh`, `clear_filters`, `help`, `quit`.
 

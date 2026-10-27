@@ -11,6 +11,7 @@ use ratatui::{layout::Rect, text::Text};
 use review::{
     app::{App, Focus},
     config::Config,
+    editor::EditorWorker,
     refresh::RefreshWorker,
     renderer::{RenderOptions, RenderWorker},
     state::Review,
@@ -138,9 +139,16 @@ fn main() -> Result<()> {
         .collect::<Vec<_>>()
         .join(" · ");
     let worker = RenderWorker::new(config.renderer.clone());
+    let editor = EditorWorker::new(config.editor.clone(), store.directory.join("snapshots"));
     let result = ratatui::run(|terminal| {
         run(
-            terminal, &repo, &mut app, &worker, &mut saved, &lock, &config,
+            terminal,
+            &repo,
+            &mut app,
+            (&worker, &editor),
+            &mut saved,
+            &lock,
+            &config,
         )
     });
     saved.review = app.review;
@@ -152,11 +160,12 @@ fn run(
     terminal: &mut ratatui::DefaultTerminal,
     repo: &Repository,
     app: &mut App,
-    worker: &RenderWorker,
+    workers: (&RenderWorker, &EditorWorker),
     saved: &mut SavedSession,
     lock: &SessionLock,
     config: &Config,
 ) -> Result<()> {
+    let (worker, editor) = workers;
     let mut diff = Text::raw("Select a changed file");
     let mut requested = None;
     let mut request_id = 0;
@@ -198,10 +207,15 @@ fn run(
                     },
                 );
                 requested = Some(key);
+                app.rendering = true;
+                app.hunks.clear();
                 diff = Text::raw("Rendering…");
                 redraw = true;
             }
         } else {
+            app.rendering = false;
+            app.hunks.clear();
+            app.editor_requested = false;
             if requested.take().is_some() {
                 request_id = worker.cancel();
                 redraw = true;
@@ -218,6 +232,8 @@ fn run(
         }
         for result in worker.results.try_iter() {
             if result.id == request_id {
+                app.rendering = false;
+                app.hunks = result.hunks;
                 diff = match result.text {
                     Ok(text) => text,
                     Err(error) => Text::raw(format!("Diff error\n\n{}", ui::display_path(&error))),
@@ -228,6 +244,23 @@ fn run(
                     .min(diff.lines.len().saturating_sub(page));
                 redraw = true;
             }
+        }
+        redraw |= app.apply_hunk_navigation(page, diff.lines.len());
+        for result in editor.results.try_iter() {
+            app.message = match result {
+                Ok(location) => format!(
+                    "Opened {}:{}{}",
+                    ui::display_path(&location.file.to_string_lossy()),
+                    location.line,
+                    if location.read_only {
+                        " · read-only snapshot"
+                    } else {
+                        ""
+                    }
+                ),
+                Err(error) => format!("Editor: {error}"),
+            };
+            redraw = true;
         }
         if redraw {
             app.update_flash(panes.tree.height.saturating_sub(2) as usize);
@@ -274,6 +307,31 @@ fn run(
             app.refresh = false;
             refresher.request();
         }
+        if app.editor_requested
+            && !app.rendering
+            && requested.as_ref().is_some_and(|key| {
+                key.0 == app.review.view.active && key.2 == app.review.view.inline
+            })
+        {
+            app.editor_requested = false;
+            let result = app
+                .editor_location()
+                .context("Select a file or mapped hunk to open in the editor")
+                .and_then(|source| {
+                    let change = app
+                        .review
+                        .changes
+                        .iter()
+                        .find(|change| change.path == source.path)
+                        .context("Selected file is no longer in the comparison")?;
+                    editor.request(repo, &app.review.comparison, change, source)
+                });
+            app.message = match result {
+                Ok(()) => "Opening editor…".into(),
+                Err(error) => format!("Editor: {error:#}"),
+            };
+            redraw = true;
+        }
         for result in refresher.results.try_iter() {
             match result.snapshot {
                 Ok((comparison, changes)) => {
@@ -287,6 +345,10 @@ fn run(
                     };
                     app.message = format!("{action} · {invalidated} viewed marks reset");
                     if result.manual || !previous_preview.iter().eq(app.preview_changes()) {
+                        if !previous_preview.iter().eq(app.preview_changes()) {
+                            app.hunk_selection = None;
+                            app.editor_requested = false;
+                        }
                         request_id = worker.cancel();
                         requested = None;
                     }

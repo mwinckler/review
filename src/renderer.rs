@@ -22,6 +22,7 @@ use ratatui::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    hunks::{self, Hunk, HunkFormat},
     ui::{change_heading, display_path},
     vcs::{Change, Comparison, Repository},
 };
@@ -34,6 +35,7 @@ const MAX_CACHE_BYTES: usize = 8 * 1024 * 1024;
 pub struct RendererConfig {
     pub command: Vec<String>,
     pub timeout_ms: u64,
+    pub hunk_format: HunkFormat,
 }
 
 impl Default for RendererConfig {
@@ -57,6 +59,7 @@ impl Default for RendererConfig {
             .map(str::to_owned)
             .to_vec(),
             timeout_ms: 30_000,
+            hunk_format: HunkFormat::Auto,
         }
     }
 }
@@ -220,11 +223,17 @@ fn text_size(text: &Text<'_>) -> usize {
         .sum()
 }
 
-fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Result<Text<'static>> {
+#[derive(Clone, Default)]
+struct Preview {
+    text: Text<'static>,
+    hunks: Vec<Hunk>,
+}
+
+fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Result<Preview> {
     let directory = job.path.ends_with('/');
     let started = Instant::now();
     let mut remaining = config.clone();
-    let mut text = Text::default();
+    let mut preview = Preview::default();
     let mut size = 0;
     for change in &job.changes {
         ensure!(
@@ -252,11 +261,19 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
             )
         })()
         .with_context(|| format!("rendering {}", display_path(&change.path)))?;
+        let mut hunks = hunks::parse(
+            &rendered,
+            change,
+            config.hunk_format.for_command(&config.command),
+        );
         if !directory {
-            return Ok(rendered);
+            return Ok(Preview {
+                text: rendered,
+                hunks,
+            });
         }
         let mut section = Text::default();
-        if !text.lines.is_empty() {
+        if !preview.text.lines.is_empty() {
             section.lines.push(Line::default());
         }
         let (title, metadata) = change_heading(change);
@@ -269,20 +286,27 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
             ),
             Span::styled(metadata, Style::default().fg(Color::DarkGray)),
         ]));
+        let offset = preview.text.lines.len() + section.lines.len();
+        for hunk in &mut hunks {
+            hunk.rows.start += offset;
+            hunk.rows.end += offset;
+        }
+        preview.hunks.extend(hunks);
         section.lines.extend(rendered.lines);
         size += text_size(&section);
         ensure!(
             size <= MAX_OUTPUT_BYTES as usize,
             "renderer output exceeded 16 MiB"
         );
-        text.lines.extend(section.lines);
+        preview.text.lines.extend(section.lines);
     }
-    Ok(text)
+    Ok(preview)
 }
 
 pub struct RenderResult {
     pub id: u64,
     pub text: std::result::Result<Text<'static>, String>,
+    pub hunks: Vec<Hunk>,
 }
 
 pub struct RenderWorker {
@@ -303,7 +327,7 @@ impl RenderWorker {
         let generation = Arc::new(AtomicU64::new(0));
         let current = Arc::clone(&generation);
         let thread = thread::spawn(move || {
-            let mut cache = VecDeque::<(String, Text<'static>, usize)>::new();
+            let mut cache = VecDeque::<(String, Preview, usize)>::new();
             while let Ok(mut job) = jobs.recv() {
                 for newer in jobs.try_iter() {
                     job = newer;
@@ -333,10 +357,15 @@ impl RenderWorker {
                 if current.load(Ordering::Relaxed) != job.id {
                     continue;
                 }
-                if let Ok(text) = &result {
-                    let size = text_size(text);
+                if let Ok(preview) = &result {
+                    let size = text_size(&preview.text)
+                        + preview
+                            .hunks
+                            .iter()
+                            .map(|hunk| std::mem::size_of_val(hunk) + hunk.location.path.len())
+                            .sum::<usize>();
                     if size <= MAX_CACHE_BYTES && !cache.iter().any(|entry| entry.0 == key) {
-                        cache.push_back((key, text.clone(), size));
+                        cache.push_back((key, preview.clone(), size));
                         while cache.len() > 16
                             || cache.iter().map(|entry| entry.2).sum::<usize>() > MAX_CACHE_BYTES
                         {
@@ -344,10 +373,15 @@ impl RenderWorker {
                         }
                     }
                 }
+                let (text, hunks) = match result {
+                    Ok(preview) => (Ok(preview.text), preview.hunks),
+                    Err(error) => (Err(error), Vec::new()),
+                };
                 if output
                     .send(RenderResult {
                         id: job.id,
-                        text: result,
+                        text,
+                        hunks,
                     })
                     .is_err()
                 {

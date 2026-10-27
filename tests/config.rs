@@ -47,6 +47,9 @@ fn config_reports_typos_invalid_actions_and_required_missing_files() {
         "[rendrer]",
         "[renderer]\ncommand = []",
         "[renderer]\ntimeout_ms = 0",
+        "[renderer]\nhunk_format = 'typo'",
+        "[editor]\ncommand = []",
+        "[editor]\ncommmand = ['nvim']",
         "[keybindings]\nj = 'unknown'",
         "[keybindings]\n'not-a-key' = 'quit'",
     ] {
@@ -82,4 +85,31 @@ fn flash_can_be_aliased() {
         config.translate(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT)),
         [KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)]
     );
+}
+
+#[test]
+fn editor_and_renderer_hunk_adapters_and_key_aliases_are_configurable() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "[renderer]\ncommand = ['custom-render', '{old}', '{new}']\nhunk_format = 'unified'\n[editor]\ncommand = ['editor-bridge', '{repo}', '{file}', '{line}', '{column}', '{read_only}']\n[keybindings]\nJ = 'next_hunk'\nK = 'previous_hunk'\no = 'open_editor'\n").unwrap();
+    let config = Config::load(&path, true).unwrap();
+    assert!(matches!(
+        config.renderer.hunk_format,
+        review::hunks::HunkFormat::Unified
+    ));
+    assert_eq!(config.editor.command[0], "editor-bridge");
+    for (source, expected) in [
+        ('J', vec![']', 'h']),
+        ('K', vec!['[', 'h']),
+        ('o', vec!['e']),
+    ] {
+        assert_eq!(
+            config
+                .translate(KeyEvent::new(KeyCode::Char(source), KeyModifiers::NONE))
+                .iter()
+                .map(|key| key.code)
+                .collect::<Vec<_>>(),
+            expected.into_iter().map(KeyCode::Char).collect::<Vec<_>>()
+        );
+    }
 }

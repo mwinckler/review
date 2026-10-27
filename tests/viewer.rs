@@ -10,6 +10,7 @@ use ratatui::{
 };
 use review::{
     app::{App, Focus},
+    hunks::{Hunk, HunkLocation},
     renderer::{RenderOptions, RendererConfig, render_pair},
     state::Review,
     tree, ui,
@@ -82,6 +83,130 @@ fn review() -> Review {
 
 fn key(app: &mut App, code: KeyCode) {
     app.handle_key(KeyEvent::new(code, KeyModifiers::NONE), 10, 100, 100);
+}
+
+#[test]
+fn hunk_navigation_selects_highlights_and_opens_the_correct_directory_descendant() {
+    let mut review = review();
+    review.view.selected = "src/".into();
+    let mut app = App::new(review);
+    app.hunks = vec![
+        Hunk {
+            rows: 3..8,
+            location: HunkLocation {
+                path: "src/a.rs".into(),
+                old_line: Some(10),
+                new_line: Some(12),
+            },
+        },
+        Hunk {
+            rows: 20..26,
+            location: HunkLocation {
+                path: "src/nested/b.rs".into(),
+                old_line: Some(30),
+                new_line: Some(32),
+            },
+        },
+    ];
+    for (prefix, expected) in [(']', 0), (']', 1), ('[', 0), ('[', 1)] {
+        key(&mut app, KeyCode::Char(prefix));
+        key(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.selected_hunk(), Some(&app.hunks[expected]));
+        assert_eq!(app.focus, Focus::Diff);
+    }
+    key(&mut app, KeyCode::Char('e'));
+    assert!(app.editor_requested);
+    assert_eq!(app.editor_location().unwrap().path, "src/nested/b.rs");
+    assert_eq!(app.editor_location().unwrap().new_line, Some(32));
+    let selected = app.selected_hunk().unwrap().location.clone();
+    for hunk in &mut app.hunks {
+        hunk.rows.start += 5;
+        hunk.rows.end += 5;
+    }
+    assert_eq!(app.selected_hunk().unwrap().location, selected);
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    let diff = Text::from(
+        (0..40)
+            .map(|index| {
+                ratatui::text::Line::styled(
+                    format!("line {index}"),
+                    ratatui::style::Style::default().fg(Color::LightGreen),
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+    app.position().vertical = app.selected_hunk().unwrap().rows.start;
+    terminal.draw(|frame| ui::draw(frame, &app, &diff)).unwrap();
+    let pane = ui::panes(Rect::new(0, 0, 100, 24), &app).diff;
+    let cell = &terminal.backend().buffer()[(pane.x + 1, pane.y + 1)];
+    assert_eq!(cell.fg, Color::LightGreen);
+    assert_eq!(cell.bg, Color::Rgb(35, 45, 60));
+    key(&mut app, KeyCode::Esc);
+    assert!(app.selected_hunk().is_none());
+    assert!(app.review.viewed.is_empty());
+}
+
+#[test]
+fn changing_files_clears_stale_hunks_and_literal_prompt_input_keeps_editor_closed() {
+    let mut app = App::new(review());
+    app.hunks.push(Hunk {
+        rows: 0..5,
+        location: HunkLocation {
+            path: "README.md".into(),
+            old_line: Some(1),
+            new_line: Some(1),
+        },
+    });
+    key(&mut app, KeyCode::Char(']'));
+    key(&mut app, KeyCode::Char('h'));
+    key(&mut app, KeyCode::Char(']'));
+    key(&mut app, KeyCode::Char('f'));
+    assert!(app.hunks.is_empty());
+    assert!(app.selected_hunk().is_none());
+    app.focus = Focus::Tree;
+    key(&mut app, KeyCode::Char('/'));
+    key(&mut app, KeyCode::Char('e'));
+    assert!(!app.editor_requested);
+    key(&mut app, KeyCode::Esc);
+    key(&mut app, KeyCode::Esc);
+    let mut empty = review();
+    empty.changes.clear();
+    let mut app = App::new(empty);
+    key(&mut app, KeyCode::Char('e'));
+    assert!(app.editor_location().is_none());
+}
+
+#[test]
+fn hunk_shortcuts_wait_for_the_current_preview_to_finish_rendering() {
+    let mut app = App::new(review());
+    app.rendering = true;
+    for prefix in [']', ']', '['] {
+        key(&mut app, KeyCode::Char(prefix));
+        key(&mut app, KeyCode::Char('h'));
+    }
+    assert!(!app.apply_hunk_navigation(10, 100));
+    app.hunks = vec![
+        Hunk {
+            rows: 0..5,
+            location: HunkLocation {
+                path: "README.md".into(),
+                old_line: Some(1),
+                new_line: Some(1),
+            },
+        },
+        Hunk {
+            rows: 20..25,
+            location: HunkLocation {
+                path: "README.md".into(),
+                old_line: Some(20),
+                new_line: Some(22),
+            },
+        },
+    ];
+    app.rendering = false;
+    assert!(app.apply_hunk_navigation(10, 100));
+    assert_eq!(app.selected_hunk().unwrap().location.new_line, Some(1));
+    assert!(!app.apply_hunk_navigation(10, 100));
 }
 
 #[test]
@@ -943,6 +1068,7 @@ fn external_renderer_supports_placeholders_exit_one_timeout_and_cancellation() {
     let config = RendererConfig {
         command: vec!["diff".into(), "-u".into(), "{old}".into(), "{new}".into()],
         timeout_ms: 1_000,
+        ..Default::default()
     };
     let output = render_pair(
         &config,
@@ -961,6 +1087,7 @@ fn external_renderer_supports_placeholders_exit_one_timeout_and_cancellation() {
     let sleeping = RendererConfig {
         command: vec!["sleep".into(), "10".into()],
         timeout_ms: 30,
+        ..Default::default()
     };
     assert!(
         render_pair(
@@ -1024,6 +1151,7 @@ fn placeholders_in_filenames_are_treated_literally() {
     let config = RendererConfig {
         command: vec!["diff".into(), "-u".into(), "{old}".into(), "{new}".into()],
         timeout_ms: 1_000,
+        ..Default::default()
     };
     let output = render_pair(
         &config,
