@@ -555,9 +555,12 @@ impl App {
             );
         }
         // Keep query extensions available while assigning home-row-first jump labels.
-        let labels = "asdfghjklqwertyuiopzxcvbnmASDFGHJKLQWERTYUIOPZXCVBNM"
+        let lowercase = "asdfghjklqwertyuiopzxcvbnm"
             .chars()
-            .filter(|label| !continuations.contains(&label.to_ascii_lowercase()));
+            .filter(|label| !continuations.contains(label));
+        let labels = lowercase
+            .clone()
+            .chain(lowercase.map(|label| label.to_ascii_uppercase()));
         flash.labels = flash.matches.iter().copied().zip(labels).collect();
     }
 
