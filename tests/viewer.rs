@@ -5,8 +5,8 @@ use ratatui::{
     Terminal,
     backend::TestBackend,
     layout::Rect,
-    style::{Color, Modifier},
-    text::Text,
+    style::{Color, Modifier, Style},
+    text::{Line, Text},
 };
 use review::{
     app::{App, Focus},
@@ -1866,17 +1866,12 @@ fn diff_scrollbar_appears_only_for_overflow_and_preserves_content_width_and_bord
         let visible_height = pane.height.saturating_sub(2) as usize;
         let right = pane.right() - 1;
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let content_line = Line::styled(
+            "x".repeat(pane.width.saturating_sub(2) as usize),
+            Style::default().fg(Color::LightGreen),
+        );
         for lines in [visible_height + 1, visible_height, 0] {
-            let text = Text::from(
-                (0..lines)
-                    .map(|_| {
-                        ratatui::text::Line::styled(
-                            "x".repeat(pane.width.saturating_sub(2) as usize),
-                            ratatui::style::Style::default().fg(Color::LightGreen),
-                        )
-                    })
-                    .collect::<Vec<_>>(),
-            );
+            let text = Text::from(vec![content_line.clone(); lines]);
             terminal.draw(|frame| ui::draw(frame, &app, &text)).unwrap();
             let buffer = terminal.backend().buffer();
             let track: String = (pane.y + 1..pane.bottom() - 1)
@@ -1907,7 +1902,7 @@ fn diff_scrollbar_tracks_top_middle_and_bottom_with_a_proportional_thumb() {
     app.focus = Focus::Diff;
     let text = Text::from(
         (0..40)
-            .map(|line| ratatui::text::Line::raw(format!("row {line}")))
+            .map(|line| Line::raw(format!("row {line}")))
             .collect::<Vec<_>>(),
     );
     let pane = ui::panes(Rect::new(0, 0, 100, 24), &app).diff;
@@ -1940,7 +1935,7 @@ fn diff_scrollbar_tracks_top_middle_and_bottom_with_a_proportional_thumb() {
 fn diff_scrollbar_is_safe_for_empty_or_hidden_viewports() {
     let text = Text::from(
         (0..40)
-            .map(|line| ratatui::text::Line::raw(format!("row {line}")))
+            .map(|line| Line::raw(format!("row {line}")))
             .collect::<Vec<_>>(),
     );
     for (width, height, focus) in [
