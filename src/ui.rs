@@ -9,7 +9,10 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState,
+    },
 };
 
 pub struct Panes {
@@ -326,6 +329,8 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             .title(title)
             .title_bottom(metadata)
             .border_style(border(app.focus == Focus::Diff));
+        let viewport = block.inner(panes.diff);
+        let height = viewport.height as usize;
         let position = app
             .review
             .view
@@ -339,7 +344,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 .iter()
                 .enumerate()
                 .skip(position.vertical)
-                .take(panes.diff.height.saturating_sub(2) as usize)
+                .take(height)
                 .map(|(index, line)| {
                     let mut line = line.clone();
                     if selected.is_some_and(|rows| rows.contains(&index)) {
@@ -359,6 +364,21 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 .block(block),
             panes.diff,
         );
+        if !viewport.is_empty() && diff.lines.len() > height {
+            // ScrollbarState counts the possible top-row positions.
+            let mut scrollbar = ScrollbarState::new(diff.lines.len() - height + 1)
+                .position(position.vertical)
+                .viewport_content_length(height);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(None)
+                    .end_symbol(None)
+                    .track_symbol(None)
+                    .thumb_style(Style::default().fg(Color::Cyan)),
+                Rect::new(panes.diff.right() - 1, viewport.y, 1, viewport.height),
+                &mut scrollbar,
+            );
+        }
     }
     let footer = if let Some(flash) = &app.flash {
         if flash.query.is_empty() {

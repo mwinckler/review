@@ -1847,6 +1847,127 @@ fn empty_reviews_and_no_match_filters_are_keyboard_safe() {
 }
 
 #[test]
+fn diff_scrollbar_appears_only_for_overflow_and_preserves_content_width_and_borders() {
+    for (width, height, focus, fullscreen, folder) in [
+        (100, 24, Focus::Tree, false, false),
+        (100, 24, Focus::Diff, false, true),
+        (100, 24, Focus::Diff, true, false),
+        (40, 12, Focus::Diff, false, false),
+        (100, 5, Focus::Diff, false, false),
+    ] {
+        let mut review = review();
+        if folder {
+            review.view.selected = "src/".into();
+        }
+        let mut app = App::new(review);
+        app.focus = focus;
+        app.review.view.fullscreen = fullscreen;
+        let pane = ui::panes(Rect::new(0, 0, width, height), &app).diff;
+        let visible_height = pane.height.saturating_sub(2) as usize;
+        let right = pane.right() - 1;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        for lines in [visible_height + 1, visible_height, 0] {
+            let text = Text::from(
+                (0..lines)
+                    .map(|_| {
+                        ratatui::text::Line::styled(
+                            "x".repeat(pane.width.saturating_sub(2) as usize),
+                            ratatui::style::Style::default().fg(Color::LightGreen),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            terminal.draw(|frame| ui::draw(frame, &app, &text)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let track: String = (pane.y + 1..pane.bottom() - 1)
+                .map(|y| buffer[(right, y)].symbol())
+                .collect();
+            assert_eq!(
+                track.contains('█'),
+                lines > visible_height,
+                "{width}x{height}, {lines} lines: {track}"
+            );
+            assert!(track.chars().all(|symbol| matches!(symbol, '│' | '█')));
+            assert_eq!(buffer[(right, pane.y)].symbol(), "┐");
+            assert_eq!(buffer[(right, pane.bottom() - 1)].symbol(), "┘");
+            if lines > 0 {
+                assert_eq!(buffer[(right - 1, pane.y + 1)].symbol(), "x");
+                assert_eq!(buffer[(right - 1, pane.y + 1)].fg, Color::LightGreen);
+            }
+            if lines > visible_height {
+                assert_eq!(buffer[(right, pane.y + 1)].fg, Color::Cyan);
+            }
+        }
+    }
+}
+
+#[test]
+fn diff_scrollbar_tracks_top_middle_and_bottom_with_a_proportional_thumb() {
+    let mut app = App::new(review());
+    app.focus = Focus::Diff;
+    let text = Text::from(
+        (0..40)
+            .map(|line| ratatui::text::Line::raw(format!("row {line}")))
+            .collect::<Vec<_>>(),
+    );
+    let pane = ui::panes(Rect::new(0, 0, 100, 24), &app).diff;
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    for offset in [0, 10, 20, 10, 0] {
+        app.position().vertical = offset;
+        terminal.draw(|frame| ui::draw(frame, &app, &text)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let track: String = (pane.y + 1..pane.bottom() - 1)
+            .map(|y| buffer[(pane.right() - 1, y)].symbol())
+            .collect();
+        let expected = format!(
+            "{}{}{}",
+            "│".repeat(offset / 2),
+            "█".repeat(10),
+            "│".repeat(10 - offset / 2)
+        );
+        assert_eq!(track, expected, "offset {offset}");
+        let first_line: String = (pane.x + 1..pane.right() - 1)
+            .map(|x| buffer[(x, pane.y + 1)].symbol())
+            .collect();
+        assert!(
+            first_line.starts_with(&format!("row {offset}")),
+            "{first_line}"
+        );
+    }
+}
+
+#[test]
+fn diff_scrollbar_is_safe_for_empty_or_hidden_viewports() {
+    let text = Text::from(
+        (0..40)
+            .map(|line| ratatui::text::Line::raw(format!("row {line}")))
+            .collect::<Vec<_>>(),
+    );
+    for (width, height, focus) in [
+        (100, 4, Focus::Diff),
+        (100, 3, Focus::Diff),
+        (100, 2, Focus::Diff),
+        (2, 8, Focus::Diff),
+        (1, 8, Focus::Diff),
+        (0, 0, Focus::Diff),
+        (40, 12, Focus::Tree),
+    ] {
+        let mut app = App::new(review());
+        app.focus = focus;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &app, &text)).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .all(|cell| cell.symbol() != "█")
+        );
+    }
+}
+
+#[test]
 fn diff_viewport_can_scroll_beyond_u16_line_numbers() {
     let mut app = App::new(review());
     app.position().vertical = 66_000;
@@ -1865,4 +1986,8 @@ fn diff_viewport_can_scroll_beyond_u16_line_numbers() {
         .map(|cell| cell.symbol())
         .collect();
     assert!(output.contains("line 66000"));
+    let pane = ui::panes(Rect::new(0, 0, 100, 24), &app).diff;
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer[(pane.right() - 1, pane.bottom() - 2)].symbol(), "█");
+    assert_eq!(buffer[(pane.right() - 1, pane.y + 1)].symbol(), "│");
 }

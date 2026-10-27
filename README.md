@@ -187,6 +187,8 @@ Focus the right pane with `Ctrl-l` or `Tab` to scroll or search the combined dif
 `Space` in a directory preview marks the directory's files viewed.
 Viewed files and fully viewed folders appear slightly dimmed in the tree.
 Narrow terminals display the focused pane at full width.
+When the rendered diff is taller than its pane, a right-edge scrollbar shows your
+position and how much of the diff is visible.
 
 ### Hunk selection and LazyVim
 
