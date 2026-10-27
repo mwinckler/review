@@ -155,8 +155,15 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     let selected_counts = Line::from(line_count_spans(selected_counts));
     let mut counts = vec![Span::raw("(")];
     counts.extend(line_count_spans(comparison.line_counts));
+    let total_end = counts.len();
+    counts.push(Span::raw(" tests: "));
+    counts.extend(line_count_spans(app.review.test_line_counts()));
     counts.push(Span::raw(")"));
-    let counts = Line::from(counts);
+    let mut counts = Line::from(counts);
+    if counts.width() > panes.header.width as usize {
+        counts.spans.truncate(total_end);
+        counts.spans.push(Span::raw(")"));
+    }
     let [info_area, counts_area] = Layout::horizontal([
         Constraint::Min(0),
         Constraint::Length(counts.width() as u16 + 1),

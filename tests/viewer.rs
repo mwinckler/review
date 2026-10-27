@@ -831,6 +831,138 @@ fn ratatui_renders_progress_tree_and_diff_at_small_sizes() {
 }
 
 #[test]
+fn test_line_counts_match_exact_directory_components_and_filename_markers() {
+    for (path, is_test) in [
+        ("test/check.rs", true),
+        ("tests/check.rs", true),
+        ("spec/check.rs", true),
+        ("specs/check.rs", true),
+        ("src/test/nested/check.rs", true),
+        ("src/tests/nested/check.rs", true),
+        ("src/spec/nested/check.rs", true),
+        ("src/specs/λ.rs", true),
+        ("check.test.ts", true),
+        ("src/check.spec.js", true),
+        ("tests/check.test.spec.rs", true),
+        (".test.rs", true),
+        ("src/.spec.rs", true),
+        ("src/tests/line\nbreak.rs", true),
+        ("test", false),
+        ("tests", false),
+        ("src/spec", false),
+        ("src/specs", false),
+        ("contest/check.rs", false),
+        ("test-data/check.rs", false),
+        ("specification/check.rs", false),
+        ("src/tests_extra/check.rs", false),
+        ("src/check.test.folder/ordinary.rs", false),
+        ("src/check.spec.folder/ordinary.rs", false),
+        ("check.test", false),
+        ("check.spec", false),
+        ("check.tests.rs", false),
+        ("tests.rs", false),
+        ("src/Tests/check.rs", false),
+        ("check.Test.rs", false),
+    ] {
+        let mut review = review();
+        review.changes = vec![change(path)];
+        let counts = LineCounts {
+            added: 6,
+            removed: 4,
+        };
+        review.comparison.file_line_counts = Some([(path.to_owned(), counts)].into());
+        let expected = if is_test {
+            counts
+        } else {
+            LineCounts::default()
+        };
+        assert_eq!(review.test_line_counts(), Some(expected), "{path}");
+    }
+}
+
+#[test]
+fn test_line_totals_follow_the_full_diff_while_filtering_marking_and_refreshing() {
+    let mut review = review();
+    for (path, added, removed) in [
+        ("tests/math.test.rs", 10, 3),
+        ("src/spec/helper.rs", 4, 2),
+        ("src/specs/feature.js", 2, 1),
+        ("src/widget.spec.ts", 3, 1),
+        ("test/deleted.rs", 0, 7),
+        ("specs/moved.rs", 2, 1),
+        ("tests/data.bin", 0, 0),
+        ("src/contest/ordinary.rs", 100, 100),
+    ] {
+        let mut file = change(path);
+        if path == "test/deleted.rs" {
+            file.status = "D".into();
+            file.new.kind.clear();
+        }
+        if path == "specs/moved.rs" {
+            file.status = "R".into();
+            file.old_path = "test/original.rs".into();
+        }
+        review.changes.push(file);
+        review
+            .comparison
+            .file_line_counts
+            .as_mut()
+            .unwrap()
+            .insert(path.into(), LineCounts { added, removed });
+    }
+    review.comparison.line_counts = Some(LineCounts {
+        added: 131,
+        removed: 122,
+    });
+    let mut app = App::new(review);
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    for stage in 0..3 {
+        if stage == 1 {
+            for index in 3..10 {
+                app.review.toggle_viewed(index);
+            }
+            app.review.view.filter = "README".into();
+            app.review.view.unviewed_only = true;
+            app.review
+                .view
+                .collapsed
+                .extend(["tests/".into(), "src/".into()]);
+            app.rebuild();
+        }
+        if stage == 2 {
+            let mut comparison = app.review.comparison.clone();
+            comparison.file_line_counts.as_mut().unwrap().insert(
+                "tests/math.test.rs".into(),
+                LineCounts {
+                    added: 12,
+                    removed: 4,
+                },
+            );
+            comparison.line_counts = Some(LineCounts {
+                added: 133,
+                removed: 123,
+            });
+            app.review.reconcile(comparison, app.review.changes.clone());
+            app.rebuild();
+        }
+        terminal
+            .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let top: String = (0..120).map(|x| buffer[(x, 0)].symbol()).collect();
+        let expected = if stage == 2 {
+            "(+133 -123 tests: +23 -16)"
+        } else {
+            "(+131 -122 tests: +21 -15)"
+        };
+        assert!(top.ends_with(expected), "{top}");
+        let start = top.rfind("tests: ").unwrap() as u16 + 7;
+        assert_eq!(buffer[(start, 0)].fg, Color::Green);
+        assert_eq!(buffer[(start + 4, 0)].fg, Color::Red);
+    }
+}
+
+#[test]
 fn overall_line_counts_are_right_justified_and_colored_on_the_top_line() {
     for counts in [
         LineCounts {
@@ -839,7 +971,7 @@ fn overall_line_counts_are_right_justified_and_colored_on_the_top_line() {
         },
         LineCounts::default(),
     ] {
-        for width in [120, 50, 11] {
+        for width in [120, 50, 24, 23, 20, 19, 11] {
             let mut review = review();
             review.comparison.base_ref = "a-very-long-base-branch-name".repeat(5);
             review.comparison.line_counts = Some(counts);
@@ -850,14 +982,23 @@ fn overall_line_counts_are_right_justified_and_colored_on_the_top_line() {
                 .unwrap();
             let buffer = terminal.backend().buffer();
             let top: String = (0..width).map(|x| buffer[(x, 0)].symbol()).collect();
-            let expected = format!("(+{} -{})", counts.added, counts.removed);
+            let full = format!("(+{} -{} tests: +0 -0)", counts.added, counts.removed);
+            let expected = if full.len() <= width as usize {
+                full
+            } else {
+                format!("(+{} -{})", counts.added, counts.removed)
+            };
             assert!(top.ends_with(&expected), "{top:?}");
             assert_eq!(
                 buffer[(width - expected.len() as u16 + 1, 0)].fg,
                 Color::Green
             );
             assert_eq!(
-                buffer[(width - counts.removed.to_string().len() as u16 - 2, 0)].fg,
+                buffer[(
+                    width - expected.len() as u16 + format!("(+{} ", counts.added).len() as u16,
+                    0
+                )]
+                    .fg,
                 Color::Red
             );
         }
@@ -888,7 +1029,12 @@ fn jj_header_shows_change_ids_alongside_the_pinned_commit_hashes() {
             assert!(top.contains("Viewed 0/3"));
         }
         if width >= 9 {
-            assert!(top.ends_with("(+0 -0)"), "{top}");
+            let expected = if width >= 20 {
+                "(+0 -0 tests: +0 -0)"
+            } else {
+                "(+0 -0)"
+            };
+            assert!(top.ends_with(expected), "{top}");
         }
     }
 }
@@ -924,7 +1070,7 @@ fn overall_line_counts_cover_the_full_comparison_while_filtering_or_marking() {
         let top: String = (0..100)
             .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
             .collect();
-        assert!(top.ends_with("(+123 -45)"));
+        assert!(top.ends_with("(+123 -45 tests: +0 -0)"));
         key(&mut app, KeyCode::Char(' '));
     }
 }
@@ -938,12 +1084,12 @@ fn highlighted_line_counts_track_file_and_folder_navigation_from_either_pane() {
     });
     let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
     for (keys, expected) in [
-        ("", "+2 -1 (+10 -7)"),
-        ("j", "+8 -6 (+10 -7)"),
-        ("j", "+3 -2 (+10 -7)"),
-        ("j", "+5 -4 (+10 -7)"),
-        ("\t", "+5 -4 (+10 -7)"),
-        ("j", "+5 -4 (+10 -7)"),
+        ("", "+2 -1 (+10 -7 tests: +0 -0)"),
+        ("j", "+8 -6 (+10 -7 tests: +0 -0)"),
+        ("j", "+3 -2 (+10 -7 tests: +0 -0)"),
+        ("j", "+5 -4 (+10 -7 tests: +0 -0)"),
+        ("\t", "+5 -4 (+10 -7 tests: +0 -0)"),
+        ("j", "+5 -4 (+10 -7 tests: +0 -0)"),
     ] {
         for ch in keys.chars() {
             key(
@@ -995,7 +1141,7 @@ fn highlighted_folder_line_counts_include_all_descendants_hidden_by_the_tree() {
         let top: String = (0..100)
             .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
             .collect();
-        assert!(top.ends_with("+8 -6 (+0 -0)"), "{top:?}");
+        assert!(top.ends_with("+8 -6 (+0 -0 tests: +0 -0)"), "{top:?}");
     }
 }
 
@@ -1006,10 +1152,10 @@ fn empty_selections_and_unavailable_statistics_render_safely() {
         let expected = if missing {
             review.comparison.file_line_counts = None;
             review.comparison.line_counts = None;
-            "+? -? (+? -?)"
+            "+? -? (+? -? tests: +? -?)"
         } else {
             review.changes.clear();
-            "+0 -0 (+0 -0)"
+            "+0 -0 (+0 -0 tests: +0 -0)"
         };
         let app = App::new(review);
         for width in [120, 20, 9, 1, 0] {
@@ -1017,7 +1163,7 @@ fn empty_selections_and_unavailable_statistics_render_safely() {
             terminal
                 .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
                 .unwrap();
-            if width >= 20 {
+            if width as usize >= expected.len() {
                 let top: String = (0..width)
                     .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
                     .collect();

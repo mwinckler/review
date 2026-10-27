@@ -113,6 +113,76 @@ fn both_backends_count_added_and_removed_lines_from_pinned_snapshots() {
 }
 
 #[test]
+fn test_line_totals_use_pinned_per_file_statistics_for_both_backends() {
+    let dir = fixture();
+    jj(dir.path(), &["new", "feature"]);
+    for (path, content) in [
+        ("tests/changed.rs", "old\nkeep\n"),
+        ("tests/deleted.rs", "gone\n"),
+        ("src/widget.spec.ts", "old\nkeep\n"),
+        ("src/contest/ordinary.rs", "prod\n"),
+    ] {
+        let path = dir.path().join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+    jj(
+        dir.path(),
+        &["bookmark", "create", "test-count-before", "-r", "@"],
+    );
+    jj(dir.path(), &["new"]);
+    fs::remove_file(dir.path().join("tests/deleted.rs")).unwrap();
+    for (path, content) in [
+        ("tests/changed.rs", "new\nkeep\nextra\n"),
+        ("src/widget.spec.ts", "new\nkeep\n"),
+        ("nested/specs/new.txt", "first\nsecond\n"),
+        ("src/helper.test.rs", "one\n"),
+        ("src/contest/ordinary.rs", "normal\nextra\n"),
+    ] {
+        let path = dir.path().join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+    fs::write(dir.path().join("tests/data.bin"), [0, 2, 3]).unwrap();
+    jj(
+        dir.path(),
+        &["bookmark", "create", "test-count-after", "-r", "@"],
+    );
+    jj(dir.path(), &["new"]);
+    fs::write(
+        dir.path().join("tests/changed.rs"),
+        "uncommitted replacement\n",
+    )
+    .unwrap();
+    for backend in [Backend::Git, Backend::Jj] {
+        let repo = Repository::discover(dir.path(), Some(backend)).unwrap();
+        let comparison = repo
+            .snapshot_expression("test-count-before..test-count-after")
+            .unwrap();
+        assert_eq!(
+            comparison.line_counts,
+            Some(LineCounts {
+                added: 8,
+                removed: 4
+            })
+        );
+        let changes = repo.changes(&comparison).unwrap();
+        let review = review::state::Review::new(comparison, changes);
+        assert_eq!(
+            review.test_line_counts(),
+            Some(LineCounts {
+                added: 6,
+                removed: 3
+            }),
+            "{backend:?}"
+        );
+        let resumed: review::state::Review =
+            serde_json::from_str(&serde_json::to_string(&review).unwrap()).unwrap();
+        assert_eq!(resumed.test_line_counts(), review.test_line_counts());
+    }
+}
+
+#[test]
 fn file_line_counts_cover_renames_and_binary_changes_without_changing_fingerprints() {
     let dir = fixture();
     for backend in [Backend::Git, Backend::Jj] {

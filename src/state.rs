@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::vcs::{Change, Comparison};
+use crate::vcs::{Change, Comparison, LineCounts};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Position {
@@ -42,6 +42,26 @@ pub struct Review {
 }
 
 impl Review {
+    pub fn test_line_counts(&self) -> Option<LineCounts> {
+        self.comparison.file_line_counts.as_ref().and_then(|files| {
+            self.changes
+                .iter()
+                .filter(|change| {
+                    let (directories, filename) = change
+                        .path
+                        .rsplit_once('/')
+                        .unwrap_or(("", change.path.as_str()));
+                    filename.contains(".test.")
+                        || filename.contains(".spec.")
+                        || directories.split('/').any(|directory| {
+                            matches!(directory, "test" | "tests" | "spec" | "specs")
+                        })
+                })
+                .map(|change| files.get(&change.path).copied())
+                .sum()
+        })
+    }
+
     pub fn reconcile(&mut self, comparison: Comparison, changes: Vec<Change>) -> usize {
         let before: BTreeMap<_, _> = self
             .changes
