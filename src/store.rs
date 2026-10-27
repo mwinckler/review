@@ -27,7 +27,7 @@ pub struct SavedSession {
 
 impl SavedSession {
     pub fn unique_prefix(&self, sessions: &[Self]) -> &str {
-        let length = sessions
+        let shared = sessions
             .iter()
             .filter(|other| other.id != self.id)
             .map(|other| {
@@ -36,12 +36,10 @@ impl SavedSession {
                     .zip(other.id.bytes())
                     .take_while(|(a, b)| a == b)
                     .count()
-                    + 1
             })
             .max()
-            .unwrap_or(1)
-            .min(self.id.len());
-        &self.id[..length]
+            .unwrap_or(0);
+        &self.id[..(shared + 1).min(self.id.len())]
     }
 }
 
