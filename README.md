@@ -158,6 +158,7 @@ Repository content and persistent editor snapshots are preserved.
 | `]f` / `[f` | Next/previous file, expanding its parents |
 | `]u` / `[u` | Next/previous unviewed file |
 | `]h` / `[h` | Select and highlight the next/previous diff hunk |
+| `]Nh` / `[Nh` | Select hunk number `N` (1-based) |
 | `e` | Open the selected hunk or file in the editor |
 | `/` | Filter filenames in the tree; search text in the diff |
 | `s` | Flash jump to a visible tree entry from either pane |
@@ -190,6 +191,9 @@ Narrow terminals display the focused pane at full width.
 Use `]h` / `[h` to select a hunk in the configured renderer's output. Selection
 wraps, focuses the diff pane, and highlights the hunk while preserving syntax
 colors. Folder previews select hunks across all their changed descendants.
+Insert a 1-based number between the bracket and `h` to select that hunk directly:
+`]4h` and `[4h` both select hunk #4. Multi-digit numbers work too, and numbering
+covers the entire current file or folder preview.
 Navigation centers the selected hunk within the available scroll range.
 Selection follows the same source location when resizing or switching layouts.
 `Esc` clears the hunk selection.

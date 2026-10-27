@@ -429,7 +429,7 @@ fn exercise_hunk_editor(backend: Backend, difftastic: bool) {
             text.contains("new_10")
         }
     });
-    terminal.send(b"]h]h]he");
+    terminal.send(b"]3he");
     terminal.wait_until(|_| {
         fs::read(&log).is_ok_and(|bytes| bytes.iter().filter(|byte| **byte == 0).count() == 4)
     });
@@ -477,7 +477,7 @@ fn exercise_hunk_editor(backend: Backend, difftastic: bool) {
     });
     assert_eq!(arguments()[9], "65");
     fs::remove_file(fixture.path().join("src/nested/two.rs")).unwrap();
-    terminal.send(b"[h[he");
+    terminal.send(b"[1he");
     terminal.wait_until(|_| {
         fs::read(&log)
             .unwrap()

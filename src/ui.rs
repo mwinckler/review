@@ -386,7 +386,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     );
     if app.help {
         let width = frame.area().width.min(74);
-        let height = frame.area().height.min(26);
+        let height = frame.area().height.min(27);
         let area = Rect::new(
             frame.area().x + (frame.area().width - width) / 2,
             frame.area().y + (frame.area().height - height) / 2,
@@ -405,6 +405,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "]f / [f          Next/previous file\n",
             "]u / [u          Next/previous unviewed file\n",
             "]h / [h          Select next/previous diff hunk\n",
+            "]Nh / [Nh        Select hunk number N (1-based)\n",
             "e                Open selected hunk/file in editor\n",
             "/                Filter filenames / search diff\n",
             "s                Flash jump in the tree from either pane\n",

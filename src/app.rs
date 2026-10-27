@@ -19,6 +19,11 @@ pub enum Focus {
     Diff,
 }
 
+enum HunkNavigation {
+    Relative(bool),
+    Number(usize),
+}
+
 pub struct Flash {
     pub query: String,
     pub matches: Vec<usize>,
@@ -78,8 +83,8 @@ pub struct App {
     pub rendering: bool,
     pub session_dialog: Option<SessionDialog>,
     pub session_action: Option<SessionAction>,
-    hunk_actions: VecDeque<bool>,
-    prefix: Option<char>,
+    hunk_actions: VecDeque<HunkNavigation>,
+    prefix: Option<(char, Option<usize>)>,
     search_original: String,
 }
 
@@ -138,6 +143,7 @@ impl App {
                 self.hunk_selection = None;
                 self.editor_requested = false;
                 self.hunk_actions.clear();
+                self.prefix = None;
             }
             self.review.view.selected = row.path.clone();
             self.active = row.file;
@@ -149,6 +155,7 @@ impl App {
             self.hunk_selection = None;
             self.editor_requested = false;
             self.hunk_actions.clear();
+            self.prefix = None;
         }
     }
 
@@ -208,40 +215,51 @@ impl App {
         if self.rendering || self.hunk_actions.is_empty() {
             return false;
         }
-        while let Some(forward) = self.hunk_actions.pop_front() {
-            self.jump_hunk(forward, page, lines);
+        while let Some(navigation) = self.hunk_actions.pop_front() {
+            self.jump_hunk(navigation, page, lines);
         }
         true
     }
 
-    fn jump_hunk(&mut self, forward: bool, page: usize, lines: usize) {
+    fn jump_hunk(&mut self, navigation: HunkNavigation, page: usize, lines: usize) {
         if self.hunks.is_empty() {
             self.message = "Renderer has no mapped hunks for this preview".into();
             return;
         }
         let len = self.hunks.len();
-        let position = self.position().vertical;
-        let selected = self.hunk_selection.as_ref().and_then(|location| {
-            self.hunks
-                .iter()
-                .position(|hunk| &hunk.location == location)
-        });
-        let index = if let Some(index) = selected {
-            if forward {
-                (index + 1) % len
-            } else {
-                (index + len - 1) % len
+        let index = match navigation {
+            HunkNavigation::Number(number) => {
+                let Some(index) = number.checked_sub(1).filter(|&index| index < len) else {
+                    self.message = format!("Hunk number must be between 1 and {len}");
+                    return;
+                };
+                index
             }
-        } else if forward {
-            self.hunks
-                .iter()
-                .position(|hunk| hunk.rows.end > position)
-                .unwrap_or(0)
-        } else {
-            self.hunks
-                .iter()
-                .rposition(|hunk| hunk.rows.start <= position)
-                .unwrap_or(len - 1)
+            HunkNavigation::Relative(forward) => {
+                let position = self.position().vertical;
+                let selected = self.hunk_selection.as_ref().and_then(|location| {
+                    self.hunks
+                        .iter()
+                        .position(|hunk| &hunk.location == location)
+                });
+                if let Some(index) = selected {
+                    if forward {
+                        (index + 1) % len
+                    } else {
+                        (index + len - 1) % len
+                    }
+                } else if forward {
+                    self.hunks
+                        .iter()
+                        .position(|hunk| hunk.rows.end > position)
+                        .unwrap_or(0)
+                } else {
+                    self.hunks
+                        .iter()
+                        .rposition(|hunk| hunk.rows.start <= position)
+                        .unwrap_or(len - 1)
+                }
+            }
         };
         let hunk = &self.hunks[index];
         let center = hunk.rows.start + hunk.rows.len() / 2;
@@ -324,26 +342,37 @@ impl App {
             self.handle_flash(key, page);
             return;
         }
-        if let Some(prefix) = self.prefix.take() {
-            match (prefix, key.code) {
-                ('[' | ']', KeyCode::Char('h')) => {
+        if let Some((prefix, number)) = self.prefix.take().filter(|_| {
+            !key.modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        }) {
+            match (prefix, number, key.code) {
+                ('[' | ']', number, KeyCode::Char(digit @ '0'..='9')) => {
+                    let number = number
+                        .unwrap_or(0)
+                        .saturating_mul(10)
+                        .saturating_add(digit as usize - '0' as usize);
+                    self.prefix = Some((prefix, Some(number)));
+                    return;
+                }
+                ('[' | ']', number, KeyCode::Char('h')) => {
+                    let navigation = number.map_or(
+                        HunkNavigation::Relative(prefix == ']'),
+                        HunkNavigation::Number,
+                    );
                     if self.rendering {
-                        self.hunk_actions.push_back(prefix == ']');
+                        self.hunk_actions.push_back(navigation);
                         self.focus = Focus::Diff;
                     } else {
-                        self.jump_hunk(prefix == ']', page, diff_lines);
+                        self.jump_hunk(navigation, page, diff_lines);
                     }
                     return;
                 }
-                (']', KeyCode::Char('f' | 'u')) => {
-                    self.jump_file(true, key.code == KeyCode::Char('u'));
+                ('[' | ']', None, KeyCode::Char('f' | 'u')) => {
+                    self.jump_file(prefix == ']', key.code == KeyCode::Char('u'));
                     return;
                 }
-                ('[', KeyCode::Char('f' | 'u')) => {
-                    self.jump_file(false, key.code == KeyCode::Char('u'));
-                    return;
-                }
-                ('g', KeyCode::Char('g')) => {
+                ('g', None, KeyCode::Char('g')) => {
                     self.move_to(0);
                     return;
                 }
@@ -434,7 +463,7 @@ impl App {
                 self.move_to(0);
             }
             KeyCode::Char(ch @ ('g' | '[' | ']')) => {
-                self.prefix = Some(ch);
+                self.prefix = Some((ch, None));
             }
             KeyCode::Char('h') | KeyCode::Left => {
                 if self.focus == Focus::Diff {

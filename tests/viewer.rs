@@ -85,6 +85,174 @@ fn key(app: &mut App, code: KeyCode) {
     app.handle_key(KeyEvent::new(code, KeyModifiers::NONE), 10, 100, 100);
 }
 
+fn hunk_app(count: usize) -> App {
+    let mut review = review();
+    review.view.selected = "src/".into();
+    let mut app = App::new(review);
+    app.hunks = (0..count)
+        .map(|index| Hunk {
+            rows: index * 6..index * 6 + 4,
+            location: HunkLocation {
+                path: if index % 2 == 0 {
+                    "src/a.rs"
+                } else {
+                    "src/nested/b.rs"
+                }
+                .into(),
+                old_line: Some(index + 1),
+                new_line: Some(index + 1),
+            },
+        })
+        .collect();
+    app
+}
+
+#[test]
+fn numbered_hunk_shortcuts_are_absolute_one_based_and_keep_relative_navigation() {
+    let mut app = hunk_app(12);
+    for (sequence, index) in [
+        ("]4h", 3),
+        ("[4h", 3),
+        ("]12h", 11),
+        ("[10h", 9),
+        ("]04h", 3),
+        ("]1h", 0),
+        ("]h", 1),
+        ("[h", 0),
+        ("[h", 11),
+        ("]h", 0),
+    ] {
+        for ch in sequence.chars() {
+            key(&mut app, KeyCode::Char(ch));
+        }
+        assert_eq!(app.selected_hunk(), Some(&app.hunks[index]), "{sequence}");
+        assert_eq!(app.focus, Focus::Diff);
+        assert!(app.message.starts_with(&format!("Hunk {}/12", index + 1)));
+        if index == 3 {
+            assert_eq!(app.position().vertical, 15);
+            assert_eq!(app.editor_location().unwrap().path, "src/nested/b.rs");
+            assert_eq!(app.editor_location().unwrap().new_line, Some(4));
+        }
+    }
+}
+
+#[test]
+fn invalid_hunk_numbers_preserve_selection_and_scrolling_and_overflow_safely() {
+    let mut app = hunk_app(4);
+    for ch in "]2h".chars() {
+        key(&mut app, KeyCode::Char(ch));
+    }
+    app.position().vertical = 35;
+    app.position().horizontal = 7;
+    for sequence in [
+        "]0h".to_owned(),
+        "[5h".into(),
+        format!("]{}h", "9".repeat(100)),
+    ] {
+        for ch in sequence.chars() {
+            key(&mut app, KeyCode::Char(ch));
+        }
+        assert_eq!(app.selected_hunk(), Some(&app.hunks[1]));
+        assert_eq!(app.position().vertical, 35);
+        assert_eq!(app.position().horizontal, 7);
+        assert!(app.message.contains("between 1 and 4"), "{}", app.message);
+    }
+    for ch in "]h".chars() {
+        key(&mut app, KeyCode::Char(ch));
+    }
+    assert_eq!(app.selected_hunk(), Some(&app.hunks[2]));
+    let mut empty = hunk_app(0);
+    for ch in "]1h".chars() {
+        key(&mut empty, KeyCode::Char(ch));
+    }
+    assert!(empty.selected_hunk().is_none());
+    assert!(empty.message.contains("no mapped hunks"));
+}
+
+#[test]
+fn numbered_hunk_shortcuts_queue_in_order_while_the_preview_is_rendering() {
+    for (sequence, index) in [("]4h", 3), ("]4h]h[2h[h", 0), ("[12h]h", 0)] {
+        let mut app = hunk_app(12);
+        app.rendering = true;
+        let hunks = std::mem::take(&mut app.hunks);
+        for ch in sequence.chars() {
+            key(&mut app, KeyCode::Char(ch));
+        }
+        assert!(!app.apply_hunk_navigation(10, 100));
+        assert!(app.selected_hunk().is_none());
+        app.hunks = hunks;
+        app.rendering = false;
+        assert!(app.apply_hunk_navigation(10, 100));
+        assert_eq!(app.selected_hunk(), Some(&app.hunks[index]), "{sequence}");
+        assert!(!app.apply_hunk_navigation(10, 100));
+    }
+    let mut app = hunk_app(4);
+    app.rendering = true;
+    for ch in "]4h".chars() {
+        key(&mut app, KeyCode::Char(ch));
+    }
+    key(&mut app, KeyCode::Esc);
+    app.rendering = false;
+    assert!(!app.apply_hunk_navigation(10, 100));
+    assert!(app.selected_hunk().is_none());
+}
+
+#[test]
+fn numbered_hunk_prefixes_cancel_cleanly_and_prompt_text_remains_literal() {
+    let mut app = hunk_app(12);
+    for ch in "]4".chars() {
+        key(&mut app, KeyCode::Char(ch));
+    }
+    key(&mut app, KeyCode::Esc);
+    for ch in "]h]4f".chars() {
+        key(&mut app, KeyCode::Char(ch));
+    }
+    assert_eq!(app.review.view.active, "src/");
+    assert_eq!(app.selected_hunk(), Some(&app.hunks[0]));
+    key(&mut app, KeyCode::Char('/'));
+    for ch in "]4h".chars() {
+        key(&mut app, KeyCode::Char(ch));
+    }
+    assert_eq!(app.diff_search, "]4h");
+    assert_eq!(app.selected_hunk(), Some(&app.hunks[0]));
+    key(&mut app, KeyCode::Esc);
+    key(&mut app, KeyCode::Char('s'));
+    for ch in "]4h".chars() {
+        key(&mut app, KeyCode::Char(ch));
+    }
+    assert_eq!(app.flash.as_ref().unwrap().query, "]4h");
+    key(&mut app, KeyCode::Esc);
+    for ch in "]4".chars() {
+        key(&mut app, KeyCode::Char(ch));
+    }
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+        10,
+        100,
+        100,
+    );
+    assert_eq!(app.focus, Focus::Tree);
+    assert_eq!(app.selected_hunk(), Some(&app.hunks[0]));
+    for ch in "]h]f".chars() {
+        key(&mut app, KeyCode::Char(ch));
+    }
+    assert_eq!(app.review.view.active, "src/a.rs");
+    assert!(app.hunks.is_empty());
+}
+
+#[test]
+fn changing_the_preview_cancels_an_unfinished_hunk_number() {
+    let mut app = hunk_app(12);
+    for ch in "]4".chars() {
+        key(&mut app, KeyCode::Char(ch));
+    }
+    app.review.view.selected = "src/nested/b.rs".into();
+    app.rebuild();
+    app.hunks = hunk_app(4).hunks;
+    key(&mut app, KeyCode::Char('h'));
+    assert!(app.selected_hunk().is_none());
+}
+
 #[test]
 fn hunk_navigation_selects_highlights_and_opens_the_correct_directory_descendant() {
     let mut review = review();
