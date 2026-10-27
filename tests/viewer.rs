@@ -971,36 +971,29 @@ fn overall_line_counts_are_right_justified_and_colored_on_the_top_line() {
         },
         LineCounts::default(),
     ] {
+        let mut review = review();
+        review.comparison.base_ref = "a-very-long-base-branch-name".repeat(5);
+        review.comparison.line_counts = Some(counts);
+        let app = App::new(review);
+        let total = format!("(+{} -{})", counts.added, counts.removed);
+        let full = format!("(+{} -{} tests: +0 -0)", counts.added, counts.removed);
+        let removed_offset = format!("(+{} ", counts.added).len() as u16;
         for width in [120, 50, 24, 23, 20, 19, 11] {
-            let mut review = review();
-            review.comparison.base_ref = "a-very-long-base-branch-name".repeat(5);
-            review.comparison.line_counts = Some(counts);
-            let app = App::new(review);
             let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
             terminal
                 .draw(|frame| ui::draw(frame, &app, &Text::raw("diff body")))
                 .unwrap();
             let buffer = terminal.backend().buffer();
             let top: String = (0..width).map(|x| buffer[(x, 0)].symbol()).collect();
-            let full = format!("(+{} -{} tests: +0 -0)", counts.added, counts.removed);
             let expected = if full.len() <= width as usize {
-                full
+                full.as_str()
             } else {
-                format!("(+{} -{})", counts.added, counts.removed)
+                total.as_str()
             };
-            assert!(top.ends_with(&expected), "{top:?}");
-            assert_eq!(
-                buffer[(width - expected.len() as u16 + 1, 0)].fg,
-                Color::Green
-            );
-            assert_eq!(
-                buffer[(
-                    width - expected.len() as u16 + format!("(+{} ", counts.added).len() as u16,
-                    0
-                )]
-                    .fg,
-                Color::Red
-            );
+            assert!(top.ends_with(expected), "{top:?}");
+            let start = width - expected.len() as u16;
+            assert_eq!(buffer[(start + 1, 0)].fg, Color::Green);
+            assert_eq!(buffer[(start + removed_offset, 0)].fg, Color::Red);
         }
     }
 }
@@ -1013,6 +1006,8 @@ fn jj_header_shows_change_ids_alongside_the_pinned_commit_hashes() {
     review.comparison.base_change_id = Some("ukrwmnxyzqst".into());
     review.comparison.head_change_id = Some("vqmrstuvwxyz".into());
     let app = App::new(review);
+    let total = "(+0 -0)";
+    let full = "(+0 -0 tests: +0 -0)";
     for width in [120, 50, 9, 1] {
         let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
         terminal
@@ -1028,11 +1023,11 @@ fn jj_header_shows_change_ids_alongside_the_pinned_commit_hashes() {
             );
             assert!(top.contains("Viewed 0/3"));
         }
-        if width >= 9 {
-            let expected = if width >= 20 {
-                "(+0 -0 tests: +0 -0)"
+        if width as usize >= total.len() {
+            let expected = if width as usize >= full.len() {
+                full
             } else {
-                "(+0 -0)"
+                total
             };
             assert!(top.ends_with(expected), "{top}");
         }
