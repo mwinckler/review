@@ -155,33 +155,28 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             .map(|change| files.get(&change.path).copied())
             .sum()
     });
-    let selected_counts = Line::from(line_count_spans(selected_counts));
-    let mut counts = vec![Span::raw("(")];
-    counts.extend(line_count_spans(comparison.line_counts));
+    let mut selected_counts = Line::from(line_count_spans(selected_counts));
+    selected_counts.spans.push(Span::raw(" · "));
+    let mut counts = line_count_spans(comparison.line_counts);
+    counts.push(Span::raw(" total"));
     let total_end = counts.len();
-    counts.push(Span::raw(" tests: "));
+    counts.push(Span::raw(" · "));
     counts.extend(line_count_spans(app.review.test_line_counts()));
-    counts.push(Span::raw(")"));
+    counts.push(Span::raw(" tests"));
     let mut counts = Line::from(counts);
     if counts.width() > panes.header.width as usize {
         counts.spans.truncate(total_end);
-        counts.spans.push(Span::raw(")"));
+    }
+    if selected_counts.width() + counts.width() <= panes.header.width as usize {
+        selected_counts.spans.extend(counts.spans);
+        counts = selected_counts;
     }
     let [info_area, counts_area] = Layout::horizontal([
         Constraint::Min(0),
         Constraint::Length(counts.width() as u16 + 1),
     ])
     .areas(panes.header);
-    let [info_area, selected_counts_area] = Layout::horizontal([
-        Constraint::Min(0),
-        Constraint::Length(selected_counts.width() as u16 + 1),
-    ])
-    .areas(info_area);
     frame.render_widget(Paragraph::new(header), info_area);
-    frame.render_widget(
-        Paragraph::new(selected_counts).alignment(Alignment::Right),
-        selected_counts_area,
-    );
     frame.render_widget(
         Paragraph::new(counts).alignment(Alignment::Right),
         counts_area,

@@ -831,6 +831,45 @@ fn ratatui_renders_progress_tree_and_diff_at_small_sizes() {
 }
 
 #[test]
+fn line_count_sections_use_separators_trailing_labels_and_colored_numbers() {
+    let mut review = review();
+    review.changes.push(change("tests/counts.rs"));
+    review.comparison.file_line_counts.as_mut().unwrap().insert(
+        "tests/counts.rs".into(),
+        LineCounts {
+            added: 31,
+            removed: 9,
+        },
+    );
+    review.comparison.line_counts = Some(LineCounts {
+        added: 123,
+        removed: 45,
+    });
+    let app = App::new(review);
+    let mut terminal = Terminal::new(TestBackend::new(140, 24)).unwrap();
+    terminal
+        .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let top: String = (0..140).map(|x| buffer[(x, 0)].symbol()).collect();
+    let expected = "+2 -1 · +123 -45 total · +31 -9 tests";
+    assert!(top.ends_with(expected), "{top}");
+    let start = 140 - Line::raw(expected).width() as u16;
+    for (sign, color) in [('+', Color::Green), ('-', Color::Red)] {
+        for (offset, _) in expected.match_indices(sign) {
+            let column = start + Line::raw(&expected[..offset]).width() as u16;
+            assert_eq!(buffer[(column, 0)].fg, color);
+        }
+    }
+    for marker in ["·", "total", "tests"] {
+        for (offset, _) in expected.match_indices(marker) {
+            let column = start + Line::raw(&expected[..offset]).width() as u16;
+            assert!(!matches!(buffer[(column, 0)].fg, Color::Green | Color::Red));
+        }
+    }
+}
+
+#[test]
 fn test_line_counts_match_exact_directory_components_and_filename_markers() {
     for (path, is_test) in [
         ("test/check.rs", true),
@@ -951,12 +990,13 @@ fn test_line_totals_follow_the_full_diff_while_filtering_marking_and_refreshing(
         let buffer = terminal.backend().buffer();
         let top: String = (0..120).map(|x| buffer[(x, 0)].symbol()).collect();
         let expected = if stage == 2 {
-            "(+133 -123 tests: +23 -16)"
+            "+133 -123 total · +23 -16 tests"
         } else {
-            "(+131 -122 tests: +21 -15)"
+            "+131 -122 total · +21 -15 tests"
         };
         assert!(top.ends_with(expected), "{top}");
-        let start = top.rfind("tests: ").unwrap() as u16 + 7;
+        let test_counts = &expected[expected.rfind('+').unwrap()..];
+        let start = 120 - Line::raw(test_counts).width() as u16;
         assert_eq!(buffer[(start, 0)].fg, Color::Green);
         assert_eq!(buffer[(start + 4, 0)].fg, Color::Red);
     }
@@ -975,25 +1015,39 @@ fn overall_line_counts_are_right_justified_and_colored_on_the_top_line() {
         review.comparison.base_ref = "a-very-long-base-branch-name".repeat(5);
         review.comparison.line_counts = Some(counts);
         let app = App::new(review);
-        let total = format!("(+{} -{})", counts.added, counts.removed);
-        let full = format!("(+{} -{} tests: +0 -0)", counts.added, counts.removed);
-        let removed_offset = format!("(+{} ", counts.added).len() as u16;
-        for width in [120, 50, 24, 23, 20, 19, 11] {
+        let total = format!("+{} -{} total", counts.added, counts.removed);
+        let full = format!("{total} · +0 -0 tests");
+        for width in [
+            120, 50, 37, 36, 33, 32, 29, 28, 25, 24, 23, 22, 19, 18, 15, 14, 11,
+        ] {
             let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
             terminal
                 .draw(|frame| ui::draw(frame, &app, &Text::raw("diff body")))
                 .unwrap();
             let buffer = terminal.backend().buffer();
             let top: String = (0..width).map(|x| buffer[(x, 0)].symbol()).collect();
-            let expected = if full.len() <= width as usize {
+            if Line::raw(total.as_str()).width() > width as usize {
+                continue;
+            }
+            let global = if Line::raw(full.as_str()).width() <= width as usize {
                 full.as_str()
             } else {
                 total.as_str()
             };
+            let selected = format!("+2 -1 · {global}");
+            let expected = if Line::raw(selected.as_str()).width() <= width as usize {
+                selected.as_str()
+            } else {
+                global
+            };
             assert!(top.ends_with(expected), "{top:?}");
-            let start = width - expected.len() as u16;
-            assert_eq!(buffer[(start + 1, 0)].fg, Color::Green);
-            assert_eq!(buffer[(start + removed_offset, 0)].fg, Color::Red);
+            let start = width - Line::raw(expected).width() as u16;
+            for (sign, color) in [('+', Color::Green), ('-', Color::Red)] {
+                for (offset, _) in expected.match_indices(sign) {
+                    let column = start + Line::raw(&expected[..offset]).width() as u16;
+                    assert_eq!(buffer[(column, 0)].fg, color);
+                }
+            }
         }
     }
 }
@@ -1006,8 +1060,8 @@ fn jj_header_shows_change_ids_alongside_the_pinned_commit_hashes() {
     review.comparison.base_change_id = Some("ukrwmnxyzqst".into());
     review.comparison.head_change_id = Some("vqmrstuvwxyz".into());
     let app = App::new(review);
-    let total = "(+0 -0)";
-    let full = "(+0 -0 tests: +0 -0)";
+    let total = "+0 -0 total";
+    let full = "+0 -0 total · +0 -0 tests";
     for width in [120, 50, 9, 1] {
         let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
         terminal
@@ -1023,8 +1077,8 @@ fn jj_header_shows_change_ids_alongside_the_pinned_commit_hashes() {
             );
             assert!(top.contains("Viewed 0/3"));
         }
-        if width as usize >= total.len() {
-            let expected = if width as usize >= full.len() {
+        if width as usize >= Line::raw(total).width() {
+            let expected = if width as usize >= Line::raw(full).width() {
                 full
             } else {
                 total
@@ -1065,7 +1119,7 @@ fn overall_line_counts_cover_the_full_comparison_while_filtering_or_marking() {
         let top: String = (0..100)
             .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
             .collect();
-        assert!(top.ends_with("(+123 -45 tests: +0 -0)"));
+        assert!(top.ends_with("+123 -45 total · +0 -0 tests"));
         key(&mut app, KeyCode::Char(' '));
     }
 }
@@ -1079,12 +1133,12 @@ fn highlighted_line_counts_track_file_and_folder_navigation_from_either_pane() {
     });
     let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
     for (keys, expected) in [
-        ("", "+2 -1 (+10 -7 tests: +0 -0)"),
-        ("j", "+8 -6 (+10 -7 tests: +0 -0)"),
-        ("j", "+3 -2 (+10 -7 tests: +0 -0)"),
-        ("j", "+5 -4 (+10 -7 tests: +0 -0)"),
-        ("\t", "+5 -4 (+10 -7 tests: +0 -0)"),
-        ("j", "+5 -4 (+10 -7 tests: +0 -0)"),
+        ("", "+2 -1 · +10 -7 total · +0 -0 tests"),
+        ("j", "+8 -6 · +10 -7 total · +0 -0 tests"),
+        ("j", "+3 -2 · +10 -7 total · +0 -0 tests"),
+        ("j", "+5 -4 · +10 -7 total · +0 -0 tests"),
+        ("\t", "+5 -4 · +10 -7 total · +0 -0 tests"),
+        ("j", "+5 -4 · +10 -7 total · +0 -0 tests"),
     ] {
         for ch in keys.chars() {
             key(
@@ -1102,7 +1156,7 @@ fn highlighted_line_counts_track_file_and_folder_navigation_from_either_pane() {
         let buffer = terminal.backend().buffer();
         let top: String = (0..120).map(|x| buffer[(x, 0)].symbol()).collect();
         assert!(top.ends_with(expected), "{top:?}");
-        let start = 120 - expected.len() as u16;
+        let start = 120 - Line::raw(expected).width() as u16;
         assert_eq!(buffer[(start, 0)].fg, Color::Green);
         assert_eq!(buffer[(start + 3, 0)].fg, Color::Red);
     }
@@ -1136,7 +1190,10 @@ fn highlighted_folder_line_counts_include_all_descendants_hidden_by_the_tree() {
         let top: String = (0..100)
             .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
             .collect();
-        assert!(top.ends_with("+8 -6 (+0 -0 tests: +0 -0)"), "{top:?}");
+        assert!(
+            top.ends_with("+8 -6 · +0 -0 total · +0 -0 tests"),
+            "{top:?}"
+        );
     }
 }
 
@@ -1147,10 +1204,10 @@ fn empty_selections_and_unavailable_statistics_render_safely() {
         let expected = if missing {
             review.comparison.file_line_counts = None;
             review.comparison.line_counts = None;
-            "+? -? (+? -? tests: +? -?)"
+            "+? -? · +? -? total · +? -? tests"
         } else {
             review.changes.clear();
-            "+0 -0 (+0 -0 tests: +0 -0)"
+            "+0 -0 · +0 -0 total · +0 -0 tests"
         };
         let app = App::new(review);
         for width in [120, 20, 9, 1, 0] {
@@ -1158,7 +1215,7 @@ fn empty_selections_and_unavailable_statistics_render_safely() {
             terminal
                 .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
                 .unwrap();
-            if width as usize >= expected.len() {
+            if width as usize >= Line::raw(expected).width() {
                 let top: String = (0..width)
                     .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
                     .collect();

@@ -67,12 +67,12 @@ with Jujutsu preferred in a colocated workspace. The header displays the resolve
 snapshot IDs. Jujutsu reviews show each endpoint's change ID and Git commit hash,
 such as `master (ukrwmnxy abcdef12)`.
 Added and removed line counts appear at the right edge of the header in green
-and red: `+12 -3 (+120 -45 tests: +30 -8)`. The first pair covers the highlighted
-file or folder; folder counts include all changed descendants, including viewed
-files and files hidden by filters or collapsed folders. The totals in parentheses
-cover the full comparison. The `tests:` pair totals changed files in directories
-named `test`, `tests`, `spec`, or `specs`, or with `.test.` or `.spec.` in the
-filename. All counts follow the pinned snapshots when resuming or refreshing.
+and red: `+12 -3 · +120 -45 total · +30 -8 tests`. The first pair covers the
+highlighted file or folder; folder counts include all changed descendants,
+including viewed files and files hidden by filters or collapsed folders. The
+`total` pair covers the full comparison. The `tests` pair totals changed files in
+directories named `test`, `tests`, `spec`, or `specs`, or with `.test.` or `.spec.`
+in the filename. All counts follow the pinned snapshots when resuming or refreshing.
 
 Reviews check the selected revisions in the background about once per second.
 Jujutsu `@` follows saved working-copy edits; Git comparisons follow commits as
