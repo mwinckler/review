@@ -1,6 +1,8 @@
 #![cfg(unix)]
 
 mod common;
+#[path = "common/session.rs"]
+mod session_fixture;
 
 use std::{
     fs::{self, File},
@@ -10,6 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crossterm::style::Stylize;
 use nix::{
     fcntl::{FcntlArg, OFlag, fcntl},
     pty::{Winsize, openpty},
@@ -145,6 +148,73 @@ fn git_no_argument_launch_starts_at_master_in_the_current_repository() {
 #[test]
 fn jj_no_argument_launch_starts_at_master_in_the_current_repository() {
     exercise_default_launch(Backend::Jj);
+}
+
+#[test]
+fn session_list_highlights_unique_prefixes_and_resume_accepts_them() {
+    let fixture = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let repo = Repository::discover(fixture.path(), Some(Backend::Git)).unwrap();
+    let comparison = repo.snapshot_expression("HEAD~1..HEAD").unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    for id in ["abc123000001", "abc9ff000002", "f123456789ab"] {
+        session_fixture::write(
+            &store,
+            &repo,
+            id,
+            Review::new(comparison.clone(), changes.clone()),
+        );
+    }
+    let command = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
+        command
+            .current_dir(fixture.path())
+            .env_remove("NO_COLOR")
+            .env("XDG_CONFIG_HOME", state.path())
+            .args([
+                "--backend",
+                "git",
+                "--state-dir",
+                state.path().to_str().unwrap(),
+            ]);
+        command
+    };
+    let mut list = command();
+    list.arg("--list");
+    let mut terminal = Pty::spawn(list);
+    assert!(terminal.finish().success());
+    terminal.pump();
+    for (prefix, suffix) in [
+        ("abc1", "23000001"),
+        ("abc9", "ff000002"),
+        ("f", "123456789ab"),
+    ] {
+        let highlighted = format!("{}{}", prefix.magenta().bold(), suffix.dark_grey());
+        assert!(
+            terminal.output.contains(&highlighted),
+            "{}",
+            terminal.output
+        );
+    }
+    let mut list = command();
+    list.arg("--list").env("NO_COLOR", "1");
+    let mut terminal = Pty::spawn(list);
+    assert!(terminal.finish().success());
+    terminal.pump();
+    assert!(terminal.output.contains("abc123000001"));
+    assert!(!terminal.output.contains('\u{1b}'));
+    for (prefix, id) in [("abc1", "abc123000001"), ("f", "f123456789ab")] {
+        let mut resume = command();
+        resume.args(["--resume", prefix]);
+        let mut terminal = Pty::spawn(resume);
+        terminal.wait_until(|text| text.contains(&format!("Session {id}")));
+        terminal.send(b"q");
+        assert!(terminal.finish().success(), "{}", terminal.output);
+        assert_eq!(store.list().unwrap().len(), 3);
+        assert!(!store.directory.join(format!("{prefix}.json")).exists());
+        assert!(!store.directory.join(format!("{prefix}.lock")).exists());
+    }
 }
 
 #[test]

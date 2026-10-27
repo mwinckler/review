@@ -84,11 +84,18 @@ fixed revisions.
 ## Stop and resume
 
 ```sh
-review --resume          # Resume the most recently saved session
-review --list            # List saved sessions for this repository/backend
-review --resume <id>     # Resume a particular session
-review --base master       # Start a fresh review
+review --resume              # Resume the most recently saved session
+review --list                # List saved sessions for this repository/backend
+review --resume <id-prefix>  # Resume a particular session
+review --base master         # Start a fresh review
 ```
+
+New sessions use compact 12-character IDs. Resume with a full ID or any unique
+prefix, such as `review --resume a` or `review --resume a3`. Existing saved IDs
+remain valid. On a terminal, `review --list` highlights each session's shortest
+unique prefix in bold magenta. Ambiguous prefixes report the matching IDs so you
+can choose a longer prefix. Piped listings use plain IDs; `NO_COLOR=1` also selects
+plain terminal output.
 
 Press `q` or `Ctrl-c` to save and quit. Viewed changes save immediately;
 navigation state autosaves within 250 ms. Resume restores the comparison,

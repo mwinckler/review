@@ -1,4 +1,6 @@
 mod common;
+#[path = "common/session.rs"]
+mod session_fixture;
 
 use std::{path::Path, process::Command};
 
@@ -48,6 +50,43 @@ fn lists_saved_sessions_without_a_terminal() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains(&saved.id));
     assert!(text.contains("main → feature"));
+    assert!(!text.contains('\u{1b}'));
+}
+
+#[test]
+fn resume_prefix_errors_are_actionable_and_valid_prefixes_reach_the_terminal_check() {
+    let repo_dir = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let repo = Repository::discover(repo_dir.path(), Some(Backend::Git)).unwrap();
+    let comparison = repo.snapshot_expression("HEAD~1..HEAD").unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    for id in ["abc123000001", "abc9ff000002"] {
+        session_fixture::write(
+            &store,
+            &repo,
+            id,
+            Review::new(comparison.clone(), changes.clone()),
+        );
+    }
+    for (prefix, message) in [
+        ("abc", "Ambiguous session ID prefix"),
+        ("f", "No saved review matches"),
+        ("abc1", "interactive terminal"),
+    ] {
+        let output = cli(repo_dir.path(), state.path())
+            .args(["--resume", prefix])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(message), "{error}");
+        if prefix == "abc" {
+            assert!(error.contains("abc123000001"), "{error}");
+            assert!(error.contains("abc9ff000002"), "{error}");
+        }
+    }
+    assert_eq!(std::fs::read_dir(&store.directory).unwrap().count(), 2);
 }
 
 #[test]

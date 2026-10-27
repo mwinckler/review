@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +23,26 @@ pub struct SavedSession {
     pub backend: Backend,
     pub updated_at: u64,
     pub review: Review,
+}
+
+impl SavedSession {
+    pub fn unique_prefix(&self, sessions: &[Self]) -> &str {
+        let length = sessions
+            .iter()
+            .filter(|other| other.id != self.id)
+            .map(|other| {
+                self.id
+                    .bytes()
+                    .zip(other.id.bytes())
+                    .take_while(|(a, b)| a == b)
+                    .count()
+                    + 1
+            })
+            .max()
+            .unwrap_or(1)
+            .min(self.id.len());
+        &self.id[..length]
+    }
 }
 
 pub struct SessionStore {
@@ -49,13 +69,19 @@ impl SessionStore {
 
     pub fn create(&self, review: Review) -> Result<(SavedSession, SessionLock)> {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let id = format!(
-            "{nanos:x}-{:x}-{:x}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        );
-        let lock = self.lock(&id)?;
+        let (id, lock) = loop {
+            let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+            let seed = format!(
+                "{nanos:x}-{:x}-{:x}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            );
+            let id = blake3::hash(seed.as_bytes()).to_hex()[..12].to_owned();
+            let lock = self.lock(&id)?;
+            if !lock.target.try_exists()? {
+                break (id, lock);
+            }
+        };
         let mut session = SavedSession {
             version: 1,
             id,
@@ -69,9 +95,40 @@ impl SessionStore {
     }
 
     pub fn open(&self, id: &str) -> Result<(SavedSession, SessionLock)> {
-        let lock = self.lock(id)?;
+        let id = self.resolve(id)?;
+        let lock = self.lock(&id)?;
         let session = self.load(&lock.target)?;
         Ok((session, lock))
+    }
+
+    pub fn resolve(&self, prefix: &str) -> Result<String> {
+        validate_id(prefix)?;
+        let mut matches = Vec::new();
+        for entry in fs::read_dir(&self.directory)? {
+            let path = entry?.path();
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "json")
+                && let Some(id) = path.file_stem().and_then(|stem| stem.to_str())
+                && id.starts_with(prefix)
+            {
+                if id == prefix {
+                    return Ok(id.to_owned());
+                }
+                matches.push(id.to_owned());
+            }
+        }
+        matches.sort();
+        match matches.as_slice() {
+            [id] => Ok(id.clone()),
+            [] => bail!(
+                "No saved review matches session ID {prefix:?}. Use review --list to see saved sessions"
+            ),
+            _ => bail!(
+                "Ambiguous session ID prefix {prefix:?}: {}. Use a longer prefix from review --list",
+                matches.join(", ")
+            ),
+        }
     }
 
     pub fn list(&self) -> Result<Vec<SavedSession>> {
@@ -114,17 +171,12 @@ impl SessionStore {
                 .is_some_and(|stem| stem == session.id.as_str()),
             "session ID differs from its filename"
         );
+        validate_id(&session.id)?;
         Ok(session)
     }
 
     fn lock(&self, id: &str) -> Result<SessionLock> {
-        ensure!(
-            !id.is_empty()
-                && id
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit() || byte == b'-'),
-            "invalid session ID"
-        );
+        validate_id(id)?;
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -138,6 +190,17 @@ impl SessionStore {
             target: self.directory.join(format!("{id}.json")),
         })
     }
+}
+
+fn validate_id(id: &str) -> Result<()> {
+    ensure!(
+        !id.is_empty()
+            && id
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() || byte == b'-'),
+        "invalid session ID"
+    );
+    Ok(())
 }
 
 impl SessionLock {

@@ -6,7 +6,10 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    style::{Colored, Stylize},
+};
 use ratatui::{layout::Rect, text::Text};
 use review::{
     app::{App, Focus},
@@ -45,8 +48,8 @@ struct Cli {
     /// Head revision (defaults to HEAD for Git, @ for Jujutsu)
     #[arg(long, requires = "base")]
     head: Option<String>,
-    /// Resume a saved session by ID, or the latest session when omitted
-    #[arg(long, num_args = 0..=1, default_missing_value = "latest", conflicts_with = "base")]
+    /// Resume by full ID or unique prefix, or the latest session when omitted
+    #[arg(long, value_name = "ID", num_args = 0..=1, default_missing_value = "latest", conflicts_with = "base")]
     resume: Option<String>,
     /// List this repository's saved review sessions
     #[arg(long, conflicts_with_all = ["base", "resume"])]
@@ -74,10 +77,19 @@ fn main() -> Result<()> {
     };
     let store = SessionStore::new(&state_dir, &repo)?;
     if cli.list {
-        for saved in store.list()? {
+        let sessions = store.list()?;
+        let color = io::stdout().is_terminal() && !Colored::ansi_color_disabled();
+        for saved in &sessions {
+            let id = if color {
+                let prefix = saved.unique_prefix(&sessions);
+                let suffix = &saved.id[prefix.len()..];
+                format!("{}{}", prefix.magenta().bold(), suffix.dark_grey())
+            } else {
+                saved.id.clone()
+            };
             println!(
                 "{}  {} → {}  Viewed {}/{}",
-                saved.id,
+                id,
                 ui::display_path(&saved.review.comparison.base_ref),
                 ui::display_path(&saved.review.comparison.head_ref),
                 saved.review.viewed.len(),
@@ -95,7 +107,7 @@ fn main() -> Result<()> {
                 .id
                 .clone(),
         ),
-        Some(id) => Some(id.to_owned()),
+        Some(id) => Some(store.resolve(id)?),
         None => None,
     };
     ensure!(
