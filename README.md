@@ -186,6 +186,12 @@ label to select that file or folder in the tree. Labels are displayed uppercase
 and accept lowercase input. Keep typing to narrow the case-insensitive matches;
 `Backspace` edits the fragment, and `Enter` selects the first match.
 
+The typed fragment highlights within each matching name. Jump labels overlay the
+second character after each match, keeping its next character visible. Repeated
+matches in the same entry share a jump key. Labels leave other matches and their
+continuations visible, and use letters that keep every visible query extension
+available for typing.
+
 Flash searches the visible tree entries, respecting filters and collapsed folders.
 It reveals the tree from a full-width diff and focuses the tree after a jump.
 Press `Esc` to restore the previous pane and layout.

@@ -1029,6 +1029,207 @@ fn flash_labels_only_rows_in_the_tree_viewport() {
 }
 
 #[test]
+fn flash_highlights_each_typed_match_and_overlays_labels_after_the_next_letter() {
+    let mut review = review();
+    review.changes = vec![change("xxTESTabc_TESTdef.rs")];
+    let mut app = App::new(review);
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    key(&mut app, KeyCode::Char('s'));
+    for (length, ch) in "test".chars().enumerate() {
+        key(&mut app, KeyCode::Char(ch));
+        let flash = app.flash.as_ref().unwrap();
+        assert_eq!(flash.query.len(), length + 1);
+        let label = flash.labels[0].1.to_ascii_uppercase().to_string();
+        terminal
+            .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(1, 2)].symbol(), "·");
+        assert_eq!(buffer[(3, 2)].symbol(), "x");
+        assert_ne!(buffer[(3, 2)].fg, Color::Yellow);
+        for start in [2, 10] {
+            for offset in start..=start + length {
+                let cell = &buffer[(3 + offset as u16, 2)];
+                assert_eq!(cell.fg, Color::Yellow);
+                assert!(cell.modifier.contains(Modifier::BOLD));
+            }
+            let next = 3 + (start + length + 1) as u16;
+            assert_eq!(
+                buffer[(next, 2)].symbol(),
+                app.rows[0]
+                    .name()
+                    .chars()
+                    .nth(start + length + 1)
+                    .unwrap()
+                    .to_string()
+            );
+            assert_ne!(buffer[(next, 2)].fg, Color::Yellow);
+            let cell = &buffer[(next + 1, 2)];
+            assert_eq!(cell.symbol(), label);
+            assert_eq!(cell.fg, Color::Black);
+            assert_eq!(cell.bg, Color::Yellow);
+        }
+        assert_eq!(buffer[(25, 2)].symbol(), "M");
+    }
+}
+
+#[test]
+fn flash_labels_preserve_overlapping_matches_and_their_continuations() {
+    let mut review = review();
+    review.changes = vec![change("aaad.rs")];
+    let mut app = App::new(review);
+    for ch in "saa".chars() {
+        key(&mut app, KeyCode::Char(ch));
+    }
+    let label = app.flash.as_ref().unwrap().labels[0].1;
+    assert!(!['a', 'd'].contains(&label));
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    terminal
+        .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    for x in 3..6 {
+        assert_eq!(buffer[(x, 2)].symbol(), "a");
+        assert_eq!(buffer[(x, 2)].fg, Color::Yellow);
+    }
+    assert_eq!(buffer[(6, 2)].symbol(), "d");
+    assert_ne!(buffer[(6, 2)].fg, Color::Yellow);
+    assert_eq!(
+        buffer[(7, 2)].symbol(),
+        label.to_ascii_uppercase().to_string()
+    );
+    key(&mut app, KeyCode::Char('D'));
+    assert_eq!(app.flash.as_ref().unwrap().query, "aaD");
+}
+
+#[test]
+fn flash_label_offsets_follow_unicode_width_case_folding_and_escaped_names() {
+    for (name, query, start, width, next, label_column) in [
+        ("λa.rs", "λ", 3, 1, "a", 5),
+        ("界a.rs", "界", 3, 2, "a", 6),
+        ("İTESTa.rs", "test", 4, 4, "a", 9),
+        ("q界rest.rs", "q", 3, 1, "界", 6),
+        ("e\u{301}a.rs", "e", 3, 1, "a", 5),
+        ("one\nTESTa.rs", "test", 8, 4, "a", 13),
+    ] {
+        let mut review = review();
+        review.changes = vec![change(name)];
+        let mut app = App::new(review);
+        key(&mut app, KeyCode::Char('s'));
+        for ch in query.chars() {
+            key(&mut app, KeyCode::Char(ch));
+        }
+        let label = app.flash.as_ref().unwrap().labels[0].1;
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        for x in start..start + width {
+            if buffer[(x, 2)].symbol() != " " {
+                assert_eq!(buffer[(x, 2)].fg, Color::Yellow, "{name} at column {x}");
+            }
+        }
+        assert_eq!(buffer[(start + width, 2)].symbol(), next, "{name}");
+        assert_ne!(buffer[(start + width, 2)].fg, Color::Yellow, "{name}");
+        assert_eq!(
+            buffer[(label_column, 2)].symbol(),
+            label.to_ascii_uppercase().to_string(),
+            "{name}"
+        );
+        assert_eq!(buffer[(label_column, 2)].bg, Color::Yellow, "{name}");
+    }
+}
+
+#[test]
+fn flash_labels_at_name_ends_preserve_file_and_folder_metadata_positions() {
+    for (path, next, metadata) in [("tail.rs", " ", "M"), ("tail.rs/child", "/", "0")] {
+        let mut review = review();
+        review.changes = vec![change(path)];
+        let mut app = App::new(review);
+        for ch in "srs".chars() {
+            key(&mut app, KeyCode::Char(ch));
+        }
+        let label = app.flash.as_ref().unwrap().labels[0].1;
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(10, 2)].symbol(), next);
+        assert_eq!(
+            buffer[(11, 2)].symbol(),
+            label.to_ascii_uppercase().to_string()
+        );
+        assert_eq!(buffer[(12, 2)].symbol(), metadata);
+    }
+}
+
+#[test]
+fn flash_labels_exclude_continuations_on_every_visible_match_including_unlabeled_rows() {
+    let mut review = review();
+    review.changes = (0..30)
+        .map(|index| change(&format!("file_{index:02}_x_.rs")))
+        .chain([change("last_xA_xS_xD.rs")])
+        .collect();
+    let mut app = App::new(review);
+    for ch in "sx".chars() {
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+            40,
+            100,
+            100,
+        );
+    }
+    let flash = app.flash.as_ref().unwrap();
+    assert_eq!(flash.matches.len(), 31);
+    assert!(
+        flash
+            .labels
+            .iter()
+            .all(|(_, label)| !['a', 's', 'd'].contains(label))
+    );
+    assert!(flash.labels.iter().all(|(row, _)| *row != 30));
+    key(&mut app, KeyCode::Char('S'));
+    assert_eq!(app.flash.as_ref().unwrap().query, "xS");
+    key(&mut app, KeyCode::Backspace);
+    assert_eq!(app.flash.as_ref().unwrap().query, "x");
+    let label = app.flash.as_ref().unwrap().labels[0].1;
+    key(&mut app, KeyCode::Char(label.to_ascii_uppercase()));
+    assert!(app.flash.is_none());
+    assert_eq!(app.review.view.selected, "file_00_x_.rs");
+}
+
+#[test]
+fn flash_overlays_stay_inside_the_tree_pane_when_names_are_clipped() {
+    let mut review = review();
+    review.changes = vec![change("abcdefghijklmnopqrstu.rs")];
+    for (query, columns) in [("qr", 19..21), ("rs", 20..22), ("st", 21..23)] {
+        let mut app = App::new(review.clone());
+        key(&mut app, KeyCode::Char('s'));
+        for ch in query.chars() {
+            key(&mut app, KeyCode::Char(ch));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(55, 8)).unwrap();
+        terminal
+            .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
+            .unwrap();
+        let pane = ui::panes(Rect::new(0, 0, 55, 8), &app).tree;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(pane.right() - 1, 2)].symbol(), "│");
+        assert_eq!(buffer[(pane.right(), 2)].symbol(), "│");
+        assert_eq!(buffer[(pane.right() + 1, 2)].symbol(), "d");
+        assert_ne!(buffer[(pane.right() + 1, 2)].bg, Color::Yellow);
+        for x in columns.clone() {
+            assert_eq!(buffer[(x, 2)].fg, Color::Yellow);
+        }
+        if columns.end < pane.right() - 1 {
+            assert_ne!(buffer[(columns.end, 2)].fg, Color::Yellow);
+        }
+    }
+}
+
+#[test]
 fn flash_labels_remain_bright_on_viewed_files() {
     let mut review = review();
     review.toggle_viewed(2);
@@ -1040,7 +1241,14 @@ fn flash_labels_remain_bright_on_viewed_files() {
     terminal
         .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
         .unwrap();
-    let cell = &terminal.backend().buffer()[(5, 6)];
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer[(5, 6)].symbol(), "✓");
+    assert_eq!(buffer[(7, 6)].fg, Color::Yellow);
+    assert!(!buffer[(7, 6)].modifier.contains(Modifier::DIM));
+    assert_eq!(buffer[(8, 6)].symbol(), ".");
+    assert_ne!(buffer[(8, 6)].fg, Color::Yellow);
+    assert!(buffer[(8, 6)].modifier.contains(Modifier::DIM));
+    let cell = &buffer[(9, 6)];
     assert_eq!(cell.symbol(), label.to_ascii_uppercase().to_string());
     assert!(cell.modifier.contains(Modifier::BOLD));
     assert!(!cell.modifier.contains(Modifier::DIM));

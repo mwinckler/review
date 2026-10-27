@@ -1,4 +1,7 @@
-use std::collections::VecDeque;
+use std::{
+    collections::{BTreeSet, VecDeque},
+    ops::Range,
+};
 
 use crate::{
     hunks::{Hunk, HunkLocation},
@@ -21,6 +24,35 @@ pub struct Flash {
     pub labels: Vec<(usize, char)>,
     previous_focus: Focus,
     previous_fullscreen: bool,
+}
+
+impl Flash {
+    pub(crate) fn ranges(&self, name: &str) -> Vec<Range<usize>> {
+        let query = self.query.to_lowercase();
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let lowercase = name.to_lowercase();
+        let mut boundaries = Vec::new();
+        let mut offset = 0;
+        for (index, ch) in name.char_indices() {
+            boundaries.push((offset, index));
+            offset += ch.to_lowercase().map(char::len_utf8).sum::<usize>();
+        }
+        boundaries.push((lowercase.len(), name.len()));
+        boundaries
+            .iter()
+            .filter_map(|&(offset, start)| {
+                if lowercase[offset..].starts_with(&query) {
+                    let end =
+                        boundaries.partition_point(|&(index, _)| index < offset + query.len());
+                    Some(start..boundaries[end].1)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
 }
 
 pub struct App {
@@ -506,16 +538,23 @@ impl App {
         let Some(flash) = &mut self.flash else {
             return;
         };
-        let query = flash.query.to_lowercase();
         let matches: Vec<_> = tree::visible_range(self.rows.len(), self.selection, height)
-            .map(|index| (index, self.rows[index].name().to_lowercase()))
-            .filter(|(_, name)| !query.is_empty() && name.contains(&query))
+            .map(|index| (index, flash.ranges(self.rows[index].name())))
+            .filter(|(_, ranges)| !ranges.is_empty())
+            .collect();
+        let continuations: BTreeSet<_> = matches
+            .iter()
+            .flat_map(|(index, ranges)| {
+                ranges
+                    .iter()
+                    .filter_map(|range| self.rows[*index].name()[range.end..].chars().next())
+            })
+            .flat_map(char::to_lowercase)
             .collect();
         // Keep query extensions available while assigning home-row-first jump labels.
-        let labels = "asdfghjklqwertyuiopzxcvbnm".chars().filter(|label| {
-            let extension = format!("{query}{label}");
-            matches.iter().all(|(_, name)| !name.contains(&extension))
-        });
+        let labels = "asdfghjklqwertyuiopzxcvbnm"
+            .chars()
+            .filter(|label| !continuations.contains(label));
         flash.matches = matches.iter().map(|(index, _)| *index).collect();
         flash.labels = flash.matches.iter().copied().zip(labels).collect();
     }

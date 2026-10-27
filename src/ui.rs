@@ -179,21 +179,12 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         let height = panes.tree.height.saturating_sub(2) as usize;
         let visible = tree::visible_range(app.rows.len(), app.selection, height);
         let offset = visible.start;
-        let query = app
-            .flash
-            .as_ref()
-            .map(|flash| flash.query.to_lowercase())
-            .unwrap_or_default();
-        let flash_style = Style::default()
-            .add_modifier(Modifier::BOLD)
-            .remove_modifier(Modifier::DIM);
         let items: Vec<_> = app
             .rows
             .iter()
-            .enumerate()
             .skip(offset)
             .take(visible.len())
-            .map(|(index, row)| {
+            .map(|row| {
                 let indent = "  ".repeat(row.depth);
                 let (mark, color) = if row.file.is_some() {
                     if row.viewed == 1 {
@@ -211,28 +202,10 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                     };
                     (arrow, Color::Reset)
                 };
-                let label = app
-                    .flash
-                    .as_ref()
-                    .and_then(|flash| flash.labels.iter().find(|(row, _)| *row == index));
-                let marker = if let Some((_, label)) = label {
-                    Span::styled(
-                        format!("{} ", label.to_ascii_uppercase()),
-                        flash_style.fg(Color::Black).bg(Color::Yellow),
-                    )
-                } else {
-                    Span::styled(format!("{mark} "), Style::default().fg(color))
-                };
-                let name_style = if !query.is_empty() && row.name().to_lowercase().contains(&query)
-                {
-                    flash_style.fg(Color::Yellow)
-                } else {
-                    Style::default()
-                };
                 let mut spans = vec![
                     Span::raw(indent),
-                    marker,
-                    Span::styled(display_path(row.name()), name_style),
+                    Span::styled(format!("{mark} "), Style::default().fg(color)),
+                    Span::raw(display_path(row.name())),
                 ];
                 if let Some(index) = row.file {
                     spans.push(Span::styled(
@@ -262,6 +235,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             .borders(Borders::ALL)
             .title(title)
             .border_style(border(app.focus == Focus::Tree));
+        let inner = block.inner(panes.tree);
         let mut selection = ListState::default().with_selected(Some(app.selection - offset));
         frame.render_stateful_widget(
             List::new(items).block(block).highlight_style(
@@ -272,6 +246,59 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             panes.tree,
             &mut selection,
         );
+        if let Some(flash) = &app.flash {
+            let flash_style = Style::default()
+                .add_modifier(Modifier::BOLD)
+                .remove_modifier(Modifier::DIM);
+            for (line, index) in visible.enumerate() {
+                let row = &app.rows[index];
+                let name = row.name();
+                let prefix_width = row.depth * 2 + 2;
+                let matches: Vec<_> = flash
+                    .ranges(name)
+                    .into_iter()
+                    .map(|range| {
+                        let start =
+                            prefix_width + Span::raw(display_path(&name[..range.start])).width();
+                        let end =
+                            prefix_width + Span::raw(display_path(&name[..range.end])).width();
+                        let suffix = Span::raw(display_path(&name[range.end..]));
+                        let gap = suffix
+                            .styled_graphemes(Style::default())
+                            .map(|grapheme| Span::raw(grapheme.symbol).width())
+                            .find(|width| *width > 0)
+                            .unwrap_or(1);
+                        (start..end, end + gap)
+                    })
+                    .collect();
+                let y = inner.y + line as u16;
+                for (range, _) in &matches {
+                    let start = range.start.min(inner.width as usize);
+                    let end = range.end.min(inner.width as usize);
+                    frame.buffer_mut().set_style(
+                        Rect::new(inner.x + start as u16, y, (end - start) as u16, 1),
+                        flash_style.fg(Color::Yellow),
+                    );
+                }
+                if let Some((_, label)) = flash.labels.iter().find(|(row, _)| *row == index) {
+                    for (_, column) in &matches {
+                        if *column < inner.width as usize
+                            && matches
+                                .iter()
+                                .all(|(range, next)| !(range.start..*next).contains(column))
+                        {
+                            frame.render_widget(
+                                Span::styled(
+                                    label.to_ascii_uppercase().to_string(),
+                                    flash_style.fg(Color::Black).bg(Color::Yellow),
+                                ),
+                                Rect::new(inner.x + *column as u16, y, 1, 1),
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
     if panes.diff.width > 0 {
         let (title, metadata) = if let Some(index) = app.active {
