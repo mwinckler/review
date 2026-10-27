@@ -22,6 +22,7 @@ use ratatui::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    command,
     hunks::{self, Hunk, HunkFormat},
     ui::{change_heading, display_path},
     vcs::{Change, Comparison, Repository},
@@ -117,20 +118,7 @@ pub fn render_pair(
     ];
     let arguments: Vec<String> = config.command[1..]
         .iter()
-        .map(|argument| {
-            argument
-                .split_inclusive('}')
-                .map(|part| {
-                    if let Some((token, value)) =
-                        replacements.iter().find(|(token, _)| part.ends_with(token))
-                    {
-                        format!("{}{value}", &part[..part.len() - token.len()])
-                    } else {
-                        part.to_owned()
-                    }
-                })
-                .collect()
-        })
+        .map(|argument| command::expand(argument, &replacements))
         .collect();
     let mut stdout = tempfile::tempfile()?;
     let mut stderr = tempfile::tempfile()?;

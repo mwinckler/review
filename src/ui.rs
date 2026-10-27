@@ -296,6 +296,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             .get(&app.review.view.active)
             .cloned()
             .unwrap_or_default();
+        let selected = app.selected_hunk().map(|hunk| &hunk.rows);
         let visible = Text::from(
             diff.lines
                 .iter()
@@ -304,10 +305,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 .take(panes.diff.height.saturating_sub(2) as usize)
                 .map(|(index, line)| {
                     let mut line = line.clone();
-                    if app
-                        .selected_hunk()
-                        .is_some_and(|hunk| hunk.rows.contains(&index))
-                    {
+                    if selected.is_some_and(|rows| rows.contains(&index)) {
                         let background = Color::Rgb(35, 45, 60);
                         line.style = line.style.bg(background);
                         for span in &mut line.spans {

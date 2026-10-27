@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, OpenOptions},
+    fs,
     io::Write,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -15,6 +15,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 
 use crate::{
+    command,
     hunks::{HunkFormat, HunkLocation, unified_ranges},
     renderer::{RenderOptions, RendererConfig, render_pair},
     vcs::{Change, Comparison, Repository},
@@ -109,26 +110,19 @@ pub fn location(
     let directory = snapshots.join(hash.finalize().to_hex().as_str());
     fs::create_dir_all(&directory).context("creating editor snapshot directory")?;
     let file = directory.join(name);
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    match options.open(&file) {
-        Ok(mut output) => {
-            output.write_all(&content)?;
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+    let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
+    temporary.write_all(&content)?;
+    match temporary.persist_noclobber(&file) {
+        Ok(_) => {}
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
             ensure!(
-                fs::read(&file)? == content,
+                fs::symlink_metadata(&file)?.is_file() && fs::read(&file)? == content,
                 "editor snapshot contents have changed: {}",
                 file.display()
             );
         }
         Err(error) => {
-            return Err(error).context("writing editor snapshot");
+            return Err(error.error).context("writing editor snapshot");
         }
     }
     let mut permissions = fs::metadata(&file)?.permissions();
@@ -290,20 +284,7 @@ impl EditorWorker {
                         .filter(|argument| {
                             !(argument.as_str() == "{read_only}" && read_only.is_empty())
                         })
-                        .map(|argument| {
-                            argument
-                                .split_inclusive('}')
-                                .map(|part| {
-                                    if let Some((token, value)) =
-                                        replacements.iter().find(|(token, _)| part.ends_with(token))
-                                    {
-                                        format!("{}{value}", &part[..part.len() - token.len()])
-                                    } else {
-                                        part.to_owned()
-                                    }
-                                })
-                                .collect()
-                        })
+                        .map(|argument| command::expand(argument, &replacements))
                         .collect();
                     let mut child = Command::new(program)
                         .args(arguments)

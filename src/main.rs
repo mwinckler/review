@@ -344,11 +344,12 @@ fn run(
                         "Changes reloaded"
                     };
                     app.message = format!("{action} · {invalidated} viewed marks reset");
-                    if result.manual || !previous_preview.iter().eq(app.preview_changes()) {
-                        if !previous_preview.iter().eq(app.preview_changes()) {
-                            app.hunk_selection = None;
-                            app.editor_requested = false;
-                        }
+                    let preview_changed = !previous_preview.iter().eq(app.preview_changes());
+                    if preview_changed {
+                        app.hunk_selection = None;
+                        app.editor_requested = false;
+                    }
+                    if result.manual || preview_changed {
                         request_id = worker.cancel();
                         requested = None;
                     }

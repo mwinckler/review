@@ -1,4 +1,5 @@
 pub mod app;
+mod command;
 pub mod config;
 pub mod editor;
 pub mod hunks;
