@@ -64,9 +64,11 @@ The nearest repository is detected automatically from the current directory,
 with Jujutsu preferred in a colocated workspace. The header displays the resolved
 snapshot IDs. Jujutsu reviews show each endpoint's change ID and Git commit hash,
 such as `main (ukrwmnxy abcdef12)`.
-Added and removed line totals appear at the right edge of the header in green
-and red. These totals cover the full comparison and follow the pinned snapshots
-when resuming or refreshing a review.
+Added and removed line counts appear at the right edge of the header in green
+and red: `+12 -3 (+120 -45)`. The first pair covers the highlighted file or folder;
+folder counts include all changed descendants, including viewed files and files
+hidden by filters or collapsed folders. The totals in parentheses cover the full
+comparison. Both pairs follow the pinned snapshots when resuming or refreshing.
 
 Reviews check the selected revisions in the background about once per second.
 Jujutsu `@` follows saved working-copy edits; Git comparisons follow commits as

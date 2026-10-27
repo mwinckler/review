@@ -1,7 +1,7 @@
 use crate::{
     app::{App, Focus},
     tree,
-    vcs::Change,
+    vcs::{Change, LineCounts},
 };
 use ratatui::{
     Frame,
@@ -99,6 +99,24 @@ fn revision_label(reference: &str, commit_id: &str, change_id: Option<&str>) -> 
     )
 }
 
+fn line_count_spans(counts: Option<LineCounts>) -> Vec<Span<'static>> {
+    if let Some(counts) = counts {
+        vec![
+            Span::styled(
+                format!("+{}", counts.added),
+                Style::default().fg(Color::Green),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                format!("-{}", counts.removed),
+                Style::default().fg(Color::Red),
+            ),
+        ]
+    } else {
+        vec![Span::styled("+? -?", Style::default().fg(Color::DarkGray))]
+    }
+}
+
 pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     let panes = panes(frame.area(), app);
     let viewed = app.review.viewed.len();
@@ -128,27 +146,35 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             Style::default().fg(Color::Green),
         ),
     ]);
-    let counts = if let Some(counts) = comparison.line_counts {
-        Line::from(vec![
-            Span::styled(
-                format!("+{}", counts.added),
-                Style::default().fg(Color::Green),
-            ),
-            Span::raw(" "),
-            Span::styled(
-                format!("-{}", counts.removed),
-                Style::default().fg(Color::Red),
-            ),
-        ])
-    } else {
-        Line::styled("+? -?", Style::default().fg(Color::DarkGray))
-    };
+    let selected_counts = comparison.file_line_counts.as_ref().and_then(|files| {
+        app.preview_changes()
+            .try_fold(LineCounts::default(), |mut total, change| {
+                let counts = files.get(&change.path)?;
+                total.added += counts.added;
+                total.removed += counts.removed;
+                Some(total)
+            })
+    });
+    let selected_counts = Line::from(line_count_spans(selected_counts));
+    let mut counts = vec![Span::raw("(")];
+    counts.extend(line_count_spans(comparison.line_counts));
+    counts.push(Span::raw(")"));
+    let counts = Line::from(counts);
     let [info_area, counts_area] = Layout::horizontal([
         Constraint::Min(0),
         Constraint::Length(counts.width() as u16 + 1),
     ])
     .areas(panes.header);
+    let [info_area, selected_counts_area] = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(selected_counts.width() as u16 + 1),
+    ])
+    .areas(info_area);
     frame.render_widget(Paragraph::new(header), info_area);
+    frame.render_widget(
+        Paragraph::new(selected_counts).alignment(Alignment::Right),
+        selected_counts_area,
+    );
     frame.render_widget(
         Paragraph::new(counts).alignment(Alignment::Right),
         counts_area,

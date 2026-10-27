@@ -45,6 +45,32 @@ fn review() -> Review {
             head_change_id: None,
             mode: Default::default(),
             line_counts: Some(LineCounts::default()),
+            file_line_counts: Some(
+                [
+                    (
+                        "README.md".into(),
+                        LineCounts {
+                            added: 2,
+                            removed: 1,
+                        },
+                    ),
+                    (
+                        "src/a.rs".into(),
+                        LineCounts {
+                            added: 3,
+                            removed: 2,
+                        },
+                    ),
+                    (
+                        "src/nested/b.rs".into(),
+                        LineCounts {
+                            added: 5,
+                            removed: 4,
+                        },
+                    ),
+                ]
+                .into(),
+            ),
         },
         vec![
             change("README.md"),
@@ -481,7 +507,7 @@ fn overall_line_counts_are_right_justified_and_colored_on_the_top_line() {
         },
         LineCounts::default(),
     ] {
-        for width in [120, 50, 9] {
+        for width in [120, 50, 11] {
             let mut review = review();
             review.comparison.base_ref = "a-very-long-base-branch-name".repeat(5);
             review.comparison.line_counts = Some(counts);
@@ -492,11 +518,14 @@ fn overall_line_counts_are_right_justified_and_colored_on_the_top_line() {
                 .unwrap();
             let buffer = terminal.backend().buffer();
             let top: String = (0..width).map(|x| buffer[(x, 0)].symbol()).collect();
-            let expected = format!("+{} -{}", counts.added, counts.removed);
+            let expected = format!("(+{} -{})", counts.added, counts.removed);
             assert!(top.ends_with(&expected), "{top:?}");
-            assert_eq!(buffer[(width - expected.len() as u16, 0)].fg, Color::Green);
             assert_eq!(
-                buffer[(width - counts.removed.to_string().len() as u16 - 1, 0)].fg,
+                buffer[(width - expected.len() as u16 + 1, 0)].fg,
+                Color::Green
+            );
+            assert_eq!(
+                buffer[(width - counts.removed.to_string().len() as u16 - 2, 0)].fg,
                 Color::Red
             );
         }
@@ -527,7 +556,7 @@ fn jj_header_shows_change_ids_alongside_the_pinned_commit_hashes() {
             assert!(top.contains("Viewed 0/3"));
         }
         if width >= 9 {
-            assert!(top.ends_with("+0 -0"), "{top}");
+            assert!(top.ends_with("(+0 -0)"), "{top}");
         }
     }
 }
@@ -563,8 +592,106 @@ fn overall_line_counts_cover_the_full_comparison_while_filtering_or_marking() {
         let top: String = (0..100)
             .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
             .collect();
-        assert!(top.ends_with("+123 -45"));
+        assert!(top.ends_with("(+123 -45)"));
         key(&mut app, KeyCode::Char(' '));
+    }
+}
+
+#[test]
+fn highlighted_line_counts_track_file_and_folder_navigation_from_either_pane() {
+    let mut app = App::new(review());
+    app.review.comparison.line_counts = Some(LineCounts {
+        added: 10,
+        removed: 7,
+    });
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    for (keys, expected) in [
+        ("", "+2 -1 (+10 -7)"),
+        ("j", "+8 -6 (+10 -7)"),
+        ("j", "+3 -2 (+10 -7)"),
+        ("j", "+5 -4 (+10 -7)"),
+        ("\t", "+5 -4 (+10 -7)"),
+        ("j", "+5 -4 (+10 -7)"),
+    ] {
+        for ch in keys.chars() {
+            key(
+                &mut app,
+                if ch == '\t' {
+                    KeyCode::Tab
+                } else {
+                    KeyCode::Char(ch)
+                },
+            );
+        }
+        terminal
+            .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let top: String = (0..120).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert!(top.ends_with(expected), "{top:?}");
+        let start = 120 - expected.len() as u16;
+        assert_eq!(buffer[(start, 0)].fg, Color::Green);
+        assert_eq!(buffer[(start + 3, 0)].fg, Color::Red);
+    }
+}
+
+#[test]
+fn highlighted_folder_line_counts_include_all_descendants_hidden_by_the_tree() {
+    for (filter, unviewed_only) in [("", false), ("a.rs", false), ("", true)] {
+        let mut review = review();
+        review.changes.push(change("src-other/a.rs"));
+        review.comparison.file_line_counts.as_mut().unwrap().insert(
+            "src-other/a.rs".into(),
+            LineCounts {
+                added: 100,
+                removed: 100,
+            },
+        );
+        review.toggle_viewed(2);
+        review.view.selected = "src/".into();
+        review
+            .view
+            .collapsed
+            .extend(["src/".into(), "src/nested/".into()]);
+        review.view.filter = filter.into();
+        review.view.unviewed_only = unviewed_only;
+        let app = App::new(review);
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
+            .unwrap();
+        let top: String = (0..100)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+            .collect();
+        assert!(top.ends_with("+8 -6 (+0 -0)"), "{top:?}");
+    }
+}
+
+#[test]
+fn empty_selections_and_unavailable_statistics_render_safely() {
+    for missing in [false, true] {
+        let mut review = review();
+        let expected = if missing {
+            review.comparison.file_line_counts = None;
+            review.comparison.line_counts = None;
+            "+? -? (+? -?)"
+        } else {
+            review.changes.clear();
+            "+0 -0 (+0 -0)"
+        };
+        let app = App::new(review);
+        for width in [120, 20, 9, 1, 0] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+            terminal
+                .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
+                .unwrap();
+            if width >= 20 {
+                let top: String = (0..width)
+                    .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+                    .collect();
+                assert!(top.ends_with(expected), "{top:?}");
+            }
+        }
     }
 }
 

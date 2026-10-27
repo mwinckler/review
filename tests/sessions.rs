@@ -27,6 +27,16 @@ fn review() -> Review {
                 added: 12,
                 removed: 3,
             }),
+            file_line_counts: Some(
+                [(
+                    "src/a.rs".into(),
+                    LineCounts {
+                        added: 12,
+                        removed: 3,
+                    },
+                )]
+                .into(),
+            ),
         },
         vec![Change {
             path: "src/a.rs".into(),
@@ -81,6 +91,10 @@ fn session_roundtrip_preserves_snapshots_progress_and_navigation() {
             added: 12,
             removed: 3
         })
+    );
+    assert_eq!(
+        loaded.review.comparison.file_line_counts,
+        saved.review.comparison.file_line_counts
     );
 }
 
@@ -167,10 +181,12 @@ fn sessions_without_line_counts_preserve_their_pinned_snapshots_and_viewed_marks
     let (mut saved, lock) = store.create(review()).unwrap();
     saved.review.toggle_viewed(0);
     let mut legacy = serde_json::to_value(&saved).unwrap();
-    legacy["review"]["comparison"]
-        .as_object_mut()
-        .unwrap()
-        .remove("line_counts");
+    for field in ["line_counts", "file_line_counts"] {
+        legacy["review"]["comparison"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+    }
     fs::write(
         store.directory.join(format!("{}.json", saved.id)),
         serde_json::to_vec(&legacy).unwrap(),
@@ -182,6 +198,7 @@ fn sessions_without_line_counts_preserve_their_pinned_snapshots_and_viewed_marks
 
     assert_eq!(loaded.review.comparison.head_id, "head");
     assert_eq!(loaded.review.comparison.line_counts, None);
+    assert_eq!(loaded.review.comparison.file_line_counts, None);
     assert!(loaded.review.is_viewed(&loaded.review.changes[0]));
 }
 

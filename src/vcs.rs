@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -52,6 +53,8 @@ pub struct Comparison {
     pub mode: ComparisonMode,
     #[serde(default)]
     pub line_counts: Option<LineCounts>,
+    #[serde(default)]
+    pub file_line_counts: Option<BTreeMap<String, LineCounts>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,7 +156,7 @@ impl Repository {
             return Ok(None);
         }
         self.fill_change_ids(&mut updated)?;
-        updated.line_counts = Some(self.line_counts(&updated)?);
+        self.fill_line_counts(&mut updated)?;
         Ok(Some(updated))
     }
 
@@ -165,7 +168,7 @@ impl Repository {
     ) -> Result<Comparison> {
         let mut comparison = self.resolve_snapshot(base, head, mode)?;
         self.fill_change_ids(&mut comparison)?;
-        comparison.line_counts = Some(self.line_counts(&comparison)?);
+        self.fill_line_counts(&mut comparison)?;
         Ok(comparison)
     }
 
@@ -185,6 +188,7 @@ impl Repository {
             head_change_id: None,
             mode,
             line_counts: None,
+            file_line_counts: None,
         })
     }
 
@@ -336,6 +340,58 @@ impl Repository {
                 .context("invalid changed line count")?;
         }
         Ok(counts)
+    }
+
+    pub fn file_line_counts(
+        &self,
+        comparison: &Comparison,
+    ) -> Result<BTreeMap<String, LineCounts>> {
+        let output = match self.backend {
+            Backend::Git => self.run(
+                &[
+                    "diff",
+                    "--numstat",
+                    "-z",
+                    "--find-renames",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    &comparison.base_id,
+                    &comparison.head_id,
+                    "--",
+                ],
+                false,
+            )?,
+            Backend::Jj => {
+                let output = self.run(
+                    &[
+                        "diff",
+                        "--from",
+                        &comparison.base_id,
+                        "--to",
+                        &comparison.head_id,
+                        "--git",
+                        "--context",
+                        "0",
+                    ],
+                    false,
+                )?;
+                return parse_jj_line_counts(&output, &self.changes(comparison)?);
+            }
+        };
+        parse_numstat(&output)
+    }
+
+    pub fn fill_line_counts(&self, comparison: &mut Comparison) -> Result<bool> {
+        let mut updated = false;
+        if comparison.file_line_counts.is_none() {
+            comparison.file_line_counts = Some(self.file_line_counts(comparison)?);
+            updated = true;
+        }
+        if comparison.line_counts.is_none() {
+            comparison.line_counts = Some(self.line_counts(comparison)?);
+            updated = true;
+        }
+        Ok(updated)
     }
 
     pub fn content(&self, comparison: &Comparison, change: &Change, old: bool) -> Result<Vec<u8>> {
@@ -547,6 +603,113 @@ fn parse_git_changes(output: &[u8]) -> Result<Vec<Change>> {
         });
     }
     Ok(changes)
+}
+
+fn parse_numstat(output: &[u8]) -> Result<BTreeMap<String, LineCounts>> {
+    let mut fields = output.split(|byte| *byte == 0).peekable();
+    let mut files = BTreeMap::<String, LineCounts>::new();
+    while let Some(field) = fields.next() {
+        if field.is_empty() && fields.peek().is_none() {
+            break;
+        }
+        let mut parts = field.splitn(3, |byte| *byte == b'\t');
+        let added = parts.next().context("missing added line count")?;
+        let removed = parts.next().context("missing removed line count")?;
+        let mut path = parts.next().context("missing diff statistics path")?;
+        if path.is_empty() {
+            fields.next().context("missing rename source path")?;
+            path = fields.next().context("missing rename target path")?;
+        }
+        let counts = files
+            .entry(std::str::from_utf8(path)?.to_owned())
+            .or_default();
+        if added != b"-" && removed != b"-" {
+            counts.added += std::str::from_utf8(added)?
+                .parse::<u64>()
+                .context("invalid added line count")?;
+            counts.removed += std::str::from_utf8(removed)?
+                .parse::<u64>()
+                .context("invalid removed line count")?;
+        }
+    }
+    Ok(files)
+}
+
+fn parse_jj_line_counts(output: &[u8], changes: &[Change]) -> Result<BTreeMap<String, LineCounts>> {
+    let headers: BTreeMap<_, _> = changes
+        .iter()
+        .map(|change| {
+            (
+                format!("diff --git a/{} b/{}\n", change.old_path, change.path).into_bytes(),
+                change,
+            )
+        })
+        .collect();
+    let mut files = BTreeMap::<String, LineCounts>::new();
+    let mut remaining = output;
+    let mut current: Option<&Change> = None;
+    'lines: while !remaining.is_empty() {
+        if remaining.starts_with(b"diff --git ") {
+            // jj writes paths literally, including embedded newlines. Match the
+            // complete header against the structured diff's paths.
+            let mut length = 0;
+            let change = loop {
+                let next = remaining[length..]
+                    .split_inclusive(|byte| *byte == b'\n')
+                    .next()
+                    .context("missing Jujutsu diff header")?;
+                length += next.len();
+                if let Some(change) = headers.get(&remaining[..length]) {
+                    break *change;
+                }
+            };
+            remaining = &remaining[length..];
+            files.entry(change.path.clone()).or_default();
+            current = Some(change);
+            continue;
+        }
+        if let Some(change) = current {
+            for metadata in [
+                format!("--- a/{}\n", change.old_path),
+                format!("+++ b/{}\n", change.path),
+                format!("rename from {}\n", change.old_path),
+                format!("rename to {}\n", change.path),
+                format!("copy from {}\n", change.old_path),
+                format!("copy to {}\n", change.path),
+                format!(
+                    "Binary files a/{} and b/{} differ\n",
+                    change.old_path, change.path
+                ),
+            ] {
+                if let Some(rest) = remaining.strip_prefix(metadata.as_bytes()) {
+                    remaining = rest;
+                    continue 'lines;
+                }
+            }
+        }
+        let line = remaining
+            .split_inclusive(|byte| *byte == b'\n')
+            .next()
+            .unwrap();
+        remaining = &remaining[line.len()..];
+        if line.starts_with(b"@@ ") {
+            let change = current.context("missing Jujutsu diff path")?;
+            let counts = files.get_mut(&change.path).unwrap();
+            let mut ranges = line.split(|byte| *byte == b' ').skip(1);
+            counts.removed +=
+                hunk_line_count(ranges.next().context("missing removed hunk range")?)?;
+            counts.added += hunk_line_count(ranges.next().context("missing added hunk range")?)?;
+        }
+    }
+    Ok(files)
+}
+
+fn hunk_line_count(range: &[u8]) -> Result<u64> {
+    if let Some(index) = range.iter().position(|byte| *byte == b',') {
+        Ok(std::str::from_utf8(&range[index + 1..])?.parse()?)
+    } else {
+        Ok(1)
+    }
 }
 
 fn git_entry(mode: &str, object_id: &str) -> Result<Entry> {

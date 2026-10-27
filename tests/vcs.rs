@@ -83,8 +83,176 @@ fn both_backends_count_added_and_removed_lines_from_pinned_snapshots() {
         let repo = Repository::discover(dir.path(), Some(backend)).unwrap();
         let comparison = repo.snapshot("main", "stats").unwrap();
         assert_eq!(comparison.line_counts, Some(expected));
+        let files = comparison.file_line_counts.as_ref().unwrap();
+        assert_eq!(
+            files["src/main.rs"],
+            LineCounts {
+                added: 2,
+                removed: 1
+            }
+        );
+        assert_eq!(
+            files["removed.txt"],
+            LineCounts {
+                added: 0,
+                removed: 1
+            }
+        );
+        assert_eq!(
+            files["added\tand\nλ.txt"],
+            LineCounts {
+                added: 2,
+                removed: 0
+            }
+        );
+        assert_eq!(files["image.bin"], LineCounts::default());
         fs::write(dir.path().join("src/main.rs"), "uncommitted contents\n").unwrap();
         assert_eq!(repo.line_counts(&comparison).unwrap(), expected);
+        assert_eq!(repo.file_line_counts(&comparison).unwrap(), *files);
+    }
+}
+
+#[test]
+fn file_line_counts_cover_renames_and_binary_changes_without_changing_fingerprints() {
+    let dir = fixture();
+    for backend in [Backend::Git, Backend::Jj] {
+        let repo = Repository::discover(dir.path(), Some(backend)).unwrap();
+        let mut comparison = repo.snapshot("main", "feature").unwrap();
+        let changes = repo.changes(&comparison).unwrap();
+        let mut review = review::state::Review::new(comparison.clone(), changes.clone());
+        review.toggle_viewed(0);
+        let viewed = review.viewed.clone();
+        let files = comparison.file_line_counts.as_ref().unwrap();
+        assert_eq!(
+            files["space and\nλ.txt"],
+            LineCounts {
+                added: 1,
+                removed: 0
+            }
+        );
+        assert_eq!(files["image.bin"], LineCounts::default());
+        for change in &changes {
+            assert!(
+                files.contains_key(&change.path),
+                "{backend:?}: {}",
+                change.path
+            );
+        }
+        if backend == Backend::Git {
+            assert_eq!(files["renamed.txt"], LineCounts::default());
+            assert!(!files.contains_key("rename.txt"));
+        }
+        comparison.file_line_counts = None;
+        repo.fill_line_counts(&mut comparison).unwrap();
+        assert_eq!(review.reconcile(comparison, changes), 0);
+        assert_eq!(review.viewed, viewed);
+    }
+}
+
+#[test]
+fn file_line_counts_handle_multiple_hunks_empty_files_and_literal_patch_like_paths() {
+    let dir = fixture();
+    jj(dir.path(), &["new", "main"]);
+    let before = (0..20)
+        .map(|index| format!("line {index}\n"))
+        .collect::<String>();
+    fs::write(dir.path().join("src/hunks.txt"), &before).unwrap();
+    jj(dir.path(), &["bookmark", "create", "before", "-r", "@"]);
+    jj(dir.path(), &["new"]);
+    let after = before
+        .replace("line 1\n", "changed first\nextra\n")
+        .replace("line 18\n", "changed last\n");
+    fs::write(dir.path().join("src/hunks.txt"), after).unwrap();
+    fs::write(dir.path().join("empty.txt"), "").unwrap();
+    let tricky = "quotes\"\tand\n@@ -10 +99 @@\nλ.txt";
+    fs::write(dir.path().join(tricky), "one\ntwo").unwrap();
+    jj(dir.path(), &["bookmark", "create", "after", "-r", "@"]);
+    for backend in [Backend::Git, Backend::Jj] {
+        let repo = Repository::discover(dir.path(), Some(backend)).unwrap();
+        let comparison = repo.snapshot_expression("before..after").unwrap();
+        let files = comparison.file_line_counts.as_ref().unwrap();
+        assert_eq!(
+            files["src/hunks.txt"],
+            LineCounts {
+                added: 3,
+                removed: 2
+            }
+        );
+        assert_eq!(files["empty.txt"], LineCounts::default());
+        assert_eq!(
+            files[tricky],
+            LineCounts {
+                added: 2,
+                removed: 0
+            }
+        );
+        assert_eq!(
+            comparison.line_counts,
+            Some(LineCounts {
+                added: 5,
+                removed: 2
+            })
+        );
+    }
+}
+
+#[test]
+fn edited_rename_line_counts_follow_the_backend_change_paths() {
+    let dir = fixture();
+    jj(dir.path(), &["new", "main"]);
+    fs::write(
+        dir.path().join("rename.txt"),
+        "keep1\nkeep2\nkeep3\nkeep4\nold\n",
+    )
+    .unwrap();
+    jj(dir.path(), &["bookmark", "create", "before", "-r", "@"]);
+    jj(dir.path(), &["new"]);
+    fs::create_dir_all(dir.path().join("dest")).unwrap();
+    fs::rename(
+        dir.path().join("rename.txt"),
+        dir.path().join("dest/moved.txt"),
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("dest/moved.txt"),
+        "keep1\nkeep2\nkeep3\nkeep4\nnew\nextra\n",
+    )
+    .unwrap();
+    jj(dir.path(), &["bookmark", "create", "after", "-r", "@"]);
+    for backend in [Backend::Git, Backend::Jj] {
+        let repo = Repository::discover(dir.path(), Some(backend)).unwrap();
+        let comparison = repo.snapshot_expression("before..after").unwrap();
+        let changes = repo.changes(&comparison).unwrap();
+        let files = comparison.file_line_counts.as_ref().unwrap();
+        let renamed = changes
+            .iter()
+            .find(|change| change.path == "dest/moved.txt")
+            .unwrap();
+        if renamed.status == "R" {
+            assert_eq!(
+                files["dest/moved.txt"],
+                LineCounts {
+                    added: 2,
+                    removed: 1
+                }
+            );
+            assert!(!files.contains_key("rename.txt"));
+        } else {
+            assert_eq!(
+                files["dest/moved.txt"],
+                LineCounts {
+                    added: 6,
+                    removed: 0
+                }
+            );
+            assert_eq!(
+                files["rename.txt"],
+                LineCounts {
+                    added: 0,
+                    removed: 5
+                }
+            );
+        }
     }
 }
 
@@ -512,9 +680,44 @@ fn handles_symlinks_and_executable_only_changes() {
         assert_ne!(executable.old.executable, executable.new.executable);
         let link = changes.iter().find(|change| change.path == "link").unwrap();
         assert_eq!(link.new.kind, "symlink");
+        let files = comparison.file_line_counts.as_ref().unwrap();
+        assert_eq!(files["src/main.rs"], LineCounts::default());
+        assert_eq!(
+            files["link"],
+            LineCounts {
+                added: 1,
+                removed: 0
+            }
+        );
         assert_eq!(
             repo.content(&comparison, link, false).unwrap(),
             b"src/main.rs"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn file_to_symlink_counts_include_both_halves_of_the_type_change() {
+    use std::os::unix::fs::symlink;
+
+    let dir = fixture();
+    jj(dir.path(), &["new", "main"]);
+    fs::remove_file(dir.path().join("src/main.rs")).unwrap();
+    symlink("../rename.txt", dir.path().join("src/main.rs")).unwrap();
+    jj(
+        dir.path(),
+        &["bookmark", "create", "type-change", "-r", "@"],
+    );
+    for backend in [Backend::Git, Backend::Jj] {
+        let repo = Repository::discover(dir.path(), Some(backend)).unwrap();
+        let comparison = repo.snapshot_expression("main..type-change").unwrap();
+        assert_eq!(
+            comparison.file_line_counts.as_ref().unwrap()["src/main.rs"],
+            LineCounts {
+                added: 1,
+                removed: 1
+            }
         );
     }
 }

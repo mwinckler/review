@@ -318,6 +318,22 @@ fn exercise_automatic_refresh(backend: Backend, head: &str) {
         updated.comparison.line_counts,
         original.comparison.line_counts
     );
+    let files = updated.comparison.file_line_counts.as_ref().unwrap();
+    assert_eq!(
+        files["src/main.rs"],
+        review::vcs::LineCounts {
+            added: 2,
+            removed: 1
+        }
+    );
+    assert_eq!(
+        files["src/nested/new.rs"],
+        review::vcs::LineCounts {
+            added: 1,
+            removed: 0
+        }
+    );
+    assert!(!files.contains_key("removed.txt"));
     if head == "@" {
         assert_eq!(
             updated.comparison.head_change_id,
@@ -728,7 +744,12 @@ fn exercise_terminal(backend: Backend) {
         .line_counts
         .expect("line counts saved with the snapshots");
     let mut legacy = serde_json::to_value(&saved).unwrap();
-    for field in ["line_counts", "base_change_id", "head_change_id"] {
+    for field in [
+        "line_counts",
+        "file_line_counts",
+        "base_change_id",
+        "head_change_id",
+    ] {
         legacy["review"]["comparison"]
             .as_object_mut()
             .unwrap()
@@ -749,6 +770,10 @@ fn exercise_terminal(backend: Backend) {
     terminal.wait_until(|_| store.list().unwrap()[0].review.viewed.len() == 2);
     let pinned = store.list().unwrap().remove(0);
     assert_eq!(pinned.review.comparison.line_counts, Some(counts));
+    assert_eq!(
+        pinned.review.comparison.file_line_counts,
+        saved.review.comparison.file_line_counts
+    );
     assert_eq!(
         pinned.review.comparison.base_change_id,
         saved.review.comparison.base_change_id
