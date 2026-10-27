@@ -210,6 +210,45 @@ fn hunk_shortcuts_wait_for_the_current_preview_to_finish_rendering() {
 }
 
 #[test]
+fn hunk_navigation_centers_the_hunk_and_clamps_to_the_available_scroll_range() {
+    for (page, lines, rows, expected) in [
+        (10, 100, 40..45, 37),
+        (11, 100, 40..44, 37),
+        (10, 100, 0..4, 0),
+        (10, 100, 97..100, 90),
+        (10, 100, 20..70, 40),
+        (10, 7, 2..5, 0),
+        (1, 100, 40..45, 42),
+    ] {
+        let mut app = App::new(review());
+        app.hunks.push(Hunk {
+            rows: rows.clone(),
+            location: HunkLocation {
+                path: "README.md".into(),
+                old_line: Some(1),
+                new_line: Some(1),
+            },
+        });
+        for prefix in [']', '['] {
+            for ch in [prefix, 'h'] {
+                app.handle_key(
+                    KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                    page,
+                    lines,
+                    100,
+                );
+            }
+            assert_eq!(
+                app.position().vertical,
+                expected,
+                "{rows:?}, page {page}, {lines} lines, {prefix}h"
+            );
+            assert_eq!(app.selected_hunk().unwrap().rows, rows);
+        }
+    }
+}
+
+#[test]
 fn tree_collapses_filters_and_counts_viewed_files() {
     let mut review = review();
     review.toggle_viewed(1);

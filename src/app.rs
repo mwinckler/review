@@ -206,7 +206,7 @@ impl App {
                 .unwrap_or(len - 1)
         };
         let hunk = &self.hunks[index];
-        let start = hunk.rows.start;
+        let center = hunk.rows.start + hunk.rows.len() / 2;
         let location = hunk.location.clone();
         self.message = format!(
             "Hunk {}/{} · {}:{}",
@@ -216,7 +216,9 @@ impl App {
             location.new_line.or(location.old_line).unwrap_or(1)
         );
         self.hunk_selection = Some(location);
-        self.position().vertical = start.min(lines.saturating_sub(page));
+        self.position().vertical = center
+            .saturating_sub(page / 2)
+            .min(lines.saturating_sub(page));
         self.position().horizontal = 0;
         self.focus = Focus::Diff;
     }

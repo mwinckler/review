@@ -156,6 +156,7 @@ Narrow terminals display the focused pane at full width.
 Use `]h` / `[h` to select a hunk in the configured renderer's output. Selection
 wraps, focuses the diff pane, and highlights the hunk while preserving syntax
 colors. Folder previews select hunks across all their changed descendants.
+Navigation centers the selected hunk within the available scroll range.
 Selection follows the same source location when resizing or switching layouts.
 `Esc` clears the hunk selection.
 
