@@ -113,13 +113,14 @@ pub(crate) fn excerpt(content: &str, start: usize, end: usize) -> Result<String>
         start > 0 && end >= start,
         "Use an inclusive line range with 1 ≤ start ≤ end"
     );
-    let lines: Vec<_> = content.lines().collect();
+    let count = end - start + 1;
+    let lines: Vec<_> = content.lines().skip(start - 1).take(count).collect();
     ensure!(
-        end <= lines.len(),
+        lines.len() == count,
         "Line range exceeds the file's {} lines",
-        lines.len()
+        content.lines().count()
     );
-    Ok(lines[start - 1..end].join("\n"))
+    Ok(lines.join("\n"))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -322,18 +323,17 @@ pub fn write_todo(repo: &Repository, review: &Review, comment: &Comment) -> Resu
         todo.push_str(newline);
     }
     // Retry safely after a source write whose session save failed.
-    let already_written = text[..offset].ends_with(&todo);
     let receipt = SourceTodo {
         path: anchor.path.clone(),
         line: *mapped.start(),
         body: comment.body.clone(),
         written_at: now_millis()?,
     };
-    if already_written {
+    if text[..offset].ends_with(&todo) {
         return Ok(receipt);
     }
-    let mut temporary =
-        tempfile::NamedTempFile::new_in(file.parent().context("Source file has no parent")?)?;
+    let directory = file.parent().expect("Repository source file has a parent");
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
     temporary.write_all(&current[..offset])?;
     temporary.write_all(todo.as_bytes())?;
     temporary.write_all(&current[offset..])?;
@@ -350,7 +350,7 @@ pub fn write_todo(repo: &Repository, review: &Review, comment: &Comment) -> Resu
         .context("Atomically writing source TODO")?;
     #[cfg(unix)]
     {
-        fs::File::open(file.parent().context("Source file has no parent")?)?.sync_all()?;
+        fs::File::open(directory)?.sync_all()?;
     }
     Ok(receipt)
 }

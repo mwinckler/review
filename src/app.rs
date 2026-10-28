@@ -5,6 +5,7 @@ use std::{
 
 use crate::{
     comment_dialog::{CommentAction, CommentDialog, CommentList, LineSelection},
+    comments::DiffSide,
     hunks::{Hunk, HunkLocation, SourceLine},
     session_dialog::{SessionAction, SessionDialog},
     state::{Position, Review},
@@ -199,10 +200,8 @@ impl App {
         if let Some(selection) = &self.line_selection {
             return Some(HunkLocation {
                 path: selection.path.clone(),
-                old_line: (selection.side == crate::comments::DiffSide::Old)
-                    .then_some(selection.cursor),
-                new_line: (selection.side == crate::comments::DiffSide::New)
-                    .then_some(selection.cursor),
+                old_line: (selection.side == DiffSide::Old).then_some(selection.cursor),
+                new_line: (selection.side == DiffSide::New).then_some(selection.cursor),
             });
         }
         if let Some(hunk) = self.selected_hunk() {

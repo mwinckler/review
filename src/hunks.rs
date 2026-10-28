@@ -69,12 +69,13 @@ pub fn source_lines(
     text: &Text<'_>,
     change: &Change,
     format: HunkFormat,
+    hunks: &[Hunk],
     line_counts: (usize, usize),
 ) -> Vec<SourceLine> {
     let mut result = Vec::new();
     match format {
         HunkFormat::Unified => {
-            for hunk in unified(text, change) {
+            for hunk in hunks {
                 let Some((old, new)) = unified_ranges(&text.lines[hunk.rows.start].to_string())
                 else {
                     continue;
@@ -104,7 +105,7 @@ pub fn source_lines(
             }
         }
         HunkFormat::Difftastic => {
-            for hunk in difftastic(text, change) {
+            for hunk in hunks {
                 for row in hunk.rows.start + 1..hunk.rows.end {
                     let line = &text.lines[row];
                     let cells = cells(line);

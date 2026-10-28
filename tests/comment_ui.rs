@@ -43,8 +43,8 @@ fn fixture() -> (tempfile::TempDir, Repository, App, Text<'static>) {
         "--- old\n+++ new\n@@ -1 +1,4 @@\n-fn main() { println!(\"new\"); }\n+fn main() {\n+    first();\n+    second();\n+}\n",
     );
     let file = &app.review.changes[app.active.unwrap()];
-    app.source_lines = hunks::source_lines(&text, file, HunkFormat::Unified, (1, 4));
     app.hunks = hunks::parse(&text, file, HunkFormat::Unified);
+    app.source_lines = hunks::source_lines(&text, file, HunkFormat::Unified, &app.hunks, (1, 4));
     (root, repo, app, text)
 }
 

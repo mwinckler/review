@@ -41,18 +41,21 @@ fn comments_round_trip_with_stable_ids_revision_anchors_and_legacy_defaults() {
         review.comments.push(comment.clone());
         let state = tempfile::tempdir().unwrap();
         let store = SessionStore::new(state.path(), &repo).unwrap();
-        let (saved, lock) = store.create(review).unwrap();
-        drop(lock);
-        let (mut saved, lock) = store.open(&saved.id).unwrap();
-        assert_eq!(saved.review.comments, std::slice::from_ref(&comment));
+        let (mut saved, lock) = store.create(review).unwrap();
+        assert_eq!(
+            store.list().unwrap()[0].review.comments,
+            std::slice::from_ref(&comment)
+        );
         saved.review.comments[0].edit("Edited λ".into()).unwrap();
+        assert_eq!(saved.review.comments[0].body, "Edited λ");
         assert_eq!(saved.review.comments[0].id, comment.id);
         assert_eq!(saved.review.comments[0].anchor, comment.anchor);
         assert!(saved.review.comments[0].updated_at >= comment.created_at);
         lock.save(&mut saved).unwrap();
-        drop(lock);
-        let (saved, _lock) = store.open(&saved.id).unwrap();
-        assert_eq!(saved.review.comments[0].body, "Edited λ");
+        assert_eq!(
+            store.list().unwrap()[0].review.comments,
+            saved.review.comments
+        );
         let mut legacy = serde_json::to_value(saved.review).unwrap();
         legacy.as_object_mut().unwrap().remove("comments");
         assert!(

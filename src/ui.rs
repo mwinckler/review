@@ -125,6 +125,12 @@ fn line_count_spans(counts: Option<LineCounts>) -> Vec<Span<'static>> {
 
 pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     let panes = panes(frame.area(), app);
+    let comments: Vec<_> = app
+        .review
+        .comments
+        .iter()
+        .map(|comment| (comment, comment.anchor.change(&app.review.changes)))
+        .collect();
     let viewed = app.review.viewed.len();
     let comparison = &app.review.comparison;
     let header = Line::from(vec![
@@ -226,22 +232,18 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                         Style::default().fg(Color::DarkGray),
                     ));
                 }
-                let comments = app
-                    .review
-                    .comments
+                let count = comments
                     .iter()
-                    .filter(|comment| {
-                        let path = comment
-                            .anchor
-                            .change(&app.review.changes)
+                    .filter(|(comment, change)| {
+                        let path = change
                             .map(|change| change.path.as_str())
                             .unwrap_or(&comment.anchor.path);
                         path == row.path || (row.path.ends_with('/') && path.starts_with(&row.path))
                     })
                     .count();
-                if comments > 0 {
+                if count > 0 {
                     spans.push(Span::styled(
-                        format!("  ●{comments}"),
+                        format!("  ●{count}"),
                         Style::default().fg(Color::Magenta),
                     ));
                 }
@@ -411,11 +413,8 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                     Style::default().bg(Color::Rgb(55, 50, 25)),
                 );
             }
-            let has_comment = app.review.comments.iter().any(|comment| {
-                comment
-                    .anchor
-                    .change(&app.review.changes)
-                    .is_some_and(|change| change.path == source.location.path)
+            let has_comment = comments.iter().any(|(comment, change)| {
+                change.is_some_and(|change| change.path == source.location.path)
                     && source.number(comment.anchor.side).is_some_and(|line| {
                         (comment.anchor.start_line..=comment.anchor.end_line).contains(&line)
                     })

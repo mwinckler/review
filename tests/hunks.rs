@@ -155,7 +155,8 @@ fn unified_source_lines_map_context_additions_and_deletions_without_header_or_eo
     let text = Text::raw(
         "--- old\n+++ new\n@@ -8,3 +8,3 @@\n context\n-old\n+new\n last\n\\ No newline at end of file\n",
     );
-    let lines = hunks::source_lines(&text, &change(), HunkFormat::Unified, (10, 10));
+    let hunks = hunks::parse(&text, &change(), HunkFormat::Unified);
+    let lines = hunks::source_lines(&text, &change(), HunkFormat::Unified, &hunks, (10, 10));
     assert_eq!(
         lines
             .iter()
@@ -173,7 +174,7 @@ fn unified_source_lines_map_context_additions_and_deletions_without_header_or_eo
             .iter()
             .all(|line| line.location.path == "src/example.rs")
     );
-    assert!(hunks::source_lines(&text, &change(), HunkFormat::None, (10, 10)).is_empty());
+    assert!(hunks::source_lines(&text, &change(), HunkFormat::None, &[], (10, 10)).is_empty());
 }
 
 #[test]
@@ -205,10 +206,12 @@ fn difftastic_source_lines_have_exact_sides_for_split_inline_added_and_deleted_f
                     1,
                 )
                 .unwrap();
+                let hunks = hunks::parse(&text, &file, HunkFormat::Difftastic);
                 let lines = hunks::source_lines(
                     &text,
                     &file,
                     HunkFormat::Difftastic,
+                    &hunks,
                     (old.lines().count(), new.lines().count()),
                 );
                 assert!(!lines.is_empty(), "{text}");

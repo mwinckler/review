@@ -255,17 +255,9 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
             Ok((text, line_counts))
         })()
         .with_context(|| format!("rendering {}", display_path(&change.path)))?;
-        let mut hunks = hunks::parse(
-            &rendered,
-            change,
-            config.hunk_format.for_command(&config.command),
-        );
-        let mut source_lines = hunks::source_lines(
-            &rendered,
-            change,
-            config.hunk_format.for_command(&config.command),
-            line_counts,
-        );
+        let format = config.hunk_format.for_command(&config.command);
+        let mut hunks = hunks::parse(&rendered, change, format);
+        let mut source_lines = hunks::source_lines(&rendered, change, format, &hunks, line_counts);
         if !directory {
             return Ok(Preview {
                 text: rendered,
