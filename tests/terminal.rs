@@ -132,6 +132,61 @@ impl Drop for Pty {
 }
 
 #[test]
+fn single_line_highlights_and_ranges_save_comments_at_the_chosen_lines() {
+    for backend in [Backend::Git, Backend::Jj] {
+        let root = common::fixture();
+        fs::write(
+            root.path().join("src/main.rs"),
+            "fn main() {\n    first();\n    second();\n}\n",
+        )
+        .unwrap();
+        common::jj(root.path(), &["commit", "-m", "comment lines"]);
+        let state = tempfile::tempdir().unwrap();
+        let config = state.path().join("config.toml");
+        fs::write(
+            &config,
+            "[renderer]\ncommand = ['diff', '-u', '{old}', '{new}']\n",
+        )
+        .unwrap();
+        let repo = Repository::discover(root.path(), Some(backend)).unwrap();
+        let store = SessionStore::new(state.path(), &repo).unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
+        command
+            .current_dir(root.path())
+            .env("JJ_CONFIG", "/dev/null")
+            .args([
+                "--backend",
+                if backend == Backend::Git { "git" } else { "jj" },
+                "--base",
+                "feature",
+                "--state-dir",
+                state.path().to_str().unwrap(),
+                "--config",
+                config.to_str().unwrap(),
+            ]);
+        let mut terminal = Pty::spawn(command);
+        terminal.wait_until(|text| text.contains("second();"));
+        terminal.send(b"\t\rljjc");
+        terminal.wait_until(|text| text.contains("New line comment"));
+        terminal.send(b"\x1b[200~Chosen single line\x1b[201~\x13");
+        terminal.wait_until(|text| text.contains("saved"));
+        terminal.send(b"qvkc");
+        terminal.send(b"\x1b[200~Chosen range\x1b[201~\x13\x03");
+        assert!(terminal.finish().success(), "{}", terminal.output);
+        let saved = store.list().unwrap().pop().unwrap();
+        assert_eq!(saved.review.comments.len(), 2);
+        let first = &saved.review.comments[0];
+        assert_eq!(first.body, "Chosen single line");
+        assert_eq!((first.anchor.start_line, first.anchor.end_line), (3, 3));
+        assert_eq!(first.anchor.excerpt, "    second();");
+        let second = &saved.review.comments[1];
+        assert_eq!(second.body, "Chosen range");
+        assert_eq!((second.anchor.start_line, second.anchor.end_line), (2, 3));
+        assert_eq!(second.anchor.excerpt, "    first();\n    second();");
+    }
+}
+
+#[test]
 fn line_comments_autosave_resume_and_write_source_todos_only_after_confirmation() {
     for backend in [Backend::Git, Backend::Jj] {
         let root = common::fixture();

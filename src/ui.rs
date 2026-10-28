@@ -454,11 +454,17 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         }
     } else if let Some(selection) = &app.line_selection {
         let target = selection.target();
+        let (range, movement) = if selection.extending {
+            (
+                format!("{}-{}", target.start_line, target.end_line),
+                "j/k extend · v single",
+            )
+        } else {
+            (target.start_line.to_string(), "j/k move · v range")
+        };
         format!(
-            "{}:{}-{} ({}) · j/k extend · h/l old/new · c comment · Esc cancel",
+            "{}:{range} ({}) · {movement} · h/l old/new · c comment · Esc cancel",
             display_path(&target.path),
-            target.start_line,
-            target.end_line,
             target.side.label()
         )
     } else if app.searching {
@@ -476,7 +482,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             display_path(&app.review.view.filter)
         )
     } else {
-        "Space viewed · ]h/[h hunks · c comment · v lines · C comments · ? help".into()
+        "Space viewed · Enter line · v range · c comment · C comments · ? help".into()
     };
     frame.render_widget(
         Paragraph::new(footer).style(Style::default().fg(Color::Cyan)),
@@ -505,6 +511,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "]h / [h          Select next/previous diff hunk\n",
             "]Nh / [Nh        Select hunk number N (1-based)\n",
             "e                Open selected hunk/file in editor\n",
+            "Enter            Highlight a source line in the diff\n",
             "c / v / C        Comment / select line range / comments\n",
             "/                Filter filenames / search diff\n",
             "s                Flash jump in the tree from either pane\n",

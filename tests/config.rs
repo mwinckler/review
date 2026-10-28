@@ -97,7 +97,7 @@ fn comment_actions_can_be_aliased() {
     let path = dir.path().join("config.toml");
     fs::write(
         &path,
-        "[keybindings]\nx = 'add_comment'\nV = 'select_lines'\nM = 'manage_comments'\n",
+        "[keybindings]\nx = 'add_comment'\nL = 'select_line'\nV = 'select_lines'\nM = 'manage_comments'\n",
     )
     .unwrap();
     let config = Config::load(&path, true).unwrap();
@@ -107,6 +107,13 @@ fn comment_actions_can_be_aliased() {
             [KeyEvent::new(KeyCode::Char(target), KeyModifiers::NONE)]
         );
     }
+    assert_eq!(
+        config.translate(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE)),
+        [
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+        ]
+    );
 }
 
 #[test]

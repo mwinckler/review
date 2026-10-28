@@ -167,7 +167,7 @@ Repository content and persistent editor snapshots are preserved.
 |---|---|
 | `j` / `k`, arrows | Move in the tree or scroll the diff |
 | `h` / `l` | Collapse/expand directories or scroll horizontally |
-| `Enter` | Toggle a directory or focus the selected file's diff |
+| `Enter` | Toggle a directory, focus a file's diff, or highlight one line in the diff |
 | `Tab`, `Ctrl-h` / `Ctrl-l` | Switch panes; focus the tree / diff |
 | `Ctrl-Left` / `Ctrl-Right` | Shrink/grow the tree by two columns |
 | `gg` / `G`, `Home` / `End` | First/last row or page |
@@ -179,7 +179,7 @@ Repository content and persistent editor snapshots are preserved.
 | `]Nh` / `[Nh` | Select hunk number `N` (1-based) |
 | `e` | Open the selected hunk or file in the editor |
 | `c` | Compose a line comment; `Ctrl-s` saves it locally |
-| `v` | Select a source-line range; `j` / `k` extend, `h` / `l` choose old/new, `c` comments |
+| `v` | Start a range at the highlighted line; `j` / `k` extend, `v` returns to one line |
 | `C` | Browse comments, edit, delete, jump to source, or write a source TODO |
 | `/` | Filter filenames in the tree; search text in the diff |
 | `s` | Flash jump to a visible tree entry from either pane |
@@ -259,9 +259,13 @@ Press `Esc` to restore the previous pane and layout.
 ### Line comments
 
 Press `c` on a file, selected hunk, or displayed source line to compose a comment.
-For a range, press `v`, extend it with `j` / `k` or the page keys, then press `c`.
+To choose a single line, focus the diff with `Tab` or `Ctrl-l`, then press `Enter`.
+Use `j` / `k` or arrows to move the highlight and `c` to comment on that line.
+For a range, press `v` at the highlighted line, extend it with `j` / `k` or the page
+keys, then press `c`. Press `v` again or `Enter` to return to a single-line highlight
+at the current endpoint. Starting a highlight uses the currently visible source.
 `h` / `l` select the old/new side; `gg` / `G` move to the first/last mapped source
-line. A range belongs to one file and one side. `Esc` cancels range selection.
+line. A range belongs to one file and one side. `Esc` clears the line highlight or range.
 Difftastic and unified renderers support visual selection in file and folder
 previews, including inline and side-by-side layouts.
 
@@ -357,7 +361,7 @@ characters for shifted letters.
 Actions: `up`, `down`, `left`, `right`, `focus_tree`, `focus_diff`, `first`, `last`,
 `page_down`, `page_up`, `half_page_down`, `half_page_up`, `next_file`,
 `previous_file`, `next_unviewed`, `previous_unviewed`, `next_hunk`, `previous_hunk`,
-`open_editor`, `add_comment`, `select_lines`, `manage_comments`, `toggle_viewed`,
+`open_editor`, `add_comment`, `select_line`, `select_lines`, `manage_comments`, `toggle_viewed`,
 `toggle_unviewed`, `toggle_inline`, `toggle_fullscreen`, `search`, `flash`,
 `manage_sessions`,
 `next_match`, `previous_match`, `refresh`, `clear_filters`, `help`, `quit`.

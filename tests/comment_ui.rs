@@ -49,6 +49,148 @@ fn fixture() -> (tempfile::TempDir, Repository, App, Text<'static>) {
 }
 
 #[test]
+fn enter_highlights_one_line_and_navigation_moves_the_comment_target_without_extending_it() {
+    let (_root, repo, mut app, text) = fixture();
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Enter);
+    assert!(app.line_selection.is_some());
+    key(&mut app, KeyCode::Char('l'));
+    key(&mut app, KeyCode::Char('j'));
+    key(&mut app, KeyCode::Down);
+    let target = app.line_selection.as_ref().unwrap().target();
+    assert_eq!(target.start_line, 3);
+    assert_eq!(target.end_line, 3);
+    assert_eq!(target.side, DiffSide::New);
+    assert_eq!(app.editor_location().unwrap().new_line, Some(3));
+
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    terminal.draw(|frame| ui::draw(frame, &app, &text)).unwrap();
+    let diff = ui::panes(ratatui::layout::Rect::new(0, 0, 100, 24), &app).diff;
+    for source in &app.source_lines {
+        let cell = &terminal.backend().buffer()[(diff.x + 1, diff.y + 1 + source.row as u16)];
+        assert_eq!(
+            cell.bg == Color::Rgb(55, 50, 25),
+            source.location.new_line == Some(3)
+        );
+    }
+    let display: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(display.contains("j/k move"));
+    assert!(display.contains("v range"));
+
+    key(&mut app, KeyCode::Char('c'));
+    let Some(CommentAction::Compose(target)) = app.comment_action.take() else {
+        panic!("single-line comment requested");
+    };
+    let draft = CommentDraft::new(&repo, &app.review, &target).unwrap();
+    assert_eq!(draft.anchor.start_line, 3);
+    assert_eq!(draft.anchor.end_line, 3);
+    assert_eq!(draft.anchor.excerpt, "    second();");
+}
+
+#[test]
+fn visual_ranges_start_at_the_highlighted_line_and_toggle_back_to_a_single_line() {
+    let (_root, _repo, mut app, _text) = fixture();
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Char('l'));
+    key(&mut app, KeyCode::Char('j'));
+    key(&mut app, KeyCode::Char('j'));
+    key(&mut app, KeyCode::Char('v'));
+    assert_eq!(app.line_selection.as_ref().unwrap().target().start_line, 3);
+    key(&mut app, KeyCode::Up);
+    let target = app.line_selection.as_ref().unwrap().target();
+    assert_eq!((target.start_line, target.end_line), (2, 3));
+    key(&mut app, KeyCode::Char('v'));
+    let target = app.line_selection.as_ref().unwrap().target();
+    assert_eq!((target.start_line, target.end_line), (2, 2));
+    key(&mut app, KeyCode::Char('j'));
+    let target = app.line_selection.as_ref().unwrap().target();
+    assert_eq!((target.start_line, target.end_line), (3, 3));
+    key(&mut app, KeyCode::Char('v'));
+    key(&mut app, KeyCode::Char('j'));
+    let target = app.line_selection.as_ref().unwrap().target();
+    assert_eq!((target.start_line, target.end_line), (3, 4));
+    key(&mut app, KeyCode::Enter);
+    let target = app.line_selection.as_ref().unwrap().target();
+    assert_eq!((target.start_line, target.end_line), (4, 4));
+    key(&mut app, KeyCode::Esc);
+    assert!(app.line_selection.is_none());
+}
+
+#[test]
+fn starting_a_line_highlight_uses_the_visible_source_instead_of_an_offscreen_selected_hunk() {
+    let (_root, _repo, mut app, _text) = fixture();
+    key(&mut app, KeyCode::Tab);
+    app.hunk_selection = Some(app.hunks[0].location.clone());
+    app.position().vertical = 6;
+    app.handle_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        2,
+        100,
+        100,
+    );
+    let target = app.line_selection.as_ref().unwrap().target();
+    assert_eq!(target.path, "src/main.rs");
+    assert_eq!((target.start_line, target.end_line), (3, 3));
+    assert_eq!(app.position().vertical, 6);
+}
+
+#[test]
+fn single_line_navigation_clamps_pages_extremes_and_side_changes_to_one_line() {
+    let (_root, _repo, mut app, _text) = fixture();
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Char('l'));
+    for (code, expected) in [
+        (KeyCode::PageDown, 4),
+        (KeyCode::Char('j'), 4),
+        (KeyCode::Home, 1),
+        (KeyCode::Char('k'), 1),
+        (KeyCode::End, 4),
+        (KeyCode::PageUp, 1),
+        (KeyCode::Char('h'), 1),
+    ] {
+        key(&mut app, code);
+        let target = app.line_selection.as_ref().unwrap().target();
+        assert_eq!((target.start_line, target.end_line), (expected, expected));
+    }
+    assert_eq!(
+        app.line_selection.as_ref().unwrap().target().side,
+        DiffSide::Old
+    );
+}
+
+#[test]
+fn line_highlights_yield_to_hunk_navigation_search_and_pane_changes() {
+    let (_root, _repo, mut app, text) = fixture();
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Char(']'));
+    key(&mut app, KeyCode::Char('h'));
+    assert_eq!(app.selected_hunk(), Some(&app.hunks[0]));
+    assert!(app.line_selection.is_none());
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Char('/'));
+    assert!(app.searching);
+    assert!(app.line_selection.is_none());
+    app.diff_search = "second();".into();
+    app.search_diff(&text, true);
+    assert_eq!(app.position().vertical, 6);
+    key(&mut app, KeyCode::Esc);
+    key(&mut app, KeyCode::Enter);
+    assert!(app.line_selection.is_some());
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(app.focus, Focus::Tree);
+    assert!(app.line_selection.is_none());
+}
+
+#[test]
 fn visual_selection_starts_on_a_rendered_source_line_when_the_diff_starts_later_in_the_file() {
     let (_root, _repo, mut app, _text) = fixture();
     app.source_lines

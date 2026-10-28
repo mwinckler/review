@@ -25,6 +25,7 @@ pub struct LineSelection {
     pub side: DiffSide,
     pub anchor: usize,
     pub cursor: usize,
+    pub extending: bool,
 }
 
 impl LineSelection {
@@ -329,7 +330,7 @@ impl App {
         })
     }
 
-    pub(crate) fn start_line_selection(&mut self, page: usize, lines: usize) {
+    pub(crate) fn start_line_selection(&mut self, extending: bool, page: usize, lines: usize) {
         if self.rendering {
             self.message = "Wait for the diff to finish rendering".into();
             return;
@@ -338,23 +339,17 @@ impl App {
             self.message = "Select a file or mapped source line".into();
             return;
         };
+        let position = self.position().vertical;
         let source = self
             .source_lines
             .iter()
             .find(|line| {
                 line.location.path == target.path
                     && line.number(target.side) == Some(target.start_line)
+                    && (position..position + page).contains(&line.row)
             })
-            .or_else(|| {
-                self.source_lines.iter().find(|line| {
-                    line.location.path == target.path && line.number(target.side).is_some()
-                })
-            })
-            .or_else(|| {
-                self.source_lines
-                    .iter()
-                    .find(|line| line.location.path == target.path)
-            });
+            .or_else(|| self.source_lines.iter().find(|line| line.row >= position))
+            .or_else(|| self.source_lines.last());
         let Some(source) = source else {
             self.message = "Use c and the line-range fields with this renderer".into();
             return;
@@ -373,10 +368,11 @@ impl App {
             )
         };
         self.line_selection = Some(LineSelection {
-            path: target.path,
+            path: source.location.path.clone(),
             side,
             anchor: line,
             cursor: line,
+            extending,
         });
         self.focus = Focus::Diff;
         self.keep_line_selection_visible(page, lines);
@@ -491,7 +487,15 @@ impl App {
                         selection.cursor = number;
                     }
                 }
-                KeyCode::Esc | KeyCode::Char('v') => {
+                KeyCode::Char('v') => {
+                    selection.extending = !selection.extending;
+                    selection.anchor = selection.cursor;
+                }
+                KeyCode::Enter => {
+                    selection.extending = false;
+                    selection.anchor = selection.cursor;
+                }
+                KeyCode::Esc => {
                     self.line_selection = None;
                     return true;
                 }
@@ -501,6 +505,9 @@ impl App {
                 }
                 _ => return false,
             }
+        }
+        if !selection.extending {
+            selection.anchor = selection.cursor;
         }
         self.keep_line_selection_visible(page, lines);
         true
@@ -629,6 +636,8 @@ impl App {
                                         side: comment.anchor.side,
                                         anchor: comment.anchor.start_line,
                                         cursor: comment.anchor.end_line,
+                                        extending: comment.anchor.start_line
+                                            != comment.anchor.end_line,
                                     };
                                     self.review.view.selected = change.path.clone();
                                     self.review.view.filter.clear();

@@ -373,9 +373,6 @@ impl App {
             self.handle_flash(key, page);
             return;
         }
-        if self.handle_line_selection(key, page, diff_lines) {
-            return;
-        }
         if let Some((prefix, number)) = self.prefix.take().filter(|_| {
             !key.modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -412,6 +409,9 @@ impl App {
                 }
                 _ => {}
             }
+        }
+        if self.handle_line_selection(key, page, diff_lines) {
+            return;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
@@ -456,7 +456,10 @@ impl App {
                     self.message = "Select a file or mapped source line".into();
                 }
             }
-            KeyCode::Char('v') => self.start_line_selection(page, diff_lines),
+            KeyCode::Enter if self.focus == Focus::Diff => {
+                self.start_line_selection(false, page, diff_lines);
+            }
+            KeyCode::Char('v') => self.start_line_selection(true, page, diff_lines),
             KeyCode::Char('C') => {
                 self.comment_dialog = Some(CommentDialog::Browse(CommentList::default()));
             }
@@ -589,6 +592,7 @@ impl App {
                     self.review.view.filter.clear();
                     self.rebuild();
                 } else {
+                    self.line_selection = None;
                     self.diff_search.clear();
                 }
             }
@@ -773,6 +777,7 @@ impl App {
                 .to_lowercase()
                 .contains(&needle)
             {
+                self.line_selection = None;
                 self.position().vertical = index;
                 return;
             }

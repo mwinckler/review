@@ -147,6 +147,7 @@ fn action_keys(action: &str) -> Option<&'static [&'static str]> {
         "previous_hunk" => &["[", "h"],
         "open_editor" => &["e"],
         "add_comment" => &["c"],
+        "select_line" => &["Ctrl-l", "Enter"],
         "select_lines" => &["v"],
         "manage_comments" => &["C"],
         "toggle_viewed" => &["Space"],
