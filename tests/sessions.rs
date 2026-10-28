@@ -40,6 +40,8 @@ fn review() -> Review {
             head_ref: "@".into(),
             base_id: "base".into(),
             head_id: "head".into(),
+            base_title: None,
+            head_title: None,
             base_change_id: None,
             head_change_id: None,
             mode: ComparisonMode::MergeBase,

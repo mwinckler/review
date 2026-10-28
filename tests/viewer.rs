@@ -42,6 +42,8 @@ fn review() -> Review {
             head_ref: "feature".into(),
             base_id: "aaa".into(),
             head_id: "bbb".into(),
+            base_title: None,
+            head_title: None,
             base_change_id: None,
             head_change_id: None,
             mode: Default::default(),

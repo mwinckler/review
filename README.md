@@ -64,8 +64,10 @@ branch since the histories diverged.
 
 The nearest repository is detected automatically from the current directory,
 with Jujutsu preferred in a colocated workspace. The header displays the resolved
-snapshot IDs. Jujutsu reviews show each endpoint's change ID and Git commit hash,
-such as `master (ukrwmnxy abcdef12)`.
+snapshot IDs and commit titles. Jujutsu reviews show each endpoint's change ID and
+Git commit hash, such as `master (ukrwmnxy abcdef12) Initial import`. Titles use the
+first line of each pinned commit's message, up to 50 characters, and shorten to fit
+the available header space while preserving the revision labels and line counts.
 Added and removed line counts appear at the right edge of the header in green
 and red: `+12 -3 · +120 -45 total · +30 -8 tests`. The first pair covers the
 highlighted file or folder; folder counts include all changed descendants,
@@ -76,7 +78,7 @@ in the filename. All counts follow the pinned snapshots when resuming or refresh
 
 Reviews check the selected revisions in the background about once per second.
 Jujutsu `@` follows saved working-copy edits; Git comparisons follow commits as
-`HEAD` or branches advance. File trees, file and directory previews, header IDs,
+`HEAD` or branches advance. File trees, file and directory previews, header IDs/titles,
 and line totals reload together. Updates save automatically, preserving selection,
 pane focus, and scroll positions for unchanged diffs.
 

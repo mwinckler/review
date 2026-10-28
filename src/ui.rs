@@ -4,7 +4,7 @@ use crate::{
     comments::DiffSide,
     session_dialog::SessionDialog,
     tree,
-    vcs::{Change, LineCounts},
+    vcs::{Change, Comparison, LineCounts},
 };
 use ratatui::{
     Frame,
@@ -105,6 +105,52 @@ fn revision_label(reference: &str, commit_id: &str, change_id: Option<&str>) -> 
     )
 }
 
+fn revision_titles(comparison: &Comparison, available: usize) -> [Span<'static>; 2] {
+    let titles = [
+        comparison.base_title.as_deref(),
+        comparison.head_title.as_deref(),
+    ]
+    .map(|title| {
+        let title: String = title
+            .unwrap_or_default()
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take(50)
+            .collect();
+        if title.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", display_path(&title))
+        }
+    });
+    let [base_width, head_width] = titles
+        .each_ref()
+        .map(|title| Span::raw(title.as_str()).width());
+    let base_width = base_width.min(available / 2);
+    let head_width = head_width.min(available - base_width);
+    let base_width = Span::raw(titles[0].as_str())
+        .width()
+        .min(available - head_width);
+    [(&titles[0], base_width), (&titles[1], head_width)].map(|(title, width)| {
+        let span = Span::raw(title.as_str());
+        let mut columns = 0;
+        let mut text: String = span
+            .styled_graphemes(Style::default())
+            .take_while(|grapheme| {
+                columns += Span::raw(grapheme.symbol).width();
+                columns <= width
+            })
+            .map(|grapheme| grapheme.symbol)
+            .collect();
+        if text == " " {
+            text.clear();
+        }
+        Span::styled(text, Style::default().fg(Color::DarkGray))
+    })
+}
+
 fn line_count_spans(counts: Option<LineCounts>) -> Vec<Span<'static>> {
     if let Some(counts) = counts {
         vec![
@@ -133,7 +179,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         .collect();
     let viewed = app.review.viewed.len();
     let comparison = &app.review.comparison;
-    let header = Line::from(vec![
+    let mut header = Line::from(vec![
         Span::styled(
             " review ",
             Style::default()
@@ -147,23 +193,6 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 format!("{}  ", display_path(&app.session_label))
             },
             Style::default().fg(Color::Magenta),
-        ),
-        Span::raw(format!(
-            "{} → {}  ",
-            revision_label(
-                &comparison.base_ref,
-                &comparison.base_id,
-                comparison.base_change_id.as_deref()
-            ),
-            revision_label(
-                &comparison.head_ref,
-                &comparison.head_id,
-                comparison.head_change_id.as_deref()
-            ),
-        )),
-        Span::styled(
-            format!("Viewed {viewed}/{}", app.review.changes.len()),
-            Style::default().fg(Color::Green),
         ),
     ]);
     let selected_counts = comparison.file_line_counts.as_ref().and_then(|files| {
@@ -192,6 +221,33 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         Constraint::Length(counts.width() as u16 + 1),
     ])
     .areas(panes.header);
+    let base = revision_label(
+        &comparison.base_ref,
+        &comparison.base_id,
+        comparison.base_change_id.as_deref(),
+    );
+    let head = revision_label(
+        &comparison.head_ref,
+        &comparison.head_id,
+        comparison.head_change_id.as_deref(),
+    );
+    let progress = Span::styled(
+        format!("Viewed {viewed}/{}", app.review.changes.len()),
+        Style::default().fg(Color::Green),
+    );
+    let available = (info_area.width as usize).saturating_sub(
+        header.width() + Span::raw(format!("{base} → {head}  ")).width() + progress.width(),
+    );
+    let [base_title, head_title] = revision_titles(comparison, available);
+    header.spans.extend([
+        Span::raw(base),
+        base_title,
+        Span::raw(" → "),
+        Span::raw(head),
+        head_title,
+        Span::raw("  "),
+        progress,
+    ]);
     frame.render_widget(Paragraph::new(header), info_area);
     frame.render_widget(
         Paragraph::new(counts).alignment(Alignment::Right),

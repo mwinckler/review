@@ -48,6 +48,10 @@ pub struct Comparison {
     pub base_id: String,
     pub head_id: String,
     #[serde(default)]
+    pub base_title: Option<String>,
+    #[serde(default)]
+    pub head_title: Option<String>,
+    #[serde(default)]
     pub base_change_id: Option<String>,
     #[serde(default)]
     pub head_change_id: Option<String>,
@@ -168,6 +172,7 @@ impl Repository {
             return Ok(None);
         }
         self.fill_change_ids(&mut updated)?;
+        self.fill_commit_titles(&mut updated)?;
         self.fill_line_counts(&mut updated)?;
         Ok(Some(updated))
     }
@@ -180,6 +185,7 @@ impl Repository {
     ) -> Result<Comparison> {
         let mut comparison = self.resolve_snapshot(base, head, mode)?;
         self.fill_change_ids(&mut comparison)?;
+        self.fill_commit_titles(&mut comparison)?;
         self.fill_line_counts(&mut comparison)?;
         Ok(comparison)
     }
@@ -196,6 +202,8 @@ impl Repository {
             head_ref: head.to_owned(),
             base_id,
             head_id,
+            base_title: None,
+            head_title: None,
             base_change_id: None,
             head_change_id: None,
             mode,
@@ -218,6 +226,44 @@ impl Repository {
                     &["log", "--no-graph", "-r", commit_id, "-T", "change_id"],
                     false,
                 )?)?);
+                updated = true;
+            }
+        }
+        Ok(updated)
+    }
+
+    pub fn fill_commit_titles(&self, comparison: &mut Comparison) -> Result<bool> {
+        let mut updated = false;
+        for (commit_id, title) in [
+            (&comparison.base_id, &mut comparison.base_title),
+            (&comparison.head_id, &mut comparison.head_title),
+        ] {
+            if title.is_none() {
+                let message = match self.backend {
+                    Backend::Git => self.run(
+                        &[
+                            "show",
+                            "--no-patch",
+                            "--no-show-signature",
+                            "--format=%B",
+                            "--encoding=UTF-8",
+                            commit_id,
+                            "--",
+                        ],
+                        false,
+                    )?,
+                    Backend::Jj => self.run(
+                        &["log", "--no-graph", "-r", commit_id, "-T", "description"],
+                        false,
+                    )?,
+                };
+                *title = Some(
+                    String::from_utf8_lossy(&message)
+                        .lines()
+                        .next()
+                        .unwrap_or_default()
+                        .to_owned(),
+                );
                 updated = true;
             }
         }
