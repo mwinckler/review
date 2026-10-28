@@ -135,11 +135,19 @@ review --forget r3             # Forget one session by ID or unique prefix
 review --forget r3 r7          # Forget several sessions
 review --forget-all            # Forget every closed session in this repository/backend
 review --forget-all --yes      # Confirm immediately, suitable for scripts
+review --cleanup              # Forget closed reviews last opened over a week ago
+review --cleanup --yes        # Confirm stale-review cleanup immediately
 ```
 
 The CLI asks for confirmation; `-y` / `--yes` confirms explicitly for automation.
 All requested IDs and session locks are checked before deletion. Open sessions
 are protected, and `--forget-all` selects closed sessions.
+
+`--cleanup` selects this repository/backend's closed sessions whose last-opened
+time is strictly more than seven days ago. Older sessions use their last saved
+time. Cleanup asks for confirmation and rechecks the selected sessions' age and
+locks before deletion. Use `--cleanup --yes` for automation. Deleted numbers follow
+the same seven-day reuse cooldown as manually forgotten sessions.
 
 Press `S` from either pane to open the session dialog. It shows session IDs,
 comparisons, viewed progress, and current/open indicators. Use `j` / `k` or arrows

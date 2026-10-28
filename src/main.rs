@@ -30,7 +30,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 #[command(
     version,
     about = "Review revision comparisons with a file tree, difft, and Vim keys",
-    group(clap::ArgGroup::new("forget_selection").args(["forget", "forget_all"]))
+    group(clap::ArgGroup::new("forget_selection").args(["forget", "forget_all", "cleanup"]))
 )]
 struct Cli {
     /// Compare BASE..HEAD directly; REV means REV..@
@@ -64,6 +64,9 @@ struct Cli {
     /// Permanently forget all closed sessions for this repository/backend
     #[arg(long, conflicts_with_all = ["base", "head", "resume", "list"])]
     forget_all: bool,
+    /// Permanently forget closed reviews last opened more than a week ago
+    #[arg(long, conflicts_with_all = ["base", "head", "resume", "list"])]
+    cleanup: bool,
     /// Confirm forgetting sessions without prompting
     #[arg(short = 'y', long, requires = "forget_selection")]
     yes: bool,
@@ -89,9 +92,11 @@ fn main() -> Result<()> {
         }
     };
     let store = SessionStore::new(&state_dir, &repo)?;
-    if cli.forget_all || !cli.forget.is_empty() {
+    if cli.cleanup || cli.forget_all || !cli.forget.is_empty() {
         let mut ids = BTreeSet::new();
-        if cli.forget_all {
+        if cli.cleanup {
+            ids.extend(store.cleanup_candidates()?);
+        } else if cli.forget_all {
             for saved in store.list()? {
                 if !store.is_open(&saved.id)? {
                     ids.insert(saved.id);
@@ -103,7 +108,11 @@ fn main() -> Result<()> {
             }
         }
         if ids.is_empty() {
-            println!("No closed review sessions to forget.");
+            if cli.cleanup {
+                println!("No stale review sessions to clean up.");
+            } else {
+                println!("No closed review sessions to forget.");
+            }
             return Ok(());
         }
         if !cli.yes {
@@ -126,7 +135,11 @@ fn main() -> Result<()> {
             }
         }
         let ids: Vec<_> = ids.into_iter().collect();
-        let count = store.forget(&ids)?;
+        let count = if cli.cleanup {
+            store.cleanup(&ids)?
+        } else {
+            store.forget(&ids)?
+        };
         println!(
             "Forgot {count} review session{}.",
             if count == 1 { "" } else { "s" }

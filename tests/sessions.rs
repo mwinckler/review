@@ -161,6 +161,43 @@ fn opening_records_a_persistent_timestamp_while_saving_and_listing_preserve_it()
 }
 
 #[test]
+fn cleanup_preflights_records_before_deleting_any_review() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let store = SessionStore::new(dir.path(), &repo).unwrap();
+    for id in ["r1", "r2"] {
+        session_fixture::write(&store, &repo, id, review());
+    }
+    let before = fs::read(store.directory.join("r1.json")).unwrap();
+    fs::write(store.directory.join("r2.json"), "broken JSON").unwrap();
+    assert!(store.cleanup(&["r1".into(), "r2".into()]).is_err());
+    assert_eq!(fs::read(store.directory.join("r1.json")).unwrap(), before);
+    assert_eq!(
+        fs::read_to_string(store.directory.join("r2.json")).unwrap(),
+        "broken JSON"
+    );
+}
+
+#[test]
+fn cleanup_rechecks_confirmed_ids_and_tolerates_missing_or_recent_reviews() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let store = SessionStore::new(dir.path(), &repo).unwrap();
+    for id in ["r1", "r2"] {
+        session_fixture::write(&store, &repo, id, review());
+    }
+    let ids = store.cleanup_candidates().unwrap();
+    assert_eq!(ids.len(), 2);
+    store.forget(&["r1".into()]).unwrap();
+    store.open("r2").unwrap();
+    session_fixture::write(&store, &repo, "r3", review());
+    assert_eq!(store.cleanup(&ids).unwrap(), 0);
+    assert!(store.directory.join("r2.json").exists());
+    assert_eq!(store.cleanup(&["r3".into(), "r3".into()]).unwrap(), 1);
+    assert_eq!(store.list().unwrap().len(), 1);
+}
+
+#[test]
 fn new_session_ids_are_short_consecutive_review_numbers() {
     let dir = tempfile::tempdir().unwrap();
     let store = SessionStore::new(dir.path(), &repo(dir.path())).unwrap();

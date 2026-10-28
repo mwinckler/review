@@ -15,7 +15,7 @@ use crate::{
     vcs::{Backend, Repository},
 };
 
-const SESSION_NUMBER_REUSE_DELAY: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const WEEK: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SavedSession {
@@ -74,7 +74,7 @@ impl SessionStore {
     }
 
     pub fn create(&self, review: Review) -> Result<(SavedSession, SessionLock)> {
-        let reusable_before = SystemTime::now() - SESSION_NUMBER_REUSE_DELAY;
+        let reusable_before = SystemTime::now() - WEEK;
         let mut reusable = BTreeSet::new();
         let mut number = 0;
         for entry in fs::read_dir(&self.directory)? {
@@ -188,6 +188,50 @@ impl SessionStore {
                 lock.target.display()
             );
         }
+        self.forget_locked(&locks)
+    }
+
+    pub fn cleanup_candidates(&self) -> Result<Vec<String>> {
+        let now = now_millis()?;
+        let mut ids = Vec::new();
+        for saved in self.list()? {
+            if is_stale(saved.last_opened_at(), now) && !self.is_open(&saved.id)? {
+                ids.push(saved.id);
+            }
+        }
+        Ok(ids)
+    }
+
+    pub fn cleanup(&self, ids: &[String]) -> Result<usize> {
+        let now = now_millis()?;
+        let mut locks = Vec::new();
+        for id in ids.iter().collect::<BTreeSet<_>>() {
+            let lock = match self.lock(id) {
+                Ok(lock) => lock,
+                Err(error) if lock_is_busy(&error) => {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let saved = match self.load(&lock.target) {
+                Ok(saved) => saved,
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == ErrorKind::NotFound) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            if is_stale(saved.last_opened_at(), now) {
+                locks.push(lock);
+            }
+        }
+        self.forget_locked(&locks)
+    }
+
+    fn forget_locked(&self, locks: &[SessionLock]) -> Result<usize> {
         for (deleted, lock) in locks.iter().enumerate() {
             lock.file
                 .set_modified(SystemTime::now())
@@ -312,6 +356,10 @@ fn now_millis() -> Result<u64> {
         .try_into()?)
 }
 
+fn is_stale(opened_at: u64, now: u64) -> bool {
+    Duration::from_millis(now.saturating_sub(opened_at)) > WEEK
+}
+
 fn session_number(id: &str) -> Option<u64> {
     id.strip_prefix('r')?.parse().ok()
 }
@@ -350,5 +398,21 @@ impl SessionLock {
             File::open(directory)?.sync_all()?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WEEK, is_stale};
+
+    #[test]
+    fn cleanup_age_is_strictly_greater_than_a_week_and_preserves_future_timestamps() {
+        let opened_at = 1_000;
+        let week = WEEK.as_millis() as u64;
+        assert!(!is_stale(opened_at, opened_at + week - 1));
+        assert!(!is_stale(opened_at, opened_at + week));
+        assert!(is_stale(opened_at, opened_at + week + 1));
+        assert!(!is_stale(opened_at, opened_at - 1));
+        assert!(!is_stale(u64::MAX, opened_at));
     }
 }

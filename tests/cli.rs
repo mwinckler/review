@@ -2,7 +2,14 @@ mod common;
 #[path = "common/session.rs"]
 mod session_fixture;
 
-use std::{fs, path::Path, process::Command};
+use std::{
+    fs,
+    path::Path,
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use fs2::FileExt;
 
 use review::{
     state::Review,
@@ -291,6 +298,145 @@ fn forget_all_preserves_open_sessions_and_explicit_forgetting_rejects_them() {
 }
 
 #[test]
+fn cleanup_removes_only_stale_closed_reviews_and_preserves_repository_scoping_and_shared_files() {
+    let root = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let repo = Repository::discover(root.path(), Some(Backend::Git)).unwrap();
+    let comparison = repo.snapshot_expression("HEAD~1..HEAD").unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let day = 24 * 60 * 60 * 1_000;
+    for (id, opened_at, updated_at) in [
+        ("r1", Some(now - 8 * day), now),
+        ("r2", Some(now - 6 * day), 0),
+        ("r3", Some(now + day), 0),
+        ("r4", None, now - 8 * day),
+        ("r5", None, now - 6 * day),
+        ("r6", Some(now - 8 * day), 0),
+    ] {
+        let saved = session_fixture::write(
+            &store,
+            &repo,
+            id,
+            Review::new(comparison.clone(), changes.clone()),
+        );
+        let mut record = serde_json::to_value(saved).unwrap();
+        record["updated_at"] = updated_at.into();
+        if let Some(opened_at) = opened_at {
+            record["opened_at"] = opened_at.into();
+        } else {
+            record.as_object_mut().unwrap().remove("opened_at");
+        }
+        fs::write(
+            store.directory.join(format!("{id}.json")),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+    }
+    let active = fs::File::options()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(store.directory.join("r6.lock"))
+        .unwrap();
+    active.try_lock_exclusive().unwrap();
+    fs::create_dir(store.directory.join("snapshots")).unwrap();
+    fs::write(
+        store.directory.join("snapshots/editor.rs"),
+        "editor snapshot",
+    )
+    .unwrap();
+    let contents = fs::read(root.path().join("src/main.rs")).unwrap();
+    let other_repo = Repository {
+        root: root.path().join("other"),
+        ..repo.clone()
+    };
+    let other_backend = Repository {
+        backend: Backend::Jj,
+        ..repo.clone()
+    };
+    let mut others = Vec::new();
+    for repository in [other_repo, other_backend] {
+        let other = SessionStore::new(state.path(), &repository).unwrap();
+        session_fixture::write(
+            &other,
+            &repository,
+            "r1",
+            Review::new(comparison.clone(), changes.clone()),
+        );
+        others.push(other);
+    }
+    let output = cli(root.path(), state.path())
+        .arg("--cleanup")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--yes"));
+    assert_eq!(store.list().unwrap().len(), 6);
+    let output = cli(root.path(), state.path())
+        .args(["--cleanup", "--yes"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Forgot 2"));
+    let ids: std::collections::BTreeSet<_> = store
+        .list()
+        .unwrap()
+        .into_iter()
+        .map(|saved| saved.id)
+        .collect();
+    assert_eq!(ids, ["r2", "r3", "r5", "r6"].map(str::to_owned).into());
+    assert!(store.directory.join("r1.lock").exists());
+    assert!(store.directory.join("r4.lock").exists());
+    assert_eq!(
+        fs::read(store.directory.join("snapshots/editor.rs")).unwrap(),
+        b"editor snapshot"
+    );
+    assert_eq!(fs::read(root.path().join("src/main.rs")).unwrap(), contents);
+    for other in others {
+        assert_eq!(other.list().unwrap().len(), 1);
+    }
+    let (saved, _lock) = store.create(Review::new(comparison, changes)).unwrap();
+    assert_eq!(saved.id, "r7");
+}
+
+#[test]
+fn cleanup_without_stale_reviews_succeeds_without_a_terminal_or_confirmation() {
+    let root = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let repo = Repository::discover(root.path(), Some(Backend::Git)).unwrap();
+    let comparison = repo.snapshot_expression("HEAD~1..HEAD").unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    for create in [false, true] {
+        if create {
+            store
+                .create(Review::new(comparison.clone(), changes.clone()))
+                .unwrap();
+        }
+        let output = cli(root.path(), state.path())
+            .arg("--cleanup")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("No stale review sessions"));
+    }
+}
+
+#[test]
 fn forgetting_flags_conflict_with_other_session_and_comparison_modes() {
     for args in [
         vec!["--forget", "a", "--list"],
@@ -301,6 +447,12 @@ fn forgetting_flags_conflict_with_other_session_and_comparison_modes() {
         vec!["--forget-all", "--list"],
         vec!["--yes"],
         vec!["--forget"],
+        vec!["--cleanup", "--forget", "a"],
+        vec!["--cleanup", "--forget-all"],
+        vec!["--cleanup", "--list"],
+        vec!["--cleanup", "--resume"],
+        vec!["--cleanup", "--base", "master"],
+        vec!["HEAD~1..HEAD", "--cleanup"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_review"))
             .args(&args)

@@ -13,6 +13,7 @@ use std::{
 };
 
 use crossterm::style::Stylize;
+use fs2::FileExt;
 use nix::{
     fcntl::{FcntlArg, OFlag, fcntl},
     pty::{Winsize, openpty},
@@ -325,6 +326,73 @@ fn command_line_forgetting_prompts_and_accepts_both_cancellation_and_confirmatio
         terminal.send(reply);
         assert!(terminal.finish().success(), "{}", terminal.output);
         assert_eq!(store.list().unwrap().len(), remaining);
+    }
+}
+
+#[test]
+fn command_line_cleanup_confirms_and_rechecks_reviews_resumed_while_prompting() {
+    let fixture = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let repo = Repository::discover(fixture.path(), Some(Backend::Git)).unwrap();
+    let comparison = repo.snapshot_expression("HEAD~1..HEAD").unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    for id in ["r1", "r2", "r3"] {
+        session_fixture::write(
+            &store,
+            &repo,
+            id,
+            Review::new(comparison.clone(), changes.clone()),
+        );
+    }
+    for confirm in [false, true] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
+        command.current_dir(fixture.path()).args([
+            "--backend",
+            "git",
+            "--cleanup",
+            "--state-dir",
+            state.path().to_str().unwrap(),
+        ]);
+        let mut terminal = Pty::spawn(command);
+        terminal.wait_until(|text| text.contains("[y/N]"));
+        if !confirm {
+            terminal.send(b"n\n");
+            assert!(terminal.finish().success(), "{}", terminal.output);
+            assert_eq!(store.list().unwrap().len(), 3);
+            continue;
+        }
+        let (resumed, lock) = store.open("r2").unwrap();
+        drop(lock);
+        let held = fs::File::options()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(store.directory.join("r3.lock"))
+            .unwrap();
+        held.try_lock_exclusive().unwrap();
+        session_fixture::write(
+            &store,
+            &repo,
+            "r4",
+            Review::new(comparison.clone(), changes.clone()),
+        );
+        terminal.send(b"y\n");
+        assert!(terminal.finish().success(), "{}", terminal.output);
+        assert!(terminal.output.contains("Forgot 1"), "{}", terminal.output);
+        let remaining = store.list().unwrap();
+        let ids: std::collections::BTreeSet<_> =
+            remaining.iter().map(|saved| saved.id.as_str()).collect();
+        assert_eq!(ids, ["r2", "r3", "r4"].into());
+        assert_eq!(
+            remaining
+                .iter()
+                .find(|saved| saved.id == "r2")
+                .unwrap()
+                .opened_at,
+            resumed.opened_at
+        );
     }
 }
 
