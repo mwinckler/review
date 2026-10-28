@@ -92,6 +92,9 @@ review --resume r3           # Resume a particular session
 review --base master         # Start a fresh review
 ```
 
+`-r` is a shortcut for `--resume`: use `review -r` for the latest session or
+`review -r r3` for a particular session.
+
 New sessions use short IDs: `r1`, `r2`, `r3`, and so on, starting at
 `r1` for each repository/backend. IDs stay with their sessions as progress is saved,
 and deleted sessions' numbers become reusable after seven days. New reviews reuse

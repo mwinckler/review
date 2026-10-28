@@ -481,6 +481,28 @@ fn positional_comparisons_conflict_with_other_comparison_and_session_options() {
 }
 
 #[test]
+fn short_resume_alias_accepts_latest_sessions_ids_and_prefixes() {
+    let root = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let output = cli(root.path(), state.path()).arg("-r").output().unwrap();
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(error.contains("No saved review"), "{error}");
+
+    let repo = Repository::discover(root.path(), Some(Backend::Git)).unwrap();
+    let comparison = repo.snapshot_expression("HEAD~1..HEAD").unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    session_fixture::write(&store, &repo, "r12", Review::new(comparison, changes));
+    for args in [&["-r"] as &[&str], &["-r", "r12"], &["-r", "r1"]] {
+        let output = cli(root.path(), state.path()).args(args).output().unwrap();
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("interactive terminal"), "{args:?}: {error}");
+    }
+}
+
+#[test]
 fn resume_without_sessions_explains_how_to_start() {
     let repo = common::fixture();
     let state = tempfile::tempdir().unwrap();
