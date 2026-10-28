@@ -135,9 +135,16 @@ fn short_session_numbers_are_listed_resumable_and_accepted_when_forgetting() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.lines().any(|line| line.starts_with("r1  ")), "{text}");
     assert!(text.lines().any(|line| line.starts_with("r2  ")), "{text}");
-    for id in ["r1", "r2"] {
+    for args in [
+        &["--resume"] as &[&str],
+        &["-r"],
+        &["--resume", "r1"],
+        &["-r", "r1"],
+        &["--resume", "r2"],
+        &["-r", "r2"],
+    ] {
         let output = cli(repo_dir.path(), state.path())
-            .args(["--resume", id])
+            .args(args)
             .output()
             .unwrap();
         assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal"));
@@ -171,21 +178,23 @@ fn resume_prefix_errors_are_actionable_and_valid_prefixes_reach_the_terminal_che
             Review::new(comparison.clone(), changes.clone()),
         );
     }
-    for (prefix, message) in [
-        ("abc", "Ambiguous session ID prefix"),
-        ("f", "No saved review matches"),
-        ("abc1", "interactive terminal"),
-    ] {
-        let output = cli(repo_dir.path(), state.path())
-            .args(["--resume", prefix])
-            .output()
-            .unwrap();
-        assert!(!output.status.success());
-        let error = String::from_utf8_lossy(&output.stderr);
-        assert!(error.contains(message), "{error}");
-        if prefix == "abc" {
-            assert!(error.contains("abc123000001"), "{error}");
-            assert!(error.contains("abc9ff000002"), "{error}");
+    for flag in ["--resume", "-r"] {
+        for (prefix, message) in [
+            ("abc", "Ambiguous session ID prefix"),
+            ("f", "No saved review matches"),
+            ("abc1", "interactive terminal"),
+        ] {
+            let output = cli(repo_dir.path(), state.path())
+                .args([flag, prefix])
+                .output()
+                .unwrap();
+            assert!(!output.status.success());
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(error.contains(message), "{error}");
+            if prefix == "abc" {
+                assert!(error.contains("abc123000001"), "{error}");
+                assert!(error.contains("abc9ff000002"), "{error}");
+            }
         }
     }
     assert_eq!(std::fs::read_dir(&store.directory).unwrap().count(), 2);
@@ -481,37 +490,14 @@ fn positional_comparisons_conflict_with_other_comparison_and_session_options() {
 }
 
 #[test]
-fn short_resume_alias_accepts_latest_sessions_ids_and_prefixes() {
-    let root = common::fixture();
-    let state = tempfile::tempdir().unwrap();
-    let output = cli(root.path(), state.path()).arg("-r").output().unwrap();
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success());
-    assert!(error.contains("No saved review"), "{error}");
-
-    let repo = Repository::discover(root.path(), Some(Backend::Git)).unwrap();
-    let comparison = repo.snapshot_expression("HEAD~1..HEAD").unwrap();
-    let changes = repo.changes(&comparison).unwrap();
-    let store = SessionStore::new(state.path(), &repo).unwrap();
-    session_fixture::write(&store, &repo, "r12", Review::new(comparison, changes));
-    for args in [&["-r"] as &[&str], &["-r", "r12"], &["-r", "r1"]] {
-        let output = cli(root.path(), state.path()).args(args).output().unwrap();
-        assert!(!output.status.success());
-        let error = String::from_utf8_lossy(&output.stderr);
-        assert!(error.contains("interactive terminal"), "{args:?}: {error}");
-    }
-}
-
-#[test]
 fn resume_without_sessions_explains_how_to_start() {
     let repo = common::fixture();
     let state = tempfile::tempdir().unwrap();
-    let output = cli(repo.path(), state.path())
-        .arg("--resume")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(error.contains("No saved review"));
-    assert!(error.contains("Start one with review"));
+    for flag in ["--resume", "-r"] {
+        let output = cli(repo.path(), state.path()).arg(flag).output().unwrap();
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("No saved review"), "{flag}: {error}");
+        assert!(error.contains("Start one with review"), "{flag}: {error}");
+    }
 }
