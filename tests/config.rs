@@ -92,6 +92,24 @@ fn flash_and_session_management_can_be_aliased() {
 }
 
 #[test]
+fn comment_actions_can_be_aliased() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(
+        &path,
+        "[keybindings]\nx = 'add_comment'\nV = 'select_lines'\nM = 'manage_comments'\n",
+    )
+    .unwrap();
+    let config = Config::load(&path, true).unwrap();
+    for (source, target) in [('x', 'c'), ('V', 'v'), ('M', 'C')] {
+        assert_eq!(
+            config.translate(KeyEvent::new(KeyCode::Char(source), KeyModifiers::NONE)),
+            [KeyEvent::new(KeyCode::Char(target), KeyModifiers::NONE)]
+        );
+    }
+}
+
+#[test]
 fn editor_and_renderer_hunk_adapters_and_key_aliases_are_configurable() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");

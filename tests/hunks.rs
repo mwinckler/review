@@ -151,6 +151,102 @@ fn numeric_source_lines_are_not_mistaken_for_difftastic_line_number_columns() {
 }
 
 #[test]
+fn unified_source_lines_map_context_additions_and_deletions_without_header_or_eof_markers() {
+    let text = Text::raw(
+        "--- old\n+++ new\n@@ -8,3 +8,3 @@\n context\n-old\n+new\n last\n\\ No newline at end of file\n",
+    );
+    let lines = hunks::source_lines(&text, &change(), HunkFormat::Unified, (10, 10));
+    assert_eq!(
+        lines
+            .iter()
+            .map(|line| (line.row, line.location.old_line, line.location.new_line))
+            .collect::<Vec<_>>(),
+        [
+            (3, Some(8), Some(8)),
+            (4, Some(9), None),
+            (5, None, Some(9)),
+            (6, Some(10), Some(10)),
+        ]
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|line| line.location.path == "src/example.rs")
+    );
+    assert!(hunks::source_lines(&text, &change(), HunkFormat::None, (10, 10)).is_empty());
+}
+
+#[test]
+fn difftastic_source_lines_have_exact_sides_for_split_inline_added_and_deleted_files() {
+    for (old, new) in [
+        (
+            "fn f() {\n    old();\n    same();\n}\n",
+            "fn f() {\n    new();\n    same();\n}\n",
+        ),
+        ("", "fn f() {\n    new();\n}\n"),
+        ("fn f() {\n    old();\n}\n", ""),
+    ] {
+        let mut file = change();
+        if old.is_empty() {
+            file.old.kind.clear();
+        }
+        if new.is_empty() {
+            file.new.kind.clear();
+        }
+        for inline in [false, true] {
+            for width in [30, 90] {
+                let text = render_pair(
+                    &RendererConfig::default(),
+                    &file,
+                    old.as_bytes(),
+                    new.as_bytes(),
+                    RenderOptions { width, inline },
+                    &AtomicU64::new(1),
+                    1,
+                )
+                .unwrap();
+                let lines = hunks::source_lines(
+                    &text,
+                    &file,
+                    HunkFormat::Difftastic,
+                    (old.lines().count(), new.lines().count()),
+                );
+                assert!(!lines.is_empty(), "{text}");
+                for (source, exists, side) in
+                    [(old, !old.is_empty(), true), (new, !new.is_empty(), false)]
+                {
+                    let numbers: Vec<_> = lines
+                        .iter()
+                        .filter_map(|line| {
+                            if side {
+                                line.location.old_line
+                            } else {
+                                line.location.new_line
+                            }
+                        })
+                        .collect();
+                    assert_eq!(!numbers.is_empty(), exists, "{text}");
+                    assert!(
+                        numbers
+                            .iter()
+                            .all(|number| *number > 0 && *number <= source.lines().count()),
+                        "{text}"
+                    );
+                    if exists {
+                        assert!(numbers.contains(&2), "{text}");
+                    }
+                }
+                assert!(
+                    lines
+                        .iter()
+                        .all(|line| !text.lines[line.row].to_string().contains(" --- "))
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn directory_results_and_cached_results_keep_hunk_paths_and_row_offsets() {
     let dir = common::fixture();
     let repo = Repository::discover(dir.path(), Some(Backend::Git)).unwrap();
@@ -183,5 +279,12 @@ fn directory_results_and_cached_results_keep_hunk_paths_and_row_offsets() {
                 .contains("src/main.rs")
         );
         assert!(!text.to_string().contains("uncommitted"));
+        let source = result
+            .source_lines
+            .iter()
+            .find(|line| line.location.path == "src/main.rs" && line.location.new_line == Some(1))
+            .unwrap();
+        assert!(source.row > hunk.rows.start);
+        assert!(text.lines[source.row].to_string().contains("println!"));
     }
 }

@@ -2,11 +2,11 @@ use std::{ops::Range, path::Path};
 
 use ratatui::{
     style::Color,
-    text::{Line, Text},
+    text::{Line, Span, Text},
 };
 use serde::{Deserialize, Serialize};
 
-use crate::vcs::Change;
+use crate::{comments::DiffSide, vcs::Change};
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -46,6 +46,120 @@ pub struct HunkLocation {
 pub struct Hunk {
     pub rows: Range<usize>,
     pub location: HunkLocation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceLine {
+    pub row: usize,
+    pub location: HunkLocation,
+    /// Display-column boundary between old and new in side-by-side output.
+    pub split_column: Option<usize>,
+}
+
+impl SourceLine {
+    pub fn number(&self, side: DiffSide) -> Option<usize> {
+        match side {
+            DiffSide::Old => self.location.old_line,
+            DiffSide::New => self.location.new_line,
+        }
+    }
+}
+
+pub fn source_lines(
+    text: &Text<'_>,
+    change: &Change,
+    format: HunkFormat,
+    line_counts: (usize, usize),
+) -> Vec<SourceLine> {
+    let mut result = Vec::new();
+    match format {
+        HunkFormat::Unified => {
+            for hunk in unified(text, change) {
+                let Some((old, new)) = unified_ranges(&text.lines[hunk.rows.start].to_string())
+                else {
+                    continue;
+                };
+                let mut old = old.start + 1;
+                let mut new = new.start + 1;
+                for row in hunk.rows.start + 1..hunk.rows.end {
+                    let line = text.lines[row].to_string();
+                    let (old_line, new_line) = match line.as_bytes().first() {
+                        Some(b' ') => (Some(old), Some(new)),
+                        Some(b'-') => (Some(old), None),
+                        Some(b'+') => (None, Some(new)),
+                        _ => continue,
+                    };
+                    old += usize::from(old_line.is_some());
+                    new += usize::from(new_line.is_some());
+                    result.push(SourceLine {
+                        row,
+                        location: HunkLocation {
+                            path: change.path.clone(),
+                            old_line: old_line.filter(|_| !change.old.kind.is_empty()),
+                            new_line: new_line.filter(|_| !change.new.kind.is_empty()),
+                        },
+                        split_column: None,
+                    });
+                }
+            }
+        }
+        HunkFormat::Difftastic => {
+            for hunk in difftastic(text, change) {
+                for row in hunk.rows.start + 1..hunk.rows.end {
+                    let line = &text.lines[row];
+                    let cells = cells(line);
+                    let mut location = HunkLocation {
+                        path: change.path.clone(),
+                        old_line: None,
+                        new_line: None,
+                    };
+                    for (index, &(number, color, offset)) in cells.iter().enumerate() {
+                        let Some(number) = number.filter(|number| *number > 0) else {
+                            continue;
+                        };
+                        let new = match color {
+                            Some(Color::Green | Color::LightGreen) => true,
+                            Some(Color::Red | Color::LightRed) => false,
+                            _ => {
+                                change.old.kind.is_empty()
+                                    || (cells.len() > 1 && index == 1)
+                                    || (cells.len() == 1 && offset > 0)
+                            }
+                        };
+                        if new && !change.new.kind.is_empty() {
+                            location.new_line = Some(number);
+                        } else if !new && !change.old.kind.is_empty() {
+                            location.old_line = Some(number);
+                        }
+                    }
+                    if location.old_line.is_some() || location.new_line.is_some() {
+                        let string = line.to_string();
+                        let split_column = cells
+                            .get(1)
+                            .map(|cell| Span::raw(&string[..cell.2]).width());
+                        result.push(SourceLine {
+                            row,
+                            location,
+                            split_column,
+                        });
+                    }
+                }
+            }
+        }
+        HunkFormat::Auto | HunkFormat::None => {}
+    }
+    for line in &mut result {
+        line.location.old_line = line
+            .location
+            .old_line
+            .filter(|number| *number <= line_counts.0);
+        line.location.new_line = line
+            .location
+            .new_line
+            .filter(|number| *number <= line_counts.1);
+    }
+    result.retain(|line| line.location.old_line.is_some() || line.location.new_line.is_some());
+    result
 }
 
 pub(crate) fn unified_ranges(line: &str) -> Option<(Range<usize>, Range<usize>)> {

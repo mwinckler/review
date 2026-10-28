@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     command,
-    hunks::{self, Hunk, HunkFormat},
+    hunks::{self, Hunk, HunkFormat, SourceLine},
     ui::{change_heading, display_path},
     vcs::{Change, Comparison, Repository},
 };
@@ -215,6 +215,7 @@ fn text_size(text: &Text<'_>) -> usize {
 struct Preview {
     text: Text<'static>,
     hunks: Vec<Hunk>,
+    source_lines: Vec<SourceLine>,
 }
 
 fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Result<Preview> {
@@ -228,7 +229,7 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
             generation.load(Ordering::Relaxed) == job.id,
             "render cancelled"
         );
-        let rendered = (|| {
+        let (rendered, line_counts) = (|| -> Result<_> {
             let old = job.repo.content(&job.comparison, change, true)?;
             let new = job.repo.content(&job.comparison, change, false)?;
             remaining.timeout_ms = config
@@ -238,7 +239,7 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
                 remaining.timeout_ms > 0,
                 "renderer timed out; increase renderer.timeout_ms or choose another renderer"
             );
-            render_pair(
+            let text = render_pair(
                 &remaining,
                 change,
                 &old,
@@ -246,7 +247,12 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
                 job.options,
                 generation,
                 job.id,
-            )
+            )?;
+            let line_counts = (
+                old.split_inclusive(|byte| *byte == b'\n').count(),
+                new.split_inclusive(|byte| *byte == b'\n').count(),
+            );
+            Ok((text, line_counts))
         })()
         .with_context(|| format!("rendering {}", display_path(&change.path)))?;
         let mut hunks = hunks::parse(
@@ -254,10 +260,17 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
             change,
             config.hunk_format.for_command(&config.command),
         );
+        let mut source_lines = hunks::source_lines(
+            &rendered,
+            change,
+            config.hunk_format.for_command(&config.command),
+            line_counts,
+        );
         if !directory {
             return Ok(Preview {
                 text: rendered,
                 hunks,
+                source_lines,
             });
         }
         let mut section = Text::default();
@@ -280,6 +293,10 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
             hunk.rows.end += offset;
         }
         preview.hunks.extend(hunks);
+        for line in &mut source_lines {
+            line.row += offset;
+        }
+        preview.source_lines.extend(source_lines);
         section.lines.extend(rendered.lines);
         size += text_size(&section);
         ensure!(
@@ -295,6 +312,7 @@ pub struct RenderResult {
     pub id: u64,
     pub text: std::result::Result<Text<'static>, String>,
     pub hunks: Vec<Hunk>,
+    pub source_lines: Vec<SourceLine>,
 }
 
 pub struct RenderWorker {
@@ -351,6 +369,11 @@ impl RenderWorker {
                             .hunks
                             .iter()
                             .map(|hunk| std::mem::size_of_val(hunk) + hunk.location.path.len())
+                            .sum::<usize>()
+                        + preview
+                            .source_lines
+                            .iter()
+                            .map(|line| std::mem::size_of_val(line) + line.location.path.len())
                             .sum::<usize>();
                     if size <= MAX_CACHE_BYTES && !cache.iter().any(|entry| entry.0 == key) {
                         cache.push_back((key, preview.clone(), size));
@@ -361,15 +384,16 @@ impl RenderWorker {
                         }
                     }
                 }
-                let (text, hunks) = match result {
-                    Ok(preview) => (Ok(preview.text), preview.hunks),
-                    Err(error) => (Err(error), Vec::new()),
+                let (text, hunks, source_lines) = match result {
+                    Ok(preview) => (Ok(preview.text), preview.hunks, preview.source_lines),
+                    Err(error) => (Err(error), Vec::new(), Vec::new()),
                 };
                 if output
                     .send(RenderResult {
                         id: job.id,
                         text,
                         hunks,
+                        source_lines,
                     })
                     .is_err()
                 {

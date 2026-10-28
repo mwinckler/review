@@ -4,7 +4,8 @@ use std::{
 };
 
 use crate::{
-    hunks::{Hunk, HunkLocation},
+    comment_dialog::{CommentAction, CommentDialog, CommentList, LineSelection},
+    hunks::{Hunk, HunkLocation, SourceLine},
     session_dialog::{SessionAction, SessionDialog},
     state::{Position, Review},
     tree::{self, Row},
@@ -83,6 +84,11 @@ pub struct App {
     pub rendering: bool,
     pub session_dialog: Option<SessionDialog>,
     pub session_action: Option<SessionAction>,
+    pub source_lines: Vec<SourceLine>,
+    pub line_selection: Option<LineSelection>,
+    pub comment_dialog: Option<CommentDialog>,
+    pub comment_action: Option<CommentAction>,
+    pub comments_changed: bool,
     hunk_actions: VecDeque<HunkNavigation>,
     prefix: Option<(char, Option<usize>)>,
     search_original: String,
@@ -116,6 +122,11 @@ impl App {
             rendering: false,
             session_dialog: None,
             session_action: None,
+            source_lines: Vec::new(),
+            line_selection: None,
+            comment_dialog: None,
+            comment_action: None,
+            comments_changed: false,
             hunk_actions: VecDeque::new(),
             prefix: None,
             search_original: String::new(),
@@ -140,6 +151,8 @@ impl App {
         if let Some(row) = self.rows.get(self.selection) {
             if self.review.view.active != row.path {
                 self.hunks.clear();
+                self.source_lines.clear();
+                self.line_selection = None;
                 self.hunk_selection = None;
                 self.editor_requested = false;
                 self.hunk_actions.clear();
@@ -152,6 +165,8 @@ impl App {
             self.active = None;
             self.review.view.active.clear();
             self.hunks.clear();
+            self.source_lines.clear();
+            self.line_selection = None;
             self.hunk_selection = None;
             self.editor_requested = false;
             self.hunk_actions.clear();
@@ -181,6 +196,15 @@ impl App {
     }
 
     pub fn editor_location(&self) -> Option<HunkLocation> {
+        if let Some(selection) = &self.line_selection {
+            return Some(HunkLocation {
+                path: selection.path.clone(),
+                old_line: (selection.side == crate::comments::DiffSide::Old)
+                    .then_some(selection.cursor),
+                new_line: (selection.side == crate::comments::DiffSide::New)
+                    .then_some(selection.cursor),
+            });
+        }
         if let Some(hunk) = self.selected_hunk() {
             return Some(hunk.location.clone());
         }
@@ -262,6 +286,7 @@ impl App {
             }
         };
         let hunk = &self.hunks[index];
+        self.line_selection = None;
         let center = hunk.rows.start + hunk.rows.len() / 2;
         let location = hunk.location.clone();
         self.message = format!(
@@ -287,6 +312,9 @@ impl App {
         terminal_width: u16,
     ) {
         self.handle_input(key, page, diff_lines, terminal_width);
+        if self.focus == Focus::Tree {
+            self.line_selection = None;
+        }
         self.review.view.diff_focused = self.focus == Focus::Diff;
     }
 
@@ -297,6 +325,10 @@ impl App {
         }
         if let Some(dialog) = &mut self.session_dialog {
             self.session_action = dialog.handle_key(key, page);
+            return;
+        }
+        if self.comment_dialog.is_some() {
+            self.handle_comment_dialog(key, page);
             return;
         }
         self.dirty = true;
@@ -340,6 +372,9 @@ impl App {
         }
         if self.flash.is_some() {
             self.handle_flash(key, page);
+            return;
+        }
+        if self.handle_line_selection(key, page, diff_lines) {
             return;
         }
         if let Some((prefix, number)) = self.prefix.take().filter(|_| {
@@ -413,6 +448,19 @@ impl App {
             return;
         }
         match key.code {
+            KeyCode::Char('c') => {
+                if self.rendering {
+                    self.message = "Wait for the diff to finish rendering".into();
+                } else if let Some(target) = self.comment_target() {
+                    self.comment_action = Some(CommentAction::Compose(target));
+                } else {
+                    self.message = "Select a file or mapped source line".into();
+                }
+            }
+            KeyCode::Char('v') => self.start_line_selection(page, diff_lines),
+            KeyCode::Char('C') => {
+                self.comment_dialog = Some(CommentDialog::Browse(CommentList::default()));
+            }
             KeyCode::Char('S') => {
                 self.session_action = Some(SessionAction::Open);
             }

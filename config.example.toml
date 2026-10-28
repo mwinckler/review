@@ -15,5 +15,5 @@ command = ["xdg-terminal-exec", "--", "nvim", "+{line}", "{read_only}", "--", "{
 [keybindings]
 J = "next_file"
 K = "previous_file"
-v = "toggle_viewed"
+V = "toggle_viewed"
 "Ctrl-j" = "next_unviewed"

@@ -197,11 +197,30 @@ pub fn write_todo(repo: &Repository, review: &Review, comment: &Comment) -> Resu
     ensure!(
         comment
             .body
-            .lines()
+            .split(['\n', '\u{2028}', '\u{2029}'])
             .all(|line| !line.trim_end().ends_with('\\')),
         "A trailing backslash can splice source lines; edit the comment before writing a TODO"
     );
     let path = Path::new(&anchor.path);
+    let extension = path.extension().and_then(|extension| extension.to_str());
+    ensure!(
+        extension != Some("java") || !comment.body.contains("\\u"),
+        "Java Unicode escapes can terminate source comments; edit the text before writing a TODO"
+    );
+    ensure!(
+        extension != Some("php") || !comment.body.contains("?>"),
+        "PHP closing tags can terminate source comments; edit the text before writing a TODO"
+    );
+    ensure!(
+        !matches!(
+            extension,
+            Some("c" | "h" | "cc" | "cpp" | "hpp" | "cxx" | "hxx")
+        ) || comment
+            .body
+            .split(['\n', '\u{2028}', '\u{2029}'])
+            .all(|line| !line.trim_end().ends_with("??/")),
+        "C trigraphs can splice source lines; edit the text before writing a TODO"
+    );
     ensure!(
         path.components()
             .all(|part| matches!(part, Component::Normal(name) if name != ".git" && name != ".jj")),
@@ -209,7 +228,7 @@ pub fn write_todo(repo: &Repository, review: &Review, comment: &Comment) -> Resu
     );
     ensure!(
         matches!(
-            path.extension().and_then(|extension| extension.to_str()),
+            extension,
             Some(
                 "rs" | "c"
                     | "h"

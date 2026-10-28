@@ -173,6 +173,38 @@ fn source_todos_map_complete_ranges_preserve_indentation_crlf_permissions_and_lo
 }
 
 #[test]
+fn todo_text_cannot_escape_a_source_language_line_comment() {
+    let root = common::fixture();
+    for path in ["src/A.java", "src/a.php", "src/a.c"] {
+        fs::write(root.path().join(path), "source_line();\n").unwrap();
+    }
+    common::jj(root.path(), &["commit", "-m", "sources"]);
+    let repo = Repository::discover(root.path(), Some(Backend::Git)).unwrap();
+    let comparison = repo.snapshot_expression("HEAD~1..HEAD").unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let review = Review::new(comparison, changes);
+    for (path, body) in [
+        ("src/A.java", "escape \\u000a injected();"),
+        ("src/a.php", "escape ?> injected();"),
+        ("src/a.c", "escape ??/"),
+    ] {
+        let change = review
+            .changes
+            .iter()
+            .find(|change| change.path == path)
+            .unwrap();
+        let anchor =
+            CommentAnchor::capture(&repo, &review.comparison, change, DiffSide::New, 1, 1).unwrap();
+        let comment = Comment::new(anchor, body.into()).unwrap();
+        assert!(write_todo(&repo, &review, &comment).is_err(), "{path}");
+        assert_eq!(
+            fs::read_to_string(root.path().join(path)).unwrap(),
+            "source_line();\n"
+        );
+    }
+}
+
+#[test]
 fn source_todos_refuse_replaced_ranges_deleted_sides_symlinks_and_unsupported_languages() {
     let root = common::fixture();
     fs::write(

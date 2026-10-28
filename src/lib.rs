@@ -1,5 +1,6 @@
 pub mod app;
 mod command;
+pub mod comment_dialog;
 pub mod comments;
 pub mod config;
 pub mod editor;

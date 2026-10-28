@@ -1,5 +1,7 @@
 use crate::{
     app::{App, Focus},
+    comment_dialog::{CommentConfirmation, CommentDialog, DraftField},
+    comments::DiffSide,
     session_dialog::SessionDialog,
     tree,
     vcs::{Change, LineCounts},
@@ -11,7 +13,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{
         Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
-        ScrollbarOrientation, ScrollbarState,
+        ScrollbarOrientation, ScrollbarState, Wrap,
     },
 };
 
@@ -224,6 +226,25 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                         Style::default().fg(Color::DarkGray),
                     ));
                 }
+                let comments = app
+                    .review
+                    .comments
+                    .iter()
+                    .filter(|comment| {
+                        let path = comment
+                            .anchor
+                            .change(&app.review.changes)
+                            .map(|change| change.path.as_str())
+                            .unwrap_or(&comment.anchor.path);
+                        path == row.path || (row.path.ends_with('/') && path.starts_with(&row.path))
+                    })
+                    .count();
+                if comments > 0 {
+                    spans.push(Span::styled(
+                        format!("  ●{comments}"),
+                        Style::default().fg(Color::Magenta),
+                    ));
+                }
                 let style = if row.viewed == row.total {
                     Style::default().add_modifier(Modifier::DIM)
                 } else {
@@ -359,6 +380,53 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 .block(block),
             panes.diff,
         );
+        for source in app.source_lines.iter().filter(|source| {
+            source.row >= position.vertical && source.row < position.vertical + height
+        }) {
+            let y = viewport.y + (source.row - position.vertical) as u16;
+            if let Some(selection) = &app.line_selection
+                && selection.contains(source)
+            {
+                let (start, end) = match (source.split_column, selection.side) {
+                    (Some(split), DiffSide::Old) => (0, split),
+                    (Some(split), DiffSide::New) => (
+                        split,
+                        position.horizontal as usize + viewport.width as usize,
+                    ),
+                    _ => (0, position.horizontal as usize + viewport.width as usize),
+                };
+                let start = start
+                    .saturating_sub(position.horizontal as usize)
+                    .min(viewport.width as usize);
+                let end = end
+                    .saturating_sub(position.horizontal as usize)
+                    .min(viewport.width as usize);
+                frame.buffer_mut().set_style(
+                    Rect::new(
+                        viewport.x + start as u16,
+                        y,
+                        end.saturating_sub(start) as u16,
+                        1,
+                    ),
+                    Style::default().bg(Color::Rgb(55, 50, 25)),
+                );
+            }
+            let has_comment = app.review.comments.iter().any(|comment| {
+                comment
+                    .anchor
+                    .change(&app.review.changes)
+                    .is_some_and(|change| change.path == source.location.path)
+                    && source.number(comment.anchor.side).is_some_and(|line| {
+                        (comment.anchor.start_line..=comment.anchor.end_line).contains(&line)
+                    })
+            });
+            if has_comment {
+                frame.render_widget(
+                    Span::styled("●", Style::default().fg(Color::Magenta)),
+                    Rect::new(panes.diff.x, y, 1, 1),
+                );
+            }
+        }
         if !viewport.is_empty() && diff.lines.len() > height {
             // ScrollbarState counts the possible top-row positions.
             let mut scrollbar = ScrollbarState::new(diff.lines.len() - height + 1)
@@ -385,6 +453,15 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 flash.matches.len()
             )
         }
+    } else if let Some(selection) = &app.line_selection {
+        let target = selection.target();
+        format!(
+            "{}:{}-{} ({}) · j/k extend · h/l old/new · c comment · Esc cancel",
+            display_path(&target.path),
+            target.start_line,
+            target.end_line,
+            target.side.label()
+        )
     } else if app.searching {
         let value = if app.focus == Focus::Tree {
             &app.review.view.filter
@@ -400,7 +477,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             display_path(&app.review.view.filter)
         )
     } else {
-        "Space viewed + next · ]h/[h hunks · e editor · S sessions · / search · ? help".into()
+        "Space viewed · ]h/[h hunks · c comment · v lines · C comments · ? help".into()
     };
     frame.render_widget(
         Paragraph::new(footer).style(Style::default().fg(Color::Cyan)),
@@ -408,7 +485,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     );
     if app.help {
         let width = frame.area().width.min(74);
-        let height = frame.area().height.min(27);
+        let height = frame.area().height.min(29);
         let area = Rect::new(
             frame.area().x + (frame.area().width - width) / 2,
             frame.area().y + (frame.area().height - height) / 2,
@@ -429,6 +506,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "]h / [h          Select next/previous diff hunk\n",
             "]Nh / [Nh        Select hunk number N (1-based)\n",
             "e                Open selected hunk/file in editor\n",
+            "c / v / C        Comment / select line range / comments\n",
             "/                Filter filenames / search diff\n",
             "s                Flash jump in the tree from either pane\n",
             "S                Manage / forget saved review sessions\n",
@@ -455,6 +533,224 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     }
     if let Some(dialog) = &app.session_dialog {
         draw_session_dialog(frame, dialog);
+    }
+    if let Some(dialog) = &app.comment_dialog {
+        draw_comment_dialog(frame, app, dialog);
+    }
+}
+
+fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
+    let area = session_dialog_area(frame.area());
+    frame.render_widget(Clear, area);
+    let title = match dialog {
+        CommentDialog::Compose(draft) if draft.id.is_some() => " Edit line comment ".to_owned(),
+        CommentDialog::Compose(_) => " New line comment ".to_owned(),
+        CommentDialog::Browse(_) => format!(" Comments · {} ", app.review.comments.len()),
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    match dialog {
+        CommentDialog::Compose(draft) => {
+            let source = draft
+                .selected_source()
+                .unwrap_or_else(|error| error.to_string());
+            let [path, range, quote, body, message, controls] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(source.lines().count().saturating_add(2).min(6) as u16),
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .areas(inner);
+            frame.render_widget(
+                Paragraph::new(format!(
+                    "{} ({})",
+                    display_path(&draft.anchor.path),
+                    draft.anchor.side.label()
+                )),
+                path,
+            );
+            let field_style = |field| {
+                if draft.field == field {
+                    Style::default().fg(Color::Black).bg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::Cyan)
+                }
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::raw("Lines: "),
+                    Span::styled(display_path(&draft.start), field_style(DraftField::Start)),
+                    Span::raw(" through "),
+                    Span::styled(display_path(&draft.end), field_style(DraftField::End)),
+                    Span::raw(" (inclusive)"),
+                ])),
+                range,
+            );
+            let source = Text::from(
+                source
+                    .lines()
+                    .map(|line| Line::from(display_path(line)))
+                    .collect::<Vec<_>>(),
+            );
+            frame.render_widget(
+                Paragraph::new(source)
+                    .block(Block::default().borders(Borders::ALL).title(" Source ")),
+                quote,
+            );
+            let mut text = draft.body.clone();
+            if draft.field == DraftField::Body {
+                text.insert(draft.cursor, '▏');
+            }
+            let text = Text::from(
+                text.split('\n')
+                    .map(|line| Line::from(display_path(line)))
+                    .collect::<Vec<_>>(),
+            );
+            let row = draft.body[..draft.cursor]
+                .bytes()
+                .filter(|byte| *byte == b'\n')
+                .count();
+            let column = Span::raw(display_path(
+                draft.body[..draft.cursor]
+                    .rsplit('\n')
+                    .next()
+                    .unwrap_or_default(),
+            ))
+            .width();
+            let vertical = row.saturating_sub(body.height.saturating_sub(3) as usize);
+            let horizontal = column.saturating_sub(body.width.saturating_sub(3) as usize);
+            frame.render_widget(
+                Paragraph::new(text)
+                    .scroll((
+                        vertical.min(u16::MAX as usize) as u16,
+                        horizontal.min(u16::MAX as usize) as u16,
+                    ))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(" Comment ")
+                            .border_style(border(draft.field == DraftField::Body)),
+                    ),
+                body,
+            );
+            frame.render_widget(
+                Paragraph::new(display_path(&draft.message))
+                    .style(Style::default().fg(Color::Yellow)),
+                message,
+            );
+            frame.render_widget(
+                Paragraph::new(
+                    "Ctrl-s save locally · Enter newline · Tab line fields · Esc discard",
+                )
+                .style(Style::default().fg(Color::Cyan)),
+                controls,
+            );
+        }
+        CommentDialog::Browse(list) => {
+            let [entries, detail, message, controls] = Layout::vertical([
+                Constraint::Length(app.review.comments.len().clamp(1, 5) as u16),
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .areas(inner);
+            let visible = tree::visible_range(
+                app.review.comments.len(),
+                list.selection,
+                entries.height as usize,
+            );
+            let offset = visible.start;
+            let items: Vec<_> = app
+                .review
+                .comments
+                .iter()
+                .skip(offset)
+                .take(visible.len())
+                .map(|comment| {
+                    let anchor = &comment.anchor;
+                    let status = if anchor.is_outdated(&app.review.changes) {
+                        " · outdated"
+                    } else {
+                        ""
+                    };
+                    let todo = if comment.source_todo.is_some() {
+                        " · TODO written"
+                    } else {
+                        ""
+                    };
+                    ListItem::new(format!(
+                        "{}:{}-{} ({}){status}{todo}",
+                        display_path(&anchor.path),
+                        anchor.start_line,
+                        anchor.end_line,
+                        anchor.side.label()
+                    ))
+                })
+                .collect();
+            let mut state =
+                ListState::default().with_selected(Some(list.selection.saturating_sub(offset)));
+            frame.render_stateful_widget(
+                List::new(items).highlight_style(Style::default().bg(Color::Rgb(35, 45, 60))),
+                entries,
+                &mut state,
+            );
+            if let Some(comment) = app.review.comments.get(list.selection) {
+                let mut text = vec![Line::styled(
+                    "Original source",
+                    Style::default().fg(Color::DarkGray),
+                )];
+                text.extend(
+                    comment
+                        .anchor
+                        .excerpt
+                        .lines()
+                        .map(|line| Line::from(display_path(line))),
+                );
+                text.push(Line::default());
+                text.push(Line::styled("Comment", Style::default().fg(Color::Magenta)));
+                text.extend(
+                    comment
+                        .body
+                        .lines()
+                        .map(|line| Line::from(display_path(line))),
+                );
+                frame.render_widget(
+                    Paragraph::new(text)
+                        .wrap(Wrap { trim: false })
+                        .scroll((list.scroll as u16, 0))
+                        .block(Block::default().borders(Borders::ALL)),
+                    detail,
+                );
+            } else {
+                frame.render_widget(
+                    Paragraph::new(
+                        "No comments yet. Use c to comment on a line or v to select a range.",
+                    ),
+                    detail,
+                );
+            }
+            let prompt = match list.confirming {
+                Some(CommentConfirmation::Delete) => {
+                    "Delete this local comment? y delete · n / Esc cancel".to_owned()
+                }
+                Some(CommentConfirmation::Todo) => {
+                    "Write // TODO: into the working source file? y write · n / Esc cancel"
+                        .to_owned()
+                }
+                None => display_path(&app.message),
+            };
+            frame.render_widget(
+                Paragraph::new(prompt).style(Style::default().fg(Color::Yellow)),
+                message,
+            );
+            frame.render_widget(Paragraph::new("j/k select · Enter jump · e edit · d delete · t TODO · PgUp/PgDn read · Esc close").style(Style::default().fg(Color::Cyan)), controls);
+        }
     }
 }
 
@@ -563,7 +859,7 @@ fn draw_session_dialog(frame: &mut Frame, dialog: &SessionDialog) {
     if dialog.confirming {
         frame.render_widget(
             Paragraph::new(format!(
-                "Permanently delete {} selected saved reviews?",
+                "Permanently delete {} saved reviews and their comments?",
                 dialog.selected.len()
             ))
             .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),

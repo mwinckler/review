@@ -132,6 +132,84 @@ impl Drop for Pty {
 }
 
 #[test]
+fn line_comments_autosave_resume_and_write_source_todos_only_after_confirmation() {
+    for backend in [Backend::Git, Backend::Jj] {
+        let root = common::fixture();
+        fs::write(
+            root.path().join("src/main.rs"),
+            "fn main() {\n    first();\n    second();\n}\n",
+        )
+        .unwrap();
+        common::jj(root.path(), &["commit", "-m", "range"]);
+        let original = fs::read(root.path().join("src/main.rs")).unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let config = state.path().join("config.toml");
+        fs::write(&config, "[renderer]\ncommand = ['diff', '-u', '{old}', '{new}']\n[keybindings]\nx = 'add_comment'\nV = 'select_lines'\nM = 'manage_comments'\nS = 'quit'\n").unwrap();
+        let repo = Repository::discover(root.path(), Some(backend)).unwrap();
+        let store = SessionStore::new(state.path(), &repo).unwrap();
+        let command = || {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
+            command
+                .current_dir(root.path())
+                .env("JJ_CONFIG", "/dev/null")
+                .args([
+                    "--backend",
+                    if backend == Backend::Git { "git" } else { "jj" },
+                    "--state-dir",
+                    state.path().to_str().unwrap(),
+                    "--config",
+                    config.to_str().unwrap(),
+                ]);
+            command
+        };
+        let mut start = command();
+        start.args(["--base", "feature"]);
+        let mut terminal = Pty::spawn(start);
+        terminal.wait_until(|text| text.contains("first();"));
+        terminal.send(b"Vjx");
+        terminal.wait_until(|text| text.contains("New line comment"));
+        terminal.send(b"\x1b[200~Explain S range\r\ncontinued\x1b[201~\x13");
+        terminal.wait_until(|text| text.contains("saved"));
+        let started = Instant::now();
+        let saved = loop {
+            let saved = store.list().unwrap().pop().unwrap();
+            if !saved.review.comments.is_empty() {
+                break saved;
+            }
+            assert!(started.elapsed() < Duration::from_secs(5));
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(saved.review.comments[0].body, "Explain S range\ncontinued");
+        assert_eq!(saved.review.comments[0].anchor.start_line, 1);
+        assert_eq!(saved.review.comments[0].anchor.end_line, 2);
+        assert_eq!(fs::read(root.path().join("src/main.rs")).unwrap(), original);
+        terminal.send(b"t");
+        terminal.wait_until(|text| text.contains("working"));
+        terminal.send(b"n");
+        assert_eq!(fs::read(root.path().join("src/main.rs")).unwrap(), original);
+        terminal.send(b"ty");
+        terminal.wait_until(|text| text.contains("retained"));
+        terminal.send(b"\x03");
+        assert!(terminal.finish().success(), "{}", terminal.output);
+        let saved = store.list().unwrap().pop().unwrap();
+        assert!(saved.review.comments[0].source_todo.is_some());
+        assert!(
+            fs::read_to_string(root.path().join("src/main.rs"))
+                .unwrap()
+                .starts_with("// TODO: Explain S range\n// continued\n")
+        );
+        let mut resume = command();
+        resume.args(["--resume", &saved.id]);
+        let mut terminal = Pty::spawn(resume);
+        terminal.wait_until(|text| text.contains(&format!("Session {}", saved.id)));
+        terminal.send(b"M");
+        terminal.wait_until(|text| text.contains("Explain"));
+        terminal.send(b"\x03");
+        assert!(terminal.finish().success(), "{}", terminal.output);
+    }
+}
+
+#[test]
 fn git_terminal_autosaves_resumes_refreshes_and_restores_terminal_settings() {
     exercise_terminal(Backend::Git);
 }

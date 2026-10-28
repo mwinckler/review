@@ -1,0 +1,657 @@
+use std::collections::BTreeSet;
+
+use anyhow::{Context, Result};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::{
+    app::{App, Focus},
+    comments::{Comment, CommentAnchor, DiffSide, excerpt},
+    hunks::SourceLine,
+    state::Review,
+    vcs::Repository,
+};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineTarget {
+    /// The renderer's comparison path; old-side anchors use the pre-rename path.
+    pub path: String,
+    pub side: DiffSide,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+pub struct LineSelection {
+    pub path: String,
+    pub side: DiffSide,
+    pub anchor: usize,
+    pub cursor: usize,
+}
+
+impl LineSelection {
+    pub fn target(&self) -> LineTarget {
+        LineTarget {
+            path: self.path.clone(),
+            side: self.side,
+            start_line: self.anchor.min(self.cursor),
+            end_line: self.anchor.max(self.cursor),
+        }
+    }
+
+    pub fn contains(&self, source: &SourceLine) -> bool {
+        self.path == source.location.path
+            && source.number(self.side).is_some_and(|number| {
+                (self.anchor.min(self.cursor)..=self.anchor.max(self.cursor)).contains(&number)
+            })
+    }
+}
+
+pub enum CommentAction {
+    Compose(LineTarget),
+    WriteTodo(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DraftField {
+    Start,
+    End,
+    Body,
+}
+
+pub struct CommentDraft {
+    pub id: Option<String>,
+    pub anchor: CommentAnchor,
+    pub start: String,
+    pub end: String,
+    pub body: String,
+    pub cursor: usize,
+    pub field: DraftField,
+    pub message: String,
+    source: Option<String>,
+}
+
+impl CommentDraft {
+    pub fn new(repo: &Repository, review: &Review, target: &LineTarget) -> Result<Self> {
+        let change = review
+            .changes
+            .iter()
+            .find(|change| change.path == target.path)
+            .context("Selected file is no longer in the comparison")?;
+        let content = repo.content(&review.comparison, change, target.side == DiffSide::Old)?;
+        let anchor = CommentAnchor::from_content(
+            &review.comparison,
+            change,
+            target.side,
+            target.start_line,
+            target.end_line,
+            &content,
+        )?;
+        Ok(Self {
+            id: None,
+            start: target.start_line.to_string(),
+            end: target.end_line.to_string(),
+            anchor,
+            body: String::new(),
+            cursor: 0,
+            field: DraftField::Body,
+            message: String::new(),
+            source: Some(String::from_utf8(content)?),
+        })
+    }
+
+    fn edit(comment: &Comment) -> Self {
+        Self {
+            id: Some(comment.id.clone()),
+            anchor: comment.anchor.clone(),
+            start: comment.anchor.start_line.to_string(),
+            end: comment.anchor.end_line.to_string(),
+            body: comment.body.clone(),
+            cursor: comment.body.len(),
+            field: DraftField::Body,
+            message: String::new(),
+            source: None,
+        }
+    }
+
+    pub fn selected_source(&self) -> Result<String> {
+        if let Some(source) = &self.source {
+            excerpt(
+                source,
+                self.start.parse().context("Start line must be a number")?,
+                self.end.parse().context("End line must be a number")?,
+            )
+        } else {
+            Ok(self.anchor.excerpt.clone())
+        }
+    }
+
+    fn save(&self, review: &mut Review) -> Result<usize> {
+        if let Some(id) = &self.id {
+            let index = review
+                .comments
+                .iter()
+                .position(|comment| &comment.id == id)
+                .context("Comment was removed")?;
+            review.comments[index].edit(self.body.clone())?;
+            Ok(index)
+        } else {
+            let mut anchor = self.anchor.clone();
+            anchor.excerpt = self.selected_source()?;
+            anchor.start_line = self.start.parse()?;
+            anchor.end_line = self.end.parse()?;
+            review
+                .comments
+                .push(Comment::new(anchor, self.body.clone())?);
+            Ok(review.comments.len() - 1)
+        }
+    }
+
+    pub fn insert(&mut self, text: &str) {
+        if self.field == DraftField::Body {
+            let text: String = text
+                .replace("\r\n", "\n")
+                .replace('\r', "\n")
+                .chars()
+                .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+                .collect();
+            self.body.insert_str(self.cursor, &text);
+            self.cursor += text.len();
+        }
+    }
+
+    fn input(&mut self, key: KeyEvent) {
+        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) && self.source.is_some() {
+            self.field = match (self.field, key.code == KeyCode::Tab) {
+                (DraftField::Start, true) | (DraftField::Body, false) => DraftField::End,
+                (DraftField::End, true) | (DraftField::Start, false) => DraftField::Body,
+                _ => DraftField::Start,
+            };
+            return;
+        }
+        if self.field != DraftField::Body {
+            let value = if self.field == DraftField::Start {
+                &mut self.start
+            } else {
+                &mut self.end
+            };
+            match key.code {
+                KeyCode::Char(ch @ '0'..='9') => value.push(ch),
+                KeyCode::Backspace | KeyCode::Delete => {
+                    value.pop();
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    value.clear()
+                }
+                _ => {}
+            }
+            return;
+        }
+        let previous = self.body[..self.cursor]
+            .char_indices()
+            .next_back()
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        let next = self.body[self.cursor..]
+            .chars()
+            .next()
+            .map(|ch| self.cursor + ch.len_utf8())
+            .unwrap_or(self.cursor);
+        match key.code {
+            KeyCode::Left => self.cursor = previous,
+            KeyCode::Right => self.cursor = next,
+            KeyCode::Home => {
+                self.cursor = self.body[..self.cursor]
+                    .rfind('\n')
+                    .map(|index| index + 1)
+                    .unwrap_or(0)
+            }
+            KeyCode::End => {
+                self.cursor = self.body[self.cursor..]
+                    .find('\n')
+                    .map(|index| index + self.cursor)
+                    .unwrap_or(self.body.len())
+            }
+            KeyCode::Up | KeyCode::Down => {
+                let start = self.body[..self.cursor]
+                    .rfind('\n')
+                    .map(|index| index + 1)
+                    .unwrap_or(0);
+                let column = self.body[start..self.cursor].chars().count();
+                let target = if key.code == KeyCode::Up {
+                    start.checked_sub(1).map(|end| {
+                        self.body[..end]
+                            .rfind('\n')
+                            .map(|index| index + 1)
+                            .unwrap_or(0)
+                    })
+                } else {
+                    self.body[self.cursor..]
+                        .find('\n')
+                        .map(|offset| self.cursor + offset + 1)
+                };
+                if let Some(target) = target {
+                    self.cursor = target
+                        + self.body[target..]
+                            .split('\n')
+                            .next()
+                            .unwrap_or_default()
+                            .chars()
+                            .take(column)
+                            .map(char::len_utf8)
+                            .sum::<usize>();
+                }
+            }
+            KeyCode::Backspace => {
+                self.body.drain(previous..self.cursor);
+                self.cursor = previous;
+            }
+            KeyCode::Delete => {
+                self.body.drain(self.cursor..next);
+            }
+            KeyCode::Enter => self.insert("\n"),
+            KeyCode::Tab => self.insert("\t"),
+            KeyCode::Char(ch)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.insert(&ch.to_string())
+            }
+            _ => {}
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum CommentConfirmation {
+    Delete,
+    Todo,
+}
+
+#[derive(Default)]
+pub struct CommentList {
+    pub selection: usize,
+    pub scroll: usize,
+    pub confirming: Option<CommentConfirmation>,
+}
+
+pub enum CommentDialog {
+    Compose(Box<CommentDraft>),
+    Browse(CommentList),
+}
+
+impl App {
+    pub(crate) fn comment_target(&self) -> Option<LineTarget> {
+        if let Some(selection) = &self.line_selection {
+            return Some(selection.target());
+        }
+        let location = self.editor_location()?;
+        let position = self
+            .review
+            .view
+            .positions
+            .get(&self.review.view.active)
+            .map(|position| position.vertical)
+            .unwrap_or(0);
+        let source = if self.selected_hunk().is_some() {
+            self.source_lines
+                .iter()
+                .find(|source| {
+                    source.location.path == location.path
+                        && source.location.new_line == location.new_line
+                        && location.new_line.is_some()
+                })
+                .or_else(|| {
+                    self.source_lines.iter().find(|source| {
+                        source.location.path == location.path
+                            && source.location.old_line == location.old_line
+                            && location.old_line.is_some()
+                    })
+                })
+        } else if self.focus == Focus::Diff {
+            self.source_lines
+                .iter()
+                .find(|line| line.row >= position)
+                .or_else(|| self.source_lines.last())
+        } else {
+            None
+        };
+        let location = source.map(|source| &source.location).unwrap_or(&location);
+        let (side, line) = if let Some(line) = location.new_line {
+            (DiffSide::New, line)
+        } else {
+            (DiffSide::Old, location.old_line?)
+        };
+        Some(LineTarget {
+            path: location.path.clone(),
+            side,
+            start_line: line,
+            end_line: line,
+        })
+    }
+
+    pub(crate) fn start_line_selection(&mut self, page: usize, lines: usize) {
+        if self.rendering {
+            self.message = "Wait for the diff to finish rendering".into();
+            return;
+        }
+        let Some(target) = self.comment_target() else {
+            self.message = "Select a file or mapped source line".into();
+            return;
+        };
+        let source = self
+            .source_lines
+            .iter()
+            .find(|line| {
+                line.location.path == target.path
+                    && line.number(target.side) == Some(target.start_line)
+            })
+            .or_else(|| {
+                self.source_lines.iter().find(|line| {
+                    line.location.path == target.path && line.number(target.side).is_some()
+                })
+            })
+            .or_else(|| {
+                self.source_lines
+                    .iter()
+                    .find(|line| line.location.path == target.path)
+            });
+        let Some(source) = source else {
+            self.message = "Use c and the line-range fields with this renderer".into();
+            return;
+        };
+        let (side, line) = if let Some(line) = source.number(target.side) {
+            (target.side, line)
+        } else if let Some(line) = source.location.new_line {
+            (DiffSide::New, line)
+        } else {
+            (
+                DiffSide::Old,
+                source
+                    .location
+                    .old_line
+                    .expect("Source row has a line number"),
+            )
+        };
+        self.line_selection = Some(LineSelection {
+            path: target.path,
+            side,
+            anchor: line,
+            cursor: line,
+        });
+        self.focus = Focus::Diff;
+        self.keep_line_selection_visible(page, lines);
+    }
+
+    pub fn keep_line_selection_visible(&mut self, page: usize, lines: usize) {
+        let Some(selection) = &self.line_selection else {
+            return;
+        };
+        let row = self
+            .source_lines
+            .iter()
+            .find(|line| {
+                line.location.path == selection.path
+                    && line.number(selection.side) == Some(selection.cursor)
+            })
+            .map(|line| line.row);
+        if let Some(row) = row {
+            let position = self.position();
+            if row < position.vertical {
+                position.vertical = row;
+            } else if row >= position.vertical + page {
+                position.vertical = row.saturating_sub(page - 1);
+            }
+            position.vertical = position.vertical.min(lines.saturating_sub(page));
+        }
+    }
+
+    pub(crate) fn handle_line_selection(
+        &mut self,
+        key: KeyEvent,
+        page: usize,
+        lines: usize,
+    ) -> bool {
+        let Some(selection) = &mut self.line_selection else {
+            return false;
+        };
+        let amount = match (key.code, key.modifiers.contains(KeyModifiers::CONTROL)) {
+            (KeyCode::Char('j') | KeyCode::Down, false) => Some(1),
+            (KeyCode::Char('k') | KeyCode::Up, false) => Some(-1),
+            (KeyCode::PageDown, _) | (KeyCode::Char('f'), true) => Some(page as isize),
+            (KeyCode::PageUp, _) | (KeyCode::Char('b'), true) => Some(-(page as isize)),
+            (KeyCode::Char('d'), true) => Some((page / 2).max(1) as isize),
+            (KeyCode::Char('u'), true) => Some(-((page / 2).max(1) as isize)),
+            _ => None,
+        };
+        if let Some(amount) = amount {
+            let numbers: Vec<_> = self
+                .source_lines
+                .iter()
+                .filter(|line| line.location.path == selection.path)
+                .filter_map(|line| line.number(selection.side))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if !numbers.is_empty() {
+                let index = numbers
+                    .partition_point(|number| *number < selection.cursor)
+                    .min(numbers.len() - 1);
+                selection.cursor =
+                    numbers[index.saturating_add_signed(amount).min(numbers.len() - 1)];
+            }
+        } else {
+            if key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                return false;
+            }
+            match key.code {
+                KeyCode::Char('g' | 'G') | KeyCode::Home | KeyCode::End => {
+                    let numbers = self
+                        .source_lines
+                        .iter()
+                        .filter(|line| line.location.path == selection.path)
+                        .filter_map(|line| line.number(selection.side));
+                    let number = if matches!(key.code, KeyCode::Char('g') | KeyCode::Home) {
+                        numbers.min()
+                    } else {
+                        numbers.max()
+                    };
+                    if let Some(number) = number {
+                        selection.cursor = number;
+                    }
+                }
+                KeyCode::Char('h' | 'l') | KeyCode::Left | KeyCode::Right => {
+                    let side = if matches!(key.code, KeyCode::Char('h') | KeyCode::Left) {
+                        DiffSide::Old
+                    } else {
+                        DiffSide::New
+                    };
+                    let row = self
+                        .source_lines
+                        .iter()
+                        .find(|line| {
+                            line.location.path == selection.path
+                                && line.number(selection.side) == Some(selection.cursor)
+                        })
+                        .map(|line| line.row)
+                        .unwrap_or(0);
+                    if let Some(number) = self
+                        .source_lines
+                        .iter()
+                        .filter(|line| {
+                            line.location.path == selection.path && line.number(side).is_some()
+                        })
+                        .min_by_key(|line| line.row.abs_diff(row))
+                        .and_then(|line| line.number(side))
+                    {
+                        selection.side = side;
+                        selection.anchor = number;
+                        selection.cursor = number;
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('v') => {
+                    self.line_selection = None;
+                    return true;
+                }
+                KeyCode::Char('c') => {
+                    self.comment_action = Some(CommentAction::Compose(selection.target()));
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+        self.keep_line_selection_visible(page, lines);
+        true
+    }
+
+    pub(crate) fn handle_comment_dialog(&mut self, key: KeyEvent, page: usize) {
+        let Some(mut dialog) = self.comment_dialog.take() else {
+            return;
+        };
+        match &mut dialog {
+            CommentDialog::Compose(draft) => {
+                if key.code == KeyCode::Esc {
+                    return;
+                }
+                if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    match draft.save(&mut self.review) {
+                        Ok(selection) => {
+                            self.dirty = true;
+                            self.comments_changed = true;
+                            self.message = "Comment saved locally".into();
+                            self.comment_dialog = Some(CommentDialog::Browse(CommentList {
+                                selection,
+                                ..Default::default()
+                            }));
+                            return;
+                        }
+                        Err(error) => draft.message = format!("{error:#}"),
+                    }
+                } else {
+                    draft.input(key);
+                }
+            }
+            CommentDialog::Browse(list) => {
+                list.selection = list
+                    .selection
+                    .min(self.review.comments.len().saturating_sub(1));
+                if let Some(confirmation) = list.confirming {
+                    match key.code {
+                        KeyCode::Char('y') => {
+                            if let Some(comment) = self.review.comments.get(list.selection) {
+                                match confirmation {
+                                    CommentConfirmation::Delete => {
+                                        self.review.comments.remove(list.selection);
+                                        list.selection = list
+                                            .selection
+                                            .min(self.review.comments.len().saturating_sub(1));
+                                        self.dirty = true;
+                                        self.comments_changed = true;
+                                        self.message = "Local comment deleted".into();
+                                    }
+                                    CommentConfirmation::Todo => {
+                                        self.comment_action =
+                                            Some(CommentAction::WriteTodo(comment.id.clone()))
+                                    }
+                                }
+                            }
+                            list.confirming = None;
+                        }
+                        KeyCode::Char('n') | KeyCode::Esc => list.confirming = None,
+                        _ => {}
+                    }
+                } else {
+                    if key.modifiers.contains(KeyModifiers::CONTROL) {
+                        match key.code {
+                            KeyCode::Char('d' | 'f') => {
+                                list.scroll = list
+                                    .scroll
+                                    .saturating_add((page / 2).max(1))
+                                    .min(u16::MAX as usize)
+                            }
+                            KeyCode::Char('u' | 'b') => {
+                                list.scroll = list.scroll.saturating_sub((page / 2).max(1))
+                            }
+                            _ => {}
+                        }
+                        self.comment_dialog = Some(dialog);
+                        return;
+                    }
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('q' | 'C') => {
+                            return;
+                        }
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            list.selection = (list.selection + 1)
+                                .min(self.review.comments.len().saturating_sub(1));
+                            list.scroll = 0;
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            list.selection = list.selection.saturating_sub(1);
+                            list.scroll = 0;
+                        }
+                        KeyCode::Home | KeyCode::Char('g') => {
+                            list.selection = 0;
+                            list.scroll = 0;
+                        }
+                        KeyCode::End | KeyCode::Char('G') => {
+                            list.selection = self.review.comments.len().saturating_sub(1);
+                            list.scroll = 0;
+                        }
+                        KeyCode::PageDown => {
+                            list.scroll =
+                                list.scroll.saturating_add(page / 2).min(u16::MAX as usize)
+                        }
+                        KeyCode::PageUp => list.scroll = list.scroll.saturating_sub(page / 2),
+                        KeyCode::Char('d') | KeyCode::Delete
+                            if !self.review.comments.is_empty() =>
+                        {
+                            list.confirming = Some(CommentConfirmation::Delete)
+                        }
+                        KeyCode::Char('t') if !self.review.comments.is_empty() => {
+                            list.confirming = Some(CommentConfirmation::Todo)
+                        }
+                        KeyCode::Char('e') => {
+                            if let Some(comment) = self.review.comments.get(list.selection) {
+                                self.comment_dialog = Some(CommentDialog::Compose(Box::new(
+                                    CommentDraft::edit(comment),
+                                )));
+                                return;
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if let Some(comment) = self.review.comments.get(list.selection) {
+                                if let Some(change) = comment.anchor.change(&self.review.changes) {
+                                    let target = LineSelection {
+                                        path: change.path.clone(),
+                                        side: comment.anchor.side,
+                                        anchor: comment.anchor.start_line,
+                                        cursor: comment.anchor.end_line,
+                                    };
+                                    self.review.view.selected = change.path.clone();
+                                    self.review.view.filter.clear();
+                                    self.review.view.unviewed_only = false;
+                                    self.review
+                                        .view
+                                        .collapsed
+                                        .retain(|parent| !target.path.starts_with(parent));
+                                    self.rebuild();
+                                    self.line_selection = Some(target);
+                                    self.focus = Focus::Diff;
+                                    self.dirty = true;
+                                    return;
+                                }
+                                self.message =
+                                    "Comment is outdated; its original source is shown here".into();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        self.comment_dialog = Some(dialog);
+    }
+}

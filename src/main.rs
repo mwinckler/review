@@ -14,6 +14,8 @@ use crossterm::{
 use ratatui::{layout::Rect, text::Text};
 use review::{
     app::{App, Focus},
+    comment_dialog::{CommentAction, CommentDialog, CommentDraft},
+    comments::write_todo,
     config::Config,
     editor::EditorWorker,
     refresh::RefreshWorker,
@@ -25,6 +27,14 @@ use review::{
     vcs::{Backend, Repository},
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
+struct PasteMode;
+
+impl Drop for PasteMode {
+    fn drop(&mut self) {
+        let _ = crossterm::execute!(io::stdout(), event::DisableBracketedPaste);
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -124,7 +134,7 @@ fn main() -> Result<()> {
             for id in &ids {
                 println!("  {id}");
             }
-            print!("Delete saved review progress? [y/N] ");
+            print!("Delete saved review progress and comments? [y/N] ");
             io::stdout().flush()?;
             let mut reply = String::new();
             io::stdin().read_line(&mut reply)?;
@@ -227,6 +237,8 @@ fn main() -> Result<()> {
     let worker = RenderWorker::new(config.renderer.clone());
     let editor = EditorWorker::new(config.editor.clone(), store.directory.join("snapshots"));
     let result = ratatui::run(|terminal| {
+        crossterm::execute!(io::stdout(), event::EnableBracketedPaste)?;
+        let _paste = PasteMode;
         run(
             terminal,
             &repo,
@@ -294,12 +306,14 @@ fn run(
                 requested = Some(key);
                 app.rendering = true;
                 app.hunks.clear();
+                app.source_lines.clear();
                 diff = Text::raw("Rendering…");
                 redraw = true;
             }
         } else {
             app.rendering = false;
             app.hunks.clear();
+            app.source_lines.clear();
             app.editor_requested = false;
             if requested.take().is_some() {
                 request_id = worker.cancel();
@@ -319,6 +333,7 @@ fn run(
             if result.id == request_id {
                 app.rendering = false;
                 app.hunks = result.hunks;
+                app.source_lines = result.source_lines;
                 diff = match result.text {
                     Ok(text) => text,
                     Err(error) => Text::raw(format!("Diff error\n\n{}", ui::display_path(&error))),
@@ -331,6 +346,7 @@ fn run(
             }
         }
         redraw |= app.apply_hunk_navigation(page, diff.lines.len());
+        app.keep_line_selection_visible(page, diff.lines.len());
         for result in editor.results.try_iter() {
             app.message = match result {
                 Ok(location) => format!(
@@ -360,6 +376,7 @@ fn run(
                     let keys = if app.searching
                         || app.flash.is_some()
                         || app.session_dialog.is_some()
+                        || app.comment_dialog.is_some()
                         || app.help
                         || (key.code == KeyCode::Char('c')
                             && key.modifiers.contains(KeyModifiers::CONTROL))
@@ -371,24 +388,28 @@ fn run(
                     for key in keys {
                         let search = app.focus == Focus::Diff
                             && app.session_dialog.is_none()
+                            && app.comment_dialog.is_none()
                             && !app.searching
                             && !app.help
                             && matches!(key.code, KeyCode::Char('n' | 'N'));
                         let search_enter = app.focus == Focus::Diff
                             && app.searching
                             && app.session_dialog.is_none()
+                            && app.comment_dialog.is_none()
                             && key.code == KeyCode::Enter;
-                        let input_page = if app.session_dialog.is_some() {
-                            ui::session_dialog_area(Rect::new(0, 0, size.width, size.height))
-                                .height
-                                .saturating_sub(5)
-                                .max(1) as usize
-                        } else {
-                            page
-                        };
+                        let input_page =
+                            if app.session_dialog.is_some() || app.comment_dialog.is_some() {
+                                ui::session_dialog_area(Rect::new(0, 0, size.width, size.height))
+                                    .height
+                                    .saturating_sub(5)
+                                    .max(1) as usize
+                            } else {
+                                page
+                            };
                         app.handle_key(key, input_page, diff.lines.len(), size.width);
-                        force_save |=
-                            key.code == KeyCode::Char(' ') && app.session_dialog.is_none();
+                        force_save |= key.code == KeyCode::Char(' ')
+                            && app.session_dialog.is_none()
+                            && app.comment_dialog.is_none();
                         if search || search_enter {
                             app.search_diff(&diff, key.code != KeyCode::Char('N'));
                         }
@@ -398,8 +419,50 @@ fn run(
                 Event::Resize(_, _) => {
                     redraw = true;
                 }
+                Event::Paste(text) => {
+                    if let Some(CommentDialog::Compose(draft)) = &mut app.comment_dialog {
+                        draft.insert(&text);
+                        redraw = true;
+                    }
+                }
                 _ => {}
             }
+        }
+        if let Some(action) = app.comment_action.take() {
+            match action {
+                CommentAction::Compose(target) => {
+                    match CommentDraft::new(repo, &app.review, &target) {
+                        Ok(draft) => {
+                            app.comment_dialog = Some(CommentDialog::Compose(Box::new(draft)))
+                        }
+                        Err(error) => app.message = format!("Comment: {error:#}"),
+                    }
+                }
+                CommentAction::WriteTodo(id) => {
+                    let result = app
+                        .review
+                        .comments
+                        .iter()
+                        .position(|comment| comment.id == id)
+                        .context("Comment was removed")
+                        .and_then(|index| {
+                            let receipt =
+                                write_todo(repo, &app.review, &app.review.comments[index])?;
+                            app.review.comments[index].updated_at = receipt.written_at;
+                            app.review.comments[index].source_todo = Some(receipt);
+                            Ok(())
+                        });
+                    app.message = match result {
+                        Ok(()) => {
+                            app.dirty = true;
+                            app.comments_changed = true;
+                            "TODO written to source; local comment retained".into()
+                        }
+                        Err(error) => format!("TODO: {error:#}"),
+                    };
+                }
+            }
+            redraw = true;
         }
         if let Some(action) = app.session_action.take() {
             match action {
@@ -464,10 +527,13 @@ fn run(
                     } else {
                         "Changes reloaded"
                     };
-                    app.message = format!("{action} · {invalidated} viewed marks reset");
+                    if app.comment_dialog.is_none() {
+                        app.message = format!("{action} · {invalidated} viewed marks reset");
+                    }
                     let preview_changed = !previous_preview.iter().eq(app.preview_changes());
                     if preview_changed {
                         app.hunk_selection = None;
+                        app.line_selection = None;
                         app.editor_requested = false;
                     }
                     if result.manual || preview_changed {
@@ -488,6 +554,7 @@ fn run(
             }
             redraw = true;
         }
+        force_save |= std::mem::take(&mut app.comments_changed);
         if app.dirty
             && (force_save || app.quit || last_save.elapsed() >= Duration::from_millis(250))
         {

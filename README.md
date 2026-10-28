@@ -107,7 +107,8 @@ Each `review --list` entry includes its last-opened datetime in UTC, for example
 Older sessions use their last saved time until their next resume.
 
 Press `q` or `Ctrl-c` to save and quit. Viewed changes save immediately;
-navigation state autosaves within 250 ms. Resume restores the comparison,
+navigation state autosaves within 250 ms. Line comments save immediately when
+submitted. Resume restores comments, the comparison,
 viewed files, selection, pane focus, directory expansion, filters, layout,
 tree width, and per-file and per-directory scroll positions.
 
@@ -157,7 +158,7 @@ page-scrolling keys also work. Press `d`, `Delete`, or `Enter` to review the
 confirmation, then `y` to delete or `n` / `Esc` to cancel. `r` reloads the list;
 `Esc` / `q` closes the dialog and returns to the review.
 
-Forgetting permanently removes the session's saved progress and navigation state.
+Forgetting permanently removes the session's saved comments, progress, and navigation state.
 Repository content and persistent editor snapshots are preserved.
 
 ## Keyboard controls
@@ -177,6 +178,9 @@ Repository content and persistent editor snapshots are preserved.
 | `]h` / `[h` | Select and highlight the next/previous diff hunk |
 | `]Nh` / `[Nh` | Select hunk number `N` (1-based) |
 | `e` | Open the selected hunk or file in the editor |
+| `c` | Compose a line comment; `Ctrl-s` saves it locally |
+| `v` | Select a source-line range; `j` / `k` extend, `h` / `l` choose old/new, `c` comments |
+| `C` | Browse comments, edit, delete, jump to source, or write a source TODO |
 | `/` | Filter filenames in the tree; search text in the diff |
 | `s` | Flash jump to a visible tree entry from either pane |
 | `S` | Manage and forget saved sessions with multiselect |
@@ -252,6 +256,54 @@ Flash searches the visible tree entries, respecting filters and collapsed folder
 It reveals the tree from a full-width diff and focuses the tree after a jump.
 Press `Esc` to restore the previous pane and layout.
 
+### Line comments
+
+Press `c` on a file, selected hunk, or displayed source line to compose a comment.
+For a range, press `v`, extend it with `j` / `k` or the page keys, then press `c`.
+`h` / `l` select the old/new side; `gg` / `G` move to the first/last mapped source
+line. A range belongs to one file and one side. `Esc` cancels range selection.
+Difftastic and unified renderers support visual selection in file and folder
+previews, including inline and side-by-side layouts.
+
+In the composer, type or paste multiline text. `Enter` adds a newline, arrows move
+the text cursor, and `Ctrl-s` submits the comment. `Tab` / `Shift-Tab` cycle between
+the body and the inclusive start/end line fields for a new comment; `Ctrl-u` clears
+a line field. These fields also support renderers with custom output. `Esc`
+discards the draft. Comment bodies support Markdown text for future remote reviews.
+
+Press `C` to browse every comment in the session, including comments on hidden or
+viewed files. `j` / `k` select a comment, `Enter` jumps to its source, `e` edits its
+body, and `d` asks to delete it. `PageUp` / `PageDown` or `Ctrl-u` / `Ctrl-d` scroll
+long comments and source excerpts. Magenta `●` markers identify commented diff
+lines and show per-file/folder comment counts in the tree.
+
+Comments are local session data stored alongside progress in the state directory.
+Each comment retains a stable ID, timestamps, the original base/head revision IDs,
+the selected side and repository-relative path, an inclusive source range, a file
+object identity, and the quoted source. Refresh preserves these original anchors.
+When the anchored file side changes or disappears, the comment is labeled
+`outdated` and remains available with its original source excerpt.
+
+The provider-independent records in `src/comments.rs` are separate from terminal
+line mapping and dialogs. A future GitHub, GitLab, or Gitea adapter can translate
+the revision/side/range anchor and Markdown body into a remote review comment,
+using the local ID to associate a remote record with its saved counterpart.
+
+#### Write a source TODO
+
+In the comment browser, press `t`, then `y` to confirm writing the selected comment
+above its source range as `// TODO: ...`. Further body lines become `// ...` lines.
+This action edits the working source file. It requires a new-side comment on a
+regular UTF-8 source file in a supported `//`-comment language, such as Rust,
+C/C++, Go, Java, JavaScript, or TypeScript. The complete selected range must still
+match; unrelated line shifts are mapped to the current working file. Outdated
+anchors, replaced ranges, and symlinks are rejected with an explanation.
+
+TODO insertion preserves indentation, line endings, and file permissions. The
+local comment retains its original anchor and a TODO-write receipt, which protects
+against duplicate writes. Source TODOs remain ordinary working-copy edits when
+local comments are edited, deleted, or forgotten.
+
 ## Configuration
 
 Create `$XDG_CONFIG_HOME/review/config.toml` (normally
@@ -269,7 +321,7 @@ command = ["xdg-terminal-exec", "--", "nvim", "+{line}", "{read_only}", "--", "{
 [keybindings]
 J = "next_file"
 K = "previous_file"
-v = "toggle_viewed"
+V = "toggle_viewed"
 "Ctrl-j" = "next_unviewed"
 ```
 
@@ -295,7 +347,7 @@ directory preview.
 Binary changes, renames, symlinks, executable-bit changes, submodule pointers,
 and Jujutsu conflict contents remain visible through file metadata and diffs.
 
-Key aliases supplement the defaults in navigation mode; search and Flash prompts
+Key aliases supplement the defaults in navigation mode; comment dialogs, search and Flash prompts
 use typed characters for their own input. Keys may be a character, a named key
 (`Space`, `Enter`, `Tab`, `BackTab`, `Esc`, `Backspace`, arrows, `PageUp`,
 `PageDown`, `Home`, `End`), or a `Ctrl-`/`Alt-` combination. Use uppercase
@@ -305,7 +357,7 @@ characters for shifted letters.
 Actions: `up`, `down`, `left`, `right`, `focus_tree`, `focus_diff`, `first`, `last`,
 `page_down`, `page_up`, `half_page_down`, `half_page_up`, `next_file`,
 `previous_file`, `next_unviewed`, `previous_unviewed`, `next_hunk`, `previous_hunk`,
-`open_editor`, `toggle_viewed`,
+`open_editor`, `add_comment`, `select_lines`, `manage_comments`, `toggle_viewed`,
 `toggle_unviewed`, `toggle_inline`, `toggle_fullscreen`, `search`, `flash`,
 `manage_sessions`,
 `next_match`, `previous_match`, `refresh`, `clear_filters`, `help`, `quit`.
