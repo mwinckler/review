@@ -361,6 +361,138 @@ fn session_list_highlights_unique_prefixes_and_resume_accepts_them() {
 }
 
 #[test]
+fn session_names_are_editable_in_the_tui_persist_on_resume_and_recheck_other_session_locks() {
+    for backend in [Backend::Git, Backend::Jj] {
+        let root = common::fixture();
+        let state = tempfile::tempdir().unwrap();
+        let repo = Repository::discover(root.path(), Some(backend)).unwrap();
+        let comparison = repo
+            .snapshot_expression(if backend == Backend::Git {
+                "HEAD~1..HEAD"
+            } else {
+                "@--..@-"
+            })
+            .unwrap();
+        let changes = repo.changes(&comparison).unwrap();
+        let store = SessionStore::new(state.path(), &repo).unwrap();
+        for id in ["r1", "r2", "r3"] {
+            session_fixture::write(
+                &store,
+                &repo,
+                id,
+                Review::new(comparison.clone(), changes.clone()),
+            );
+        }
+        let held = File::options()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(store.directory.join("r3.lock"))
+            .unwrap();
+        held.try_lock_exclusive().unwrap();
+        let config = state.path().join("config.toml");
+        fs::write(
+            &config,
+            "[keybindings]\nR = 'quit'\nSpace = 'quit'\nq = 'quit'\n",
+        )
+        .unwrap();
+        let command = || {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
+            command
+                .current_dir(root.path())
+                .env("JJ_CONFIG", "/dev/null")
+                .args([
+                    "--backend",
+                    if backend == Backend::Git { "git" } else { "jj" },
+                    "--resume",
+                    "r1",
+                    "--state-dir",
+                    state.path().to_str().unwrap(),
+                    "--config",
+                    config.to_str().unwrap(),
+                ]);
+            command
+        };
+        let mut terminal = Pty::spawn(command());
+        terminal.wait_until(|text| text.contains("Changed files"));
+        terminal.send(b"SR");
+        terminal.wait_until(|text| text.contains("Rename"));
+        terminal.send("\u{1b}[200~Current q S λ\u{1b}[201~\r".as_bytes());
+        terminal.wait_until(|_| {
+            store
+                .list()
+                .unwrap()
+                .iter()
+                .any(|saved| saved.id == "r1" && saved.name.as_deref() == Some("Current q S λ"))
+        });
+        terminal.output.clear();
+        terminal.send(b"ggjjR");
+        terminal.wait_until(|text| text.contains("Rename"));
+        let raced = File::options()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(store.directory.join("r2.lock"))
+            .unwrap();
+        raced.try_lock_exclusive().unwrap();
+        terminal.send(b"Closed review\r");
+        terminal.wait_until(|text| text.contains("failed:"));
+        assert!(
+            store
+                .list()
+                .unwrap()
+                .iter()
+                .find(|saved| saved.id == "r2")
+                .unwrap()
+                .name
+                .is_none()
+        );
+        drop(raced);
+        terminal.send(b"\r");
+        terminal.wait_until(|_| {
+            store
+                .list()
+                .unwrap()
+                .iter()
+                .any(|saved| saved.id == "r2" && saved.name.as_deref() == Some("Closed review"))
+        });
+        terminal.output.clear();
+        terminal.send(b"ggjR");
+        terminal.wait_until(|text| text.contains("another"));
+        terminal.send(b"qq");
+        assert!(terminal.finish().success(), "{}", terminal.output);
+        let saved = store.list().unwrap();
+        assert_eq!(
+            saved
+                .iter()
+                .find(|saved| saved.id == "r1")
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("Current q S λ")
+        );
+        let closed = saved.iter().find(|saved| saved.id == "r2").unwrap();
+        assert_eq!(closed.updated_at, 0);
+        assert_eq!(closed.opened_at, None);
+        assert_eq!(closed.name.as_deref(), Some("Closed review"));
+        let mut terminal = Pty::spawn(command());
+        terminal.wait_until(|text| text.contains("Current"));
+        terminal.send(b"SR\x15\r");
+        terminal.wait_until(|_| {
+            store
+                .list()
+                .unwrap()
+                .iter()
+                .any(|saved| saved.id == "r1" && saved.name.is_none())
+        });
+        terminal.send(b"qq");
+        assert!(terminal.finish().success(), "{}", terminal.output);
+    }
+}
+
+#[test]
 fn session_manager_multiselect_confirms_deletion_and_preserves_active_reviews() {
     let fixture = common::fixture();
     let state = tempfile::tempdir().unwrap();
@@ -400,7 +532,7 @@ fn session_manager_multiselect_confirms_deletion_and_preserves_active_reviews() 
     let mut terminal = Pty::spawn(command);
     terminal.wait_until(|text| text.contains("Changed files"));
     terminal.send(b"M");
-    terminal.wait_until(|text| text.contains("Forget review sessions"));
+    terminal.wait_until(|text| text.contains("Review sessions"));
     terminal.send(b"jj ad");
     terminal.wait_until(|text| text.contains("Permanently delete 2"));
     terminal.output.clear();

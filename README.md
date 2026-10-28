@@ -89,6 +89,7 @@ fixed revisions.
 review --resume              # Resume the most recently saved session
 review --list                # List saved sessions for this repository/backend
 review --resume r3           # Resume a particular session
+review --rename r3 "API review" # Give a saved session a display name
 review --base master         # Start a fresh review
 ```
 
@@ -108,6 +109,12 @@ prefix. Piped listings use plain IDs; `NO_COLOR=1` also selects plain terminal o
 Each `review --list` entry includes its last-opened datetime in UTC, for example
 `Opened 2026-10-28T08:30:00Z`. Creating or resuming a review records this time.
 Older sessions use their last saved time until their next resume.
+
+Session names appear beside their stable IDs in `--list`, the TUI header, and the
+session dialog. `review --rename <ID> <NAME>` accepts a full ID or unique prefix
+and renames a closed session. Use `review --rename r3 ""` to clear its name.
+Renaming preserves the session's review data, last-opened time, and listing order.
+IDs and unique prefixes continue to select named sessions for resume and management.
 
 Press `q` or `Ctrl-c` to save and quit. Viewed changes save immediately;
 navigation state autosaves within 250 ms. Line comments save immediately when
@@ -132,7 +139,7 @@ State lives in `$XDG_STATE_HOME/review/` (normally `~/.local/state/review/`). Us
 `--state-dir <directory>` for a different location. Saves are atomic, and each
 open session holds an exclusive lock.
 
-### Forget saved sessions
+### Manage saved sessions
 
 ```sh
 review --forget r3             # Forget one session by ID or unique prefix
@@ -153,13 +160,19 @@ time. Cleanup asks for confirmation and rechecks the selected sessions' age and
 locks before deletion. Use `--cleanup --yes` for automation. Deleted numbers follow
 the same seven-day reuse cooldown as manually forgotten sessions.
 
-Press `S` from either pane to open the session dialog. It shows session IDs,
+Press `S` from either pane to open the session dialog. It shows session IDs, names,
 comparisons, viewed progress, and current/open indicators. Use `j` / `k` or arrows
 to move, `Space` to toggle selections, and `a` to select all closed sessions or
 clear the selection, including sessions outside the viewport. `gg` / `G` and the
 page-scrolling keys also work. Press `d`, `Delete`, or `Enter` to review the
 confirmation, then `y` to delete or `n` / `Esc` to cancel. `r` reloads the list;
 `Esc` / `q` closes the dialog and returns to the review.
+
+Press `R` to rename the highlighted session, including the current review. Edit or
+paste its name, then press `Enter` to save or `Esc` to cancel. Arrow keys, `Home`,
+`End`, `Backspace`, and `Delete` edit the text; `Ctrl-u` clears it. Saving an empty
+name clears the label. Sessions open in another review remain protected by their
+locks, which are rechecked when saving the name.
 
 Forgetting permanently removes the session's saved comments, progress, and navigation state.
 Repository content and persistent editor snapshots are preserved.
@@ -186,7 +199,7 @@ Repository content and persistent editor snapshots are preserved.
 | `C` | Browse comments, edit, delete, jump to source, or write a source TODO |
 | `/` | Filter filenames in the tree; search text in the diff |
 | `s` | Flash jump to a visible tree entry from either pane |
-| `S` | Manage and forget saved sessions with multiselect |
+| `S` | Manage, rename, and forget saved sessions with multiselect |
 | `n` / `N` | Next/previous matching file or diff search result |
 | `u` | Toggle the unviewed-only filter |
 | `i` | Toggle inline and side-by-side rendering |

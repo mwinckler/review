@@ -11,6 +11,65 @@ pub enum SessionAction {
     Close,
     Reload,
     Forget(Vec<String>),
+    Rename { id: String, name: String },
+}
+
+pub struct RenamePrompt {
+    pub id: String,
+    pub value: String,
+    pub cursor: usize,
+}
+
+impl RenamePrompt {
+    fn insert(&mut self, text: &str) {
+        let text: String = text
+            .replace("\r\n", " ")
+            .replace(['\r', '\n', '\t', '\u{2028}', '\u{2029}'], " ")
+            .chars()
+            .filter(|ch| !ch.is_control())
+            .collect();
+        self.value.insert_str(self.cursor, &text);
+        self.cursor += text.len();
+    }
+
+    fn input(&mut self, key: KeyEvent) {
+        let previous = self.value[..self.cursor]
+            .char_indices()
+            .next_back()
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        let next = self.value[self.cursor..]
+            .chars()
+            .next()
+            .map(|ch| self.cursor + ch.len_utf8())
+            .unwrap_or(self.cursor);
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('u') {
+            self.value.clear();
+            self.cursor = 0;
+            return;
+        }
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return;
+        }
+        match key.code {
+            KeyCode::Left => self.cursor = previous,
+            KeyCode::Right => self.cursor = next,
+            KeyCode::Home => self.cursor = 0,
+            KeyCode::End => self.cursor = self.value.len(),
+            KeyCode::Backspace => {
+                self.value.drain(previous..self.cursor);
+                self.cursor = previous;
+            }
+            KeyCode::Delete => {
+                self.value.drain(self.cursor..next);
+            }
+            KeyCode::Char(ch) => self.insert(&ch.to_string()),
+            _ => {}
+        }
+    }
 }
 
 pub struct SessionDialog {
@@ -21,6 +80,7 @@ pub struct SessionDialog {
     pub selection: usize,
     pub confirming: bool,
     pub message: String,
+    pub renaming: Option<RenamePrompt>,
     first: bool,
 }
 
@@ -39,6 +99,7 @@ impl SessionDialog {
             selection: 0,
             confirming: false,
             message: String::new(),
+            renaming: None,
             first: false,
         }
     }
@@ -98,6 +159,20 @@ impl SessionDialog {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent, page: usize) -> Option<SessionAction> {
+        if let Some(rename) = &mut self.renaming {
+            self.message.clear();
+            match key.code {
+                KeyCode::Enter => {
+                    return Some(SessionAction::Rename {
+                        id: rename.id.clone(),
+                        name: rename.value.clone(),
+                    });
+                }
+                KeyCode::Esc => self.renaming = None,
+                _ => rename.input(key),
+            }
+            return None;
+        }
         if self.confirming {
             if key
                 .modifiers
@@ -138,6 +213,21 @@ impl SessionDialog {
             return None;
         }
         match key.code {
+            KeyCode::Char('R') => {
+                self.first = false;
+                if let Some(saved) = self.sessions.get(self.selection) {
+                    if self.open.contains(&saved.id) && saved.id != self.current_id {
+                        self.message = "Session is open in another review.".into();
+                    } else {
+                        let value = saved.name.clone().unwrap_or_default();
+                        self.renaming = Some(RenamePrompt {
+                            id: saved.id.clone(),
+                            cursor: value.len(),
+                            value,
+                        });
+                    }
+                }
+            }
             KeyCode::Esc | KeyCode::Char('q') => return Some(SessionAction::Close),
             KeyCode::Char('r') => return Some(SessionAction::Reload),
             KeyCode::Char('j') | KeyCode::Down => self.move_by(1),
@@ -179,6 +269,12 @@ impl SessionDialog {
             _ => {}
         }
         None
+    }
+
+    pub fn paste(&mut self, text: &str) {
+        if let Some(rename) = &mut self.renaming {
+            rename.insert(text);
+        }
     }
 
     fn move_by(&mut self, amount: isize) {

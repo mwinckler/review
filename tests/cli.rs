@@ -490,6 +490,155 @@ fn positional_comparisons_conflict_with_other_comparison_and_session_options() {
 }
 
 #[test]
+fn rename_is_noninteractive_lists_names_and_preserves_saved_session_data() {
+    let root = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let repo = Repository::discover(root.path(), Some(Backend::Git)).unwrap();
+    let comparison = repo.snapshot_expression("HEAD~1..HEAD").unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    for id in ["abc123", "abc456"] {
+        session_fixture::write(
+            &store,
+            &repo,
+            id,
+            Review::new(comparison.clone(), changes.clone()),
+        );
+    }
+    let before: serde_json::Value =
+        serde_json::from_slice(&fs::read(store.directory.join("abc123.json")).unwrap()).unwrap();
+    let output = cli(root.path(), state.path())
+        .args(["--rename", "abc1", "API review λ"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let renamed: serde_json::Value =
+        serde_json::from_slice(&fs::read(store.directory.join("abc123.json")).unwrap()).unwrap();
+    let mut expected = before;
+    expected["name"] = "API review λ".into();
+    assert_eq!(renamed, expected);
+    let output = cli(root.path(), state.path())
+        .arg("--list")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("abc123 · API review λ  Opened ")),
+        "{text}"
+    );
+    assert!(
+        text.lines().any(|line| line.starts_with("abc456  Opened ")),
+        "{text}"
+    );
+    for id in ["abc123", "abc1"] {
+        let output = cli(root.path(), state.path())
+            .args(["-r", id])
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal"));
+    }
+    let output = cli(root.path(), state.path())
+        .args(["--rename", "abc123", ""])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        store
+            .list()
+            .unwrap()
+            .iter()
+            .all(|saved| saved.name.is_none())
+    );
+}
+
+#[test]
+fn rename_rejects_missing_or_ambiguous_ids_invalid_names_and_open_sessions() {
+    let root = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let repo = Repository::discover(root.path(), Some(Backend::Git)).unwrap();
+    let comparison = repo.snapshot_expression("HEAD~1..HEAD").unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    for id in ["a1", "a2"] {
+        session_fixture::write(
+            &store,
+            &repo,
+            id,
+            Review::new(comparison.clone(), changes.clone()),
+        );
+    }
+    for (id, name, message) in [
+        ("a", "name", "Ambiguous"),
+        ("f", "name", "No saved review"),
+        ("a1", "bad\nname", "single line"),
+    ] {
+        let output = cli(root.path(), state.path())
+            .args(["--rename", id, name])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(message),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let (_, _lock) = store.open("a1").unwrap();
+    let output = cli(root.path(), state.path())
+        .args(["--rename", "a1", "active"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("already open"));
+    assert!(
+        store
+            .list()
+            .unwrap()
+            .iter()
+            .all(|saved| saved.name.is_none())
+    );
+}
+
+#[test]
+fn rename_requires_one_id_and_name_and_conflicts_with_other_modes() {
+    for args in [
+        vec!["--rename"],
+        vec!["--rename", "r1"],
+        vec!["--rename", "r1", "name", "--rename", "r2", "other"],
+        vec!["--rename", "r1", "name", "--list"],
+        vec!["--rename", "r1", "name", "--resume"],
+        vec!["--rename", "r1", "name", "--base", "master"],
+        vec!["--rename", "r1", "name", "--head", "feature"],
+        vec!["--rename", "r1", "name", "HEAD~1..HEAD"],
+        vec!["--rename", "r1", "name", "--forget", "r2"],
+        vec!["--rename", "r1", "name", "--forget-all"],
+        vec!["--rename", "r1", "name", "--cleanup"],
+        vec!["--rename", "r1", "name", "--yes"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_review"))
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn resume_without_sessions_explains_how_to_start() {
     let repo = common::fixture();
     let state = tempfile::tempdir().unwrap();

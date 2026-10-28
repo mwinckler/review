@@ -140,6 +140,14 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::styled(
+            if app.session_label.is_empty() {
+                String::new()
+            } else {
+                format!("{}  ", display_path(&app.session_label))
+            },
+            Style::default().fg(Color::Magenta),
+        ),
         Span::raw(format!(
             "{} → {}  ",
             revision_label(
@@ -515,7 +523,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "c / v / C        Comment / select line range / comments\n",
             "/                Filter filenames / search diff\n",
             "s                Flash jump in the tree from either pane\n",
-            "S                Manage / forget saved review sessions\n",
+            "S                Manage / rename / forget review sessions\n",
             "n / N            Next/previous search match\n",
             "u                Toggle unviewed-only files\n",
             "i / z            Toggle inline / full-width diff\n",
@@ -776,13 +784,14 @@ fn draw_session_dialog(frame: &mut Frame, dialog: &SessionDialog) {
     frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Forget review sessions ")
+        .title(" Review sessions ")
         .border_style(Style::default().fg(Color::Cyan));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let [info, list, message, controls] = Layout::vertical([
+    let [info, list, rename, message, controls] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),
+        Constraint::Length(u16::from(dialog.renaming.is_some())),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
@@ -790,7 +799,7 @@ fn draw_session_dialog(frame: &mut Frame, dialog: &SessionDialog) {
     let available = dialog.closed_sessions().count();
     frame.render_widget(
         Paragraph::new(format!(
-            "{} selected · {available} available · open sessions protected",
+            "{} selected · {available} closed · open sessions protected from deletion",
             dialog.selected.len()
         )),
         info,
@@ -828,6 +837,13 @@ fn draw_session_dialog(frame: &mut Frame, dialog: &SessionDialog) {
                     &saved.id[prefix.len()..],
                     Style::default().fg(Color::DarkGray),
                 ),
+                Span::raw(
+                    saved
+                        .name
+                        .as_ref()
+                        .map(|name| format!(" · {}", display_path(name)))
+                        .unwrap_or_default(),
+                ),
                 Span::raw(format!(
                     "  {} → {}  Viewed {}/{}",
                     display_path(&saved.review.comparison.base_ref),
@@ -862,7 +878,36 @@ fn draw_session_dialog(frame: &mut Frame, dialog: &SessionDialog) {
     if dialog.sessions.is_empty() {
         frame.render_widget(Paragraph::new("No saved review sessions."), list);
     }
-    if dialog.confirming {
+    if let Some(prompt) = &dialog.renaming {
+        let prefix = format!("Rename {}: ", display_path(&prompt.id));
+        let column = Span::raw(format!(
+            "{prefix}{}",
+            display_path(&prompt.value[..prompt.cursor])
+        ))
+        .width();
+        let mut value = prompt.value.clone();
+        value.insert(prompt.cursor, '▏');
+        frame.render_widget(
+            Paragraph::new(format!("{prefix}{}", display_path(&value)))
+                .scroll((
+                    0,
+                    column
+                        .saturating_sub(rename.width.saturating_sub(1) as usize)
+                        .min(u16::MAX as usize) as u16,
+                ))
+                .style(Style::default().fg(Color::Cyan)),
+            rename,
+        );
+        frame.render_widget(
+            Paragraph::new(display_path(&dialog.message)).style(Style::default().fg(Color::Yellow)),
+            message,
+        );
+        frame.render_widget(
+            Paragraph::new("Enter save · Esc cancel · Ctrl-u clear · empty name clears")
+                .style(Style::default().fg(Color::Cyan)),
+            controls,
+        );
+    } else if dialog.confirming {
         frame.render_widget(
             Paragraph::new(format!(
                 "Permanently delete {} saved reviews and their comments?",
@@ -882,7 +927,7 @@ fn draw_session_dialog(frame: &mut Frame, dialog: &SessionDialog) {
         );
         frame.render_widget(
             Paragraph::new(
-                "j/k move · Space toggle · a all/none · d delete · r reload · Esc close",
+                "j/k move · Space toggle · a all/none · R rename · d delete · r reload · Esc close",
             )
             .style(Style::default().fg(Color::Cyan)),
             controls,

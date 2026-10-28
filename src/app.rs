@@ -66,6 +66,7 @@ impl Flash {
 
 pub struct App {
     pub review: Review,
+    pub session_label: String,
     pub focus: Focus,
     pub active: Option<usize>,
     pub help: bool,
@@ -104,6 +105,7 @@ impl App {
         };
         let mut app = Self {
             review,
+            session_label: String::new(),
             focus,
             active: None,
             help: false,

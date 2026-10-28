@@ -21,6 +21,8 @@ const WEEK: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 pub struct SavedSession {
     pub version: u32,
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub repository: PathBuf,
     pub backend: Backend,
     pub updated_at: u64,
@@ -30,6 +32,13 @@ pub struct SavedSession {
 }
 
 impl SavedSession {
+    pub fn label(&self) -> String {
+        match &self.name {
+            Some(name) => format!("{} · {name}", self.id),
+            None => self.id.clone(),
+        }
+    }
+
     pub fn last_opened_at(&self) -> u64 {
         self.opened_at.unwrap_or(self.updated_at)
     }
@@ -140,6 +149,7 @@ impl SessionStore {
         let mut session = SavedSession {
             version: 1,
             id,
+            name: None,
             repository: self.repository.root.clone(),
             backend: self.repository.backend,
             updated_at: 0,
@@ -166,6 +176,14 @@ impl SessionStore {
             Err(error) if is_io_error(&error, ErrorKind::WouldBlock) => Ok(true),
             Err(error) => Err(error),
         }
+    }
+
+    pub fn rename(&self, prefix: &str, name: &str) -> Result<SavedSession> {
+        let id = self.resolve(prefix)?;
+        let lock = self.lock(&id)?;
+        let mut saved = self.load(&lock.target)?;
+        lock.rename(&mut saved, name)?;
+        Ok(saved)
     }
 
     pub fn forget(&self, prefixes: &[String]) -> Result<usize> {
@@ -377,11 +395,33 @@ fn validate_id(id: &str) -> Result<()> {
 
 impl SessionLock {
     pub fn save(&self, session: &mut SavedSession) -> Result<()> {
+        session.updated_at = now_millis()?;
+        self.write(session)
+    }
+
+    pub fn rename(&self, session: &mut SavedSession, name: &str) -> Result<()> {
+        ensure!(
+            name.chars()
+                .all(|ch| !ch.is_control() && !matches!(ch, '\u{2028}' | '\u{2029}')),
+            "Session names must be a single line without control characters"
+        );
+        let name = name.trim();
+        let previous = std::mem::replace(
+            &mut session.name,
+            (!name.is_empty()).then(|| name.to_owned()),
+        );
+        let result = self.write(session);
+        if result.is_err() {
+            session.name = previous;
+        }
+        result
+    }
+
+    fn write(&self, session: &SavedSession) -> Result<()> {
         let directory = self
             .target
             .parent()
             .expect("session target includes its directory");
-        session.updated_at = now_millis()?;
         let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
         serde_json::to_writer(&mut temporary, session)?;
         temporary.write_all(b"\n")?;

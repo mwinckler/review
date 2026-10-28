@@ -68,6 +68,9 @@ struct Cli {
     /// List this repository's saved review sessions
     #[arg(long, conflicts_with_all = ["base", "resume"])]
     list: bool,
+    /// Set a session's display name by ID or unique prefix; an empty name clears it
+    #[arg(long, num_args = 2, value_names = ["ID", "NAME"], action = clap::ArgAction::Set, conflicts_with_all = ["comparison", "base", "head", "resume", "list", "forget_selection", "yes"])]
+    rename: Vec<String>,
     /// Permanently forget saved sessions by full ID or unique prefix
     #[arg(long, value_name = "ID", num_args = 1.., conflicts_with_all = ["base", "head", "resume", "list"])]
     forget: Vec<String>,
@@ -102,6 +105,11 @@ fn main() -> Result<()> {
         }
     };
     let store = SessionStore::new(&state_dir, &repo)?;
+    if let [id, name] = cli.rename.as_slice() {
+        let saved = store.rename(id, name)?;
+        println!("Renamed session {}.", ui::display_path(&saved.label()));
+        return Ok(());
+    }
     if cli.cleanup || cli.forget_all || !cli.forget.is_empty() {
         let mut ids = BTreeSet::new();
         if cli.cleanup {
@@ -170,8 +178,13 @@ fn main() -> Result<()> {
             let opened =
                 OffsetDateTime::from_unix_timestamp((saved.last_opened_at() / 1_000) as i64)?
                     .format(&Rfc3339)?;
+            let name = saved
+                .name
+                .as_ref()
+                .map(|name| format!(" · {}", ui::display_path(name)))
+                .unwrap_or_default();
             println!(
-                "{}  Opened {}  {} → {}  Viewed {}/{}",
+                "{}{name}  Opened {}  {} → {}  Viewed {}/{}",
                 id,
                 opened,
                 ui::display_path(&saved.review.comparison.base_ref),
@@ -227,7 +240,8 @@ fn main() -> Result<()> {
         lock.save(&mut saved)?;
     }
     let mut app = App::new(saved.review.clone());
-    app.message = format!("Session {} · ? help", saved.id);
+    app.session_label = saved.label();
+    app.message = format!("Session {} · ? help", app.session_label);
     app.bindings_help = config
         .keybindings
         .iter()
@@ -420,7 +434,10 @@ fn run(
                     redraw = true;
                 }
                 Event::Paste(text) => {
-                    if let Some(CommentDialog::Compose(draft)) = &mut app.comment_dialog {
+                    if let Some(dialog) = &mut app.session_dialog {
+                        dialog.paste(&text);
+                        redraw = true;
+                    } else if let Some(CommentDialog::Compose(draft)) = &mut app.comment_dialog {
                         draft.insert(&text);
                         redraw = true;
                     }
@@ -483,6 +500,27 @@ fn run(
                         .as_mut()
                         .expect("session dialog is open")
                         .forget(store, &ids);
+                }
+                SessionAction::Rename { id, name } => {
+                    let result = if id == saved.id {
+                        saved.review = app.review.clone();
+                        lock.rename(saved, &name).map(|()| {
+                            app.session_label = saved.label();
+                        })
+                    } else {
+                        store.rename(&id, &name).map(|_| ())
+                    };
+                    let dialog = app.session_dialog.as_mut().expect("session dialog is open");
+                    dialog.message = match result {
+                        Ok(()) => {
+                            dialog.renaming = None;
+                            match dialog.reload(store) {
+                                Ok(()) => "Session renamed.".into(),
+                                Err(error) => format!("Session renamed · Reload failed: {error:#}"),
+                            }
+                        }
+                        Err(error) => format!("Rename failed: {error:#}"),
+                    };
                 }
             }
             redraw = true;

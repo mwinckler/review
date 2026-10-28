@@ -36,6 +36,7 @@ fn sessions(count: usize) -> Vec<SavedSession> {
         .map(|index| SavedSession {
             version: 1,
             id: format!("{index:012x}"),
+            name: None,
             repository: "/review-fixture".into(),
             backend: Backend::Git,
             updated_at: 0,
@@ -55,6 +56,94 @@ fn dialog() -> SessionDialog {
 
 fn key(dialog: &mut SessionDialog, code: KeyCode) -> Option<SessionAction> {
     dialog.handle_key(KeyEvent::new(code, KeyModifiers::NONE), 10)
+}
+
+#[test]
+fn rename_edits_the_highlighted_session_name_literally_and_preserves_multiselection() {
+    let mut dialog = dialog();
+    dialog.sessions[0].name = Some("Original λ".into());
+    dialog.selected.insert("000000000002".into());
+    assert!(key(&mut dialog, KeyCode::Char('R')).is_none());
+    assert!(dialog.renaming.is_some());
+    key(&mut dialog, KeyCode::Home);
+    key(&mut dialog, KeyCode::Char('é'));
+    key(&mut dialog, KeyCode::Right);
+    key(&mut dialog, KeyCode::Backspace);
+    key(&mut dialog, KeyCode::End);
+    key(&mut dialog, KeyCode::Backspace);
+    key(&mut dialog, KeyCode::Char('界'));
+    assert_eq!(dialog.renaming.as_ref().unwrap().value, "ériginal 界");
+    dialog.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL), 10);
+    for ch in "q S? d r".chars() {
+        assert!(key(&mut dialog, KeyCode::Char(ch)).is_none());
+    }
+    assert_eq!(dialog.selection, 0);
+    assert_eq!(dialog.selected, BTreeSet::from(["000000000002".into()]));
+    assert!(!dialog.confirming);
+    assert_eq!(
+        key(&mut dialog, KeyCode::Enter),
+        Some(SessionAction::Rename {
+            id: "000000000000".into(),
+            name: "q S? d r".into()
+        })
+    );
+    key(&mut dialog, KeyCode::Esc);
+    assert!(dialog.renaming.is_none());
+    assert_eq!(dialog.sessions[0].name.as_deref(), Some("Original λ"));
+}
+
+#[test]
+fn rename_protects_other_open_sessions_and_can_clear_names_or_cancel() {
+    let mut dialog = dialog();
+    dialog.selection = 1;
+    key(&mut dialog, KeyCode::Char('R'));
+    assert!(dialog.renaming.is_none());
+    assert!(dialog.message.contains("open"));
+    dialog.selection = 2;
+    key(&mut dialog, KeyCode::Char('R'));
+    dialog.paste("Closed\r\nreview λ\u{1b}");
+    assert_eq!(dialog.renaming.as_ref().unwrap().value, "Closed review λ");
+    key(&mut dialog, KeyCode::Esc);
+    assert!(dialog.renaming.is_none());
+    key(&mut dialog, KeyCode::Char('R'));
+    assert_eq!(
+        key(&mut dialog, KeyCode::Enter),
+        Some(SessionAction::Rename {
+            id: "000000000002".into(),
+            name: "".into()
+        })
+    );
+}
+
+#[test]
+fn session_names_and_rename_prompts_render_with_unicode_and_narrow_terminals() {
+    let mut app = App::new(review());
+    app.session_label = "r1 · Current review λ".into();
+    let mut dialog = dialog();
+    dialog.sessions[0].name = Some("Current review λ".into());
+    app.session_dialog = Some(dialog);
+    let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
+    terminal
+        .draw(|frame| ui::draw(frame, &app, &Text::default()))
+        .unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(text.contains("r1 · Current review λ"));
+    assert!(text.contains("000000000000 · Current review λ"));
+    let dialog = app.session_dialog.as_mut().unwrap();
+    dialog.sessions[0].name = Some("long 界 review ".repeat(30));
+    key(dialog, KeyCode::Char('R'));
+    for (width, height) in [(100, 30), (20, 6), (1, 1), (0, 0)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| ui::draw(frame, &app, &Text::default()))
+            .unwrap();
+    }
 }
 
 #[test]
@@ -166,7 +255,7 @@ fn the_dialog_renders_selection_progress_and_protected_sessions_and_scrolls_safe
         .iter()
         .map(|cell| cell.symbol())
         .collect();
-    assert!(text.contains("Forget review sessions"));
+    assert!(text.contains("Review sessions"));
     assert!(text.contains("current"));
     assert!(text.contains("open"));
     assert!(text.contains("master → feature"));

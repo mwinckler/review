@@ -119,6 +119,92 @@ fn session_roundtrip_preserves_snapshots_progress_and_navigation() {
 }
 
 #[test]
+fn renaming_preserves_identity_review_timestamps_and_lock_files_and_supports_legacy_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let store = SessionStore::new(dir.path(), &repo).unwrap();
+    let mut review = review();
+    review.toggle_viewed(0);
+    review
+        .view
+        .positions
+        .entry("src/a.rs".into())
+        .or_default()
+        .vertical = 19;
+    let saved = session_fixture::write(&store, &repo, "abc123", review);
+    let path = store.directory.join("abc123.json");
+    let mut legacy = serde_json::to_value(&saved).unwrap();
+    legacy.as_object_mut().unwrap().remove("name");
+    fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    let before = serde_json::to_value(&store.list().unwrap()[0]).unwrap();
+    let renamed = store.rename("abc", "  API review λ  ").unwrap();
+    assert_eq!(renamed.id, "abc123");
+    assert_eq!(renamed.name.as_deref(), Some("API review λ"));
+    let mut expected = before.clone();
+    expected["name"] = "API review λ".into();
+    assert_eq!(serde_json::to_value(&renamed).unwrap(), expected);
+    assert_eq!(
+        serde_json::to_value(&store.list().unwrap()[0]).unwrap(),
+        expected
+    );
+    assert!(store.directory.join("abc123.lock").is_file());
+    assert!(!store.directory.join("abc.lock").exists());
+    assert!(!store.directory.join("API review λ.json").exists());
+    assert_eq!(store.resolve("abc").unwrap(), "abc123");
+    assert_eq!(store.cleanup_candidates().unwrap(), ["abc123"]);
+    let renamed = store.rename("abc123", "").unwrap();
+    assert!(renamed.name.is_none());
+    assert_eq!(
+        serde_json::to_value(&store.list().unwrap()[0]).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn renaming_is_lock_safe_scoped_and_validates_names_before_changing_records() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let store = SessionStore::new(dir.path(), &repo).unwrap();
+    let (mut saved, lock) = store.create(review()).unwrap();
+    assert!(saved.name.is_none());
+    let before = fs::read(store.directory.join("r1.json")).unwrap();
+    assert!(store.rename("r1", "External rename").is_err());
+    assert_eq!(fs::read(store.directory.join("r1.json")).unwrap(), before);
+    for name in [
+        "bad\nname",
+        "bad\rname",
+        "bad\tname",
+        "bad\u{1b}name",
+        "bad\u{2028}name",
+        "bad\u{2029}name",
+    ] {
+        assert!(lock.rename(&mut saved, name).is_err());
+        assert!(saved.name.is_none());
+        assert_eq!(fs::read(store.directory.join("r1.json")).unwrap(), before);
+    }
+    let opened = saved.opened_at;
+    let updated = saved.updated_at;
+    saved.review.toggle_viewed(0);
+    lock.rename(&mut saved, "Current session").unwrap();
+    assert_eq!(saved.name.as_deref(), Some("Current session"));
+    assert_eq!(saved.opened_at, opened);
+    assert_eq!(saved.updated_at, updated);
+    assert_eq!(store.list().unwrap()[0].review.viewed.len(), 1);
+    lock.save(&mut saved).unwrap();
+    assert_eq!(store.list().unwrap()[0].name, saved.name);
+    let other = SessionStore::new(
+        dir.path(),
+        &Repository {
+            backend: Backend::Git,
+            ..repo
+        },
+    )
+    .unwrap();
+    assert!(other.rename("r1", "Other backend").is_err());
+    assert!(other.list().unwrap().is_empty());
+}
+
+#[test]
 fn opening_records_a_persistent_timestamp_while_saving_and_listing_preserve_it() {
     let dir = tempfile::tempdir().unwrap();
     let store = SessionStore::new(dir.path(), &repo(dir.path())).unwrap();

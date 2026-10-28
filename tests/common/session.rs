@@ -10,6 +10,7 @@ pub fn write(store: &SessionStore, repo: &Repository, id: &str, review: Review) 
     let saved = SavedSession {
         version: 1,
         id: id.into(),
+        name: None,
         repository: repo.root.clone(),
         backend: repo.backend,
         updated_at: 0,
