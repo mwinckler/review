@@ -127,26 +127,18 @@ fn opening_records_a_persistent_timestamp_while_saving_and_listing_preserve_it()
         .unwrap()
         .as_millis() as u64;
     let (mut saved, lock) = store.create(review()).unwrap();
-    let opened_at = serde_json::to_value(&saved).unwrap()["opened_at"]
-        .as_u64()
-        .unwrap();
+    let opened_at = saved.opened_at.unwrap();
     assert!(opened_at >= started);
     saved.review.toggle_viewed(0);
     lock.save(&mut saved).unwrap();
-    assert_eq!(
-        serde_json::to_value(&saved).unwrap()["opened_at"],
-        opened_at
-    );
+    assert_eq!(saved.opened_at, Some(opened_at));
     drop(lock);
 
     let path = store.directory.join(format!("{}.json", saved.id));
-    let mut record = serde_json::to_value(&saved).unwrap();
-    record["opened_at"] = 1.into();
-    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    saved.opened_at = Some(1);
+    fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
     let (resumed, lock) = store.open(&saved.id).unwrap();
-    let reopened_at = serde_json::to_value(&resumed).unwrap()["opened_at"]
-        .as_u64()
-        .unwrap();
+    let reopened_at = resumed.opened_at.unwrap();
     assert!(reopened_at >= opened_at);
     assert_eq!(resumed.review.viewed.len(), 1);
     let persisted: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();

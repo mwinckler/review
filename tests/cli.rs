@@ -74,17 +74,16 @@ fn session_list_shows_last_opened_datetimes_in_utc_and_falls_back_for_legacy_ses
         ("r2", Some(1_700_000_000_999_u64), 0, "2023-11-14T22:13:20Z"),
         ("r3", None, 1_000_000_000_000, "2001-09-09T01:46:40Z"),
     ] {
-        let saved = session_fixture::write(
+        let mut saved = session_fixture::write(
             &store,
             &repo,
             id,
             Review::new(comparison.clone(), changes.clone()),
         );
+        saved.updated_at = updated_at;
+        saved.opened_at = opened_at;
         let mut record = serde_json::to_value(saved).unwrap();
-        record["updated_at"] = updated_at.into();
-        if let Some(opened_at) = opened_at {
-            record["opened_at"] = opened_at.into();
-        } else {
+        if opened_at.is_none() {
             record.as_object_mut().unwrap().remove("opened_at");
         }
         let path = store.directory.join(format!("{id}.json"));
@@ -318,17 +317,16 @@ fn cleanup_removes_only_stale_closed_reviews_and_preserves_repository_scoping_an
         ("r5", None, now - 6 * day),
         ("r6", Some(now - 8 * day), 0),
     ] {
-        let saved = session_fixture::write(
+        let mut saved = session_fixture::write(
             &store,
             &repo,
             id,
             Review::new(comparison.clone(), changes.clone()),
         );
+        saved.updated_at = updated_at;
+        saved.opened_at = opened_at;
         let mut record = serde_json::to_value(saved).unwrap();
-        record["updated_at"] = updated_at.into();
-        if let Some(opened_at) = opened_at {
-            record["opened_at"] = opened_at.into();
-        } else {
+        if opened_at.is_none() {
             record.as_object_mut().unwrap().remove("opened_at");
         }
         fs::write(

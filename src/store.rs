@@ -122,7 +122,7 @@ impl SessionStore {
             }
             let lock = match self.lock(&id) {
                 Ok(lock) => lock,
-                Err(error) if lock_is_busy(&error) => {
+                Err(error) if is_io_error(&error, ErrorKind::WouldBlock) => {
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -163,7 +163,7 @@ impl SessionStore {
         let id = self.resolve(id)?;
         match self.lock(&id) {
             Ok(_) => Ok(false),
-            Err(error) if lock_is_busy(&error) => Ok(true),
+            Err(error) if is_io_error(&error, ErrorKind::WouldBlock) => Ok(true),
             Err(error) => Err(error),
         }
     }
@@ -208,18 +208,14 @@ impl SessionStore {
         for id in ids.iter().collect::<BTreeSet<_>>() {
             let lock = match self.lock(id) {
                 Ok(lock) => lock,
-                Err(error) if lock_is_busy(&error) => {
+                Err(error) if is_io_error(&error, ErrorKind::WouldBlock) => {
                     continue;
                 }
                 Err(error) => return Err(error),
             };
             let saved = match self.load(&lock.target) {
                 Ok(saved) => saved,
-                Err(error)
-                    if error
-                        .downcast_ref::<std::io::Error>()
-                        .is_some_and(|error| error.kind() == ErrorKind::NotFound) =>
-                {
+                Err(error) if is_io_error(&error, ErrorKind::NotFound) => {
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -343,10 +339,10 @@ impl SessionStore {
     }
 }
 
-fn lock_is_busy(error: &anyhow::Error) -> bool {
+fn is_io_error(error: &anyhow::Error, kind: ErrorKind) -> bool {
     error
         .downcast_ref::<std::io::Error>()
-        .is_some_and(|error| error.kind() == ErrorKind::WouldBlock)
+        .is_some_and(|error| error.kind() == kind)
 }
 
 fn now_millis() -> Result<u64> {
