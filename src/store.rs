@@ -100,35 +100,30 @@ impl SessionStore {
                 number
             };
             let id = format!("r{candidate}");
-            // Keep lock files stable so every process locks the same inode during reuse.
-            let fresh = match OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(self.directory.join(format!("{id}.lock")))
-            {
-                Ok(_) => true,
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                    if recycled.is_none() {
+            // Reserve new numbers atomically; recycled numbers retain their lock files.
+            if recycled.is_none() {
+                match OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(self.directory.join(format!("{id}.lock")))
+                {
+                    Ok(_) => {}
+                    Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                         continue;
                     }
-                    false
+                    Err(error) => return Err(error).context("reserving a review session number"),
                 }
-                Err(error) => return Err(error).context("reserving a review session number"),
-            };
+            }
             let lock = match self.lock(&id) {
                 Ok(lock) => lock,
-                Err(error)
-                    if error
-                        .downcast_ref::<std::io::Error>()
-                        .is_some_and(|error| error.kind() == ErrorKind::WouldBlock) =>
-                {
+                Err(error) if lock_is_busy(&error) => {
                     continue;
                 }
                 Err(error) => return Err(error),
             };
             // A concurrent deletion may have restarted the cooldown since the directory scan.
             if lock.target.try_exists()?
-                || (!fresh && lock.file.metadata()?.modified()? > reusable_before)
+                || (recycled.is_some() && lock.file.metadata()?.modified()? > reusable_before)
             {
                 continue;
             }
@@ -159,13 +154,7 @@ impl SessionStore {
         let id = self.resolve(id)?;
         match self.lock(&id) {
             Ok(_) => Ok(false),
-            Err(error)
-                if error
-                    .downcast_ref::<std::io::Error>()
-                    .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock) =>
-            {
-                Ok(true)
-            }
+            Err(error) if lock_is_busy(&error) => Ok(true),
             Err(error) => Err(error),
         }
     }
@@ -299,6 +288,12 @@ impl SessionStore {
             target: self.directory.join(format!("{id}.json")),
         })
     }
+}
+
+fn lock_is_busy(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == ErrorKind::WouldBlock)
 }
 
 fn session_number(id: &str) -> Option<u64> {
