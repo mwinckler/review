@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::vcs::{Change, Comparison, LineCounts};
+use crate::{
+    comments::Comment,
+    vcs::{Change, Comparison, LineCounts},
+};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Position {
@@ -39,6 +42,8 @@ pub struct Review {
     pub changes: Vec<Change>,
     pub viewed: BTreeMap<String, String>,
     pub view: ViewState,
+    #[serde(default)]
+    pub comments: Vec<Comment>,
 }
 
 impl Review {
@@ -98,6 +103,7 @@ impl Review {
             changes,
             viewed: BTreeMap::new(),
             view: ViewState::default(),
+            comments: Vec::new(),
         }
     }
 

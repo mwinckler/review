@@ -1,6 +1,7 @@
 use std::{
     fs,
     io::Write,
+    ops::RangeInclusive,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -136,6 +137,15 @@ pub fn location(
 }
 
 fn remap(change: &Change, before: &[u8], after: &[u8], line: usize) -> Result<Option<usize>> {
+    Ok(remap_range(change, before, after, line..=line)?.map(|range| *range.start()))
+}
+
+pub(crate) fn remap_range(
+    change: &Change,
+    before: &[u8],
+    after: &[u8],
+    lines: RangeInclusive<usize>,
+) -> Result<Option<RangeInclusive<usize>>> {
     if before.contains(&0) || after.contains(&0) {
         return Ok(None);
     }
@@ -174,31 +184,42 @@ fn remap(change: &Change, before: &[u8], after: &[u8], line: usize) -> Result<Op
     let after = String::from_utf8_lossy(after);
     let before: Vec<_> = before.lines().collect();
     let after: Vec<_> = after.lines().collect();
-    let target = line - 1;
-    let Some(source) = before.get(target) else {
+    let ranges: Vec<_> = patch
+        .lines
+        .iter()
+        .filter_map(|line| unified_ranges(&line.to_string()))
+        .collect();
+    let map = |line: usize| -> Option<usize> {
+        let target = line.checked_sub(1)?;
+        let source = before.get(target)?;
+        let mut mapped = target;
+        for (old, new) in &ranges {
+            if target < old.start {
+                break;
+            }
+            if old.contains(&target) {
+                let mut matches = new.clone().filter(|&line| after.get(line) == Some(source));
+                return matches
+                    .next()
+                    .filter(|_| matches.next().is_none())
+                    .map(|line| line + 1);
+            }
+            mapped = target - old.end + new.end;
+        }
+        after
+            .get(mapped)
+            .filter(|line| *line == source)
+            .map(|_| mapped + 1)
+    };
+    let Some(start) = map(*lines.start()) else {
         return Ok(None);
     };
-    let mut mapped = target;
-    for line in &patch.lines {
-        let Some((old, new)) = unified_ranges(&line.to_string()) else {
-            continue;
-        };
-        if target < old.start {
-            break;
+    for (offset, line) in lines.clone().enumerate() {
+        if map(line) != Some(start + offset) {
+            return Ok(None);
         }
-        if old.contains(&target) {
-            let mut matches = new.filter(|&line| after.get(line) == Some(source));
-            return Ok(matches
-                .next()
-                .filter(|_| matches.next().is_none())
-                .map(|line| line + 1));
-        }
-        mapped = target - old.end + new.end;
     }
-    Ok(after
-        .get(mapped)
-        .filter(|line| *line == source)
-        .map(|_| mapped + 1))
+    Ok(Some(start..=start + lines.end() - lines.start()))
 }
 
 struct Job {

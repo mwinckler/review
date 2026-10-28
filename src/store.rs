@@ -345,7 +345,7 @@ fn is_io_error(error: &anyhow::Error, kind: ErrorKind) -> bool {
         .is_some_and(|error| error.kind() == kind)
 }
 
-fn now_millis() -> Result<u64> {
+pub(crate) fn now_millis() -> Result<u64> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)?
         .as_millis()
