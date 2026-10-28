@@ -92,10 +92,12 @@ review --resume r3           # Resume a particular session
 review --base master         # Start a fresh review
 ```
 
-New sessions use short, consecutive IDs: `r1`, `r2`, `r3`, and so on, starting at
+New sessions use short IDs: `r1`, `r2`, `r3`, and so on, starting at
 `r1` for each repository/backend. IDs stay with their sessions as progress is saved,
-and forgotten sessions' numbers remain reserved. The `r` prefix keeps these IDs
-distinct from older hash IDs. Existing saved IDs and unique prefixes remain valid.
+and deleted sessions' numbers become reusable after seven days. New reviews reuse
+the lowest eligible number before allocating a fresh one. After reuse, the ID
+identifies the new review. The `r` prefix keeps these IDs distinct from older hash
+IDs. Existing saved IDs and unique prefixes remain valid.
 On a terminal, `review --list` highlights each session's shortest unique prefix in
 bold magenta. Ambiguous prefixes report the matching IDs so you can choose a longer
 prefix. Piped listings use plain IDs; `NO_COLOR=1` also selects plain terminal output.

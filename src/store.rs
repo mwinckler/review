@@ -3,7 +3,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{ErrorKind, Write},
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -14,6 +14,8 @@ use crate::{
     state::Review,
     vcs::{Backend, Repository},
 };
+
+const SESSION_NUMBER_REUSE_DELAY: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SavedSession {
@@ -49,7 +51,7 @@ pub struct SessionStore {
 }
 
 pub struct SessionLock {
-    _file: File,
+    file: File,
     target: PathBuf,
 }
 
@@ -66,9 +68,12 @@ impl SessionStore {
     }
 
     pub fn create(&self, review: Review) -> Result<(SavedSession, SessionLock)> {
+        let reusable_before = SystemTime::now() - SESSION_NUMBER_REUSE_DELAY;
+        let mut reusable = BTreeSet::new();
         let mut number = 0;
         for entry in fs::read_dir(&self.directory)? {
-            let path = entry?.path();
+            let entry = entry?;
+            let path = entry.path();
             if path
                 .extension()
                 .is_some_and(|extension| extension == "json" || extension == "lock")
@@ -76,25 +81,60 @@ impl SessionStore {
                 && let Some(existing) = session_number(id)
             {
                 number = number.max(existing);
+                if path
+                    .extension()
+                    .is_some_and(|extension| extension == "lock")
+                    && entry.metadata()?.modified()? <= reusable_before
+                    && !path.with_extension("json").try_exists()?
+                {
+                    reusable.insert(existing);
+                }
             }
         }
         let (id, lock) = loop {
-            number = number.checked_add(1).context("session numbers exhausted")?;
-            let id = format!("r{number}");
-            // Persistent lock files atomically reserve numbers across creators and deletions.
-            match OpenOptions::new()
+            let recycled = reusable.pop_first();
+            let candidate = if let Some(number) = recycled {
+                number
+            } else {
+                number = number.checked_add(1).context("session numbers exhausted")?;
+                number
+            };
+            let id = format!("r{candidate}");
+            // Keep lock files stable so every process locks the same inode during reuse.
+            let fresh = match OpenOptions::new()
                 .create_new(true)
                 .write(true)
                 .open(self.directory.join(format!("{id}.lock")))
             {
-                Ok(_) => {}
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                Ok(_) => true,
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                    if recycled.is_none() {
+                        continue;
+                    }
+                    false
+                }
                 Err(error) => return Err(error).context("reserving a review session number"),
+            };
+            let lock = match self.lock(&id) {
+                Ok(lock) => lock,
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == ErrorKind::WouldBlock) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            // A concurrent deletion may have restarted the cooldown since the directory scan.
+            if lock.target.try_exists()?
+                || (!fresh && lock.file.metadata()?.modified()? > reusable_before)
+            {
+                continue;
             }
-            let lock = self.lock(&id)?;
-            if !lock.target.try_exists()? {
-                break (id, lock);
-            }
+            lock.file.set_modified(SystemTime::now())?;
+            lock.file.sync_all()?;
+            break (id, lock);
         };
         let mut session = SavedSession {
             version: 1,
@@ -151,12 +191,16 @@ impl SessionStore {
             );
         }
         for (deleted, lock) in locks.iter().enumerate() {
-            fs::remove_file(&lock.target).with_context(|| {
-                format!(
-                    "forgetting session {} after removing {deleted}",
-                    lock.target.display()
-                )
-            })?;
+            lock.file
+                .set_modified(SystemTime::now())
+                .and_then(|()| lock.file.sync_all())
+                .and_then(|()| fs::remove_file(&lock.target))
+                .with_context(|| {
+                    format!(
+                        "forgetting session {} after removing {deleted}",
+                        lock.target.display()
+                    )
+                })?;
         }
         #[cfg(unix)]
         {
@@ -251,7 +295,7 @@ impl SessionStore {
         file.try_lock_exclusive()
             .with_context(|| format!("session {id} is already open or could not be locked"))?;
         Ok(SessionLock {
-            _file: file,
+            file,
             target: self.directory.join(format!("{id}.json")),
         })
     }

@@ -1,13 +1,30 @@
 #[path = "common/session.rs"]
 mod session_fixture;
 
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::Path,
+    time::{Duration, SystemTime},
+};
+
+use fs2::FileExt;
 
 use review::{
     state::Review,
     store::SessionStore,
     vcs::{Backend, Change, Comparison, ComparisonMode, Entry, LineCounts, Repository},
 };
+
+const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+fn age_session_lock(store: &SessionStore, id: &str, age: Duration) {
+    fs::File::options()
+        .write(true)
+        .open(store.directory.join(format!("{id}.lock")))
+        .unwrap()
+        .set_modified(SystemTime::now() - age)
+        .unwrap();
+}
 
 fn repo(root: &Path) -> Repository {
     Repository {
@@ -113,7 +130,7 @@ fn new_session_ids_are_short_consecutive_review_numbers() {
 }
 
 #[test]
-fn session_numbers_survive_reopening_and_remain_reserved_after_forgetting() {
+fn session_numbers_survive_reopening_and_remain_reserved_during_the_deletion_cooldown() {
     let dir = tempfile::tempdir().unwrap();
     let repo = repo(dir.path());
     let store = SessionStore::new(dir.path(), &repo).unwrap();
@@ -128,6 +145,113 @@ fn session_numbers_survive_reopening_and_remain_reserved_after_forgetting() {
     assert!(store.list().unwrap().is_empty());
     let (third, _lock) = store.create(review()).unwrap();
     assert_eq!(third.id, "r3");
+}
+
+#[test]
+fn deleted_session_numbers_are_reused_after_seven_days_from_deletion() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let store = SessionStore::new(dir.path(), &repo).unwrap();
+    let mut original = review();
+    original.toggle_viewed(0);
+    let (saved, lock) = store.create(original).unwrap();
+    drop(lock);
+    age_session_lock(&store, &saved.id, DAY * 8);
+    let reservation = fs::File::options()
+        .read(true)
+        .write(true)
+        .open(store.directory.join("r1.lock"))
+        .unwrap();
+    let deleted_at = SystemTime::now();
+    store.forget(&[saved.id]).unwrap();
+    assert!(reservation.metadata().unwrap().modified().unwrap() >= deleted_at);
+    assert_eq!(store.create(review()).unwrap().0.id, "r2");
+    age_session_lock(&store, "r1", DAY * 7 - Duration::from_secs(60 * 60));
+    assert_eq!(store.create(review()).unwrap().0.id, "r3");
+    age_session_lock(&store, "r1", DAY * 7);
+    let store = SessionStore::new(dir.path(), &repo).unwrap();
+    let (reused, lock) = store.create(review()).unwrap();
+    assert_eq!(reused.id, "r1");
+    assert!(reused.review.viewed.is_empty());
+    assert!(reservation.try_lock_exclusive().is_err());
+    drop(lock);
+    reservation.try_lock_exclusive().unwrap();
+    assert_eq!(store.list().unwrap().len(), 3);
+}
+
+#[test]
+fn recycled_session_numbers_are_chosen_lowest_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(dir.path(), &repo(dir.path())).unwrap();
+    for _ in 0..4 {
+        store.create(review()).unwrap();
+    }
+    store.forget(&["r1".into(), "r3".into()]).unwrap();
+    age_session_lock(&store, "r1", DAY * 8);
+    age_session_lock(&store, "r3", DAY * 9);
+    for expected in ["r1", "r3", "r5"] {
+        assert_eq!(store.create(review()).unwrap().0.id, expected);
+    }
+    assert_eq!(store.list().unwrap().len(), 5);
+}
+
+#[test]
+fn session_number_reuse_preserves_active_sessions_and_held_reservations() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(dir.path(), &repo(dir.path())).unwrap();
+    for _ in 0..3 {
+        store.create(review()).unwrap();
+    }
+    let active = fs::read(store.directory.join("r1.json")).unwrap();
+    age_session_lock(&store, "r1", DAY * 8);
+    store.forget(&["r2".into(), "r3".into()]).unwrap();
+    age_session_lock(&store, "r2", DAY * 8);
+    let held = fs::File::options()
+        .read(true)
+        .write(true)
+        .open(store.directory.join("r2.lock"))
+        .unwrap();
+    held.try_lock_exclusive().unwrap();
+    assert_eq!(store.create(review()).unwrap().0.id, "r4");
+    assert_eq!(fs::read(store.directory.join("r1.json")).unwrap(), active);
+    assert!(!store.directory.join("r3.json").exists());
+    drop(held);
+    assert_eq!(store.create(review()).unwrap().0.id, "r2");
+}
+
+#[test]
+fn abandoned_reservations_age_out_and_future_dated_locks_stay_reserved() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(dir.path(), &repo(dir.path())).unwrap();
+    fs::write(store.directory.join("r1.lock"), "").unwrap();
+    age_session_lock(&store, "r1", DAY * 8);
+    let future = fs::File::options()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(store.directory.join("r2.lock"))
+        .unwrap();
+    let future_time = SystemTime::now() + DAY;
+    future.set_modified(future_time).unwrap();
+    let reclaimed_at = SystemTime::now();
+    assert_eq!(store.create(review()).unwrap().0.id, "r1");
+    let modified = fs::metadata(store.directory.join("r1.lock"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert!(modified >= reclaimed_at);
+    assert_eq!(store.create(review()).unwrap().0.id, "r3");
+    assert_eq!(future.metadata().unwrap().modified().unwrap(), future_time);
+}
+
+#[test]
+fn expired_numbers_are_reusable_even_at_the_numeric_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(dir.path(), &repo(dir.path())).unwrap();
+    fs::write(store.directory.join(format!("r{}.lock", u64::MAX)), "").unwrap();
+    fs::write(store.directory.join("r1.lock"), "").unwrap();
+    age_session_lock(&store, "r1", DAY * 8);
+    assert_eq!(store.create(review()).unwrap().0.id, "r1");
 }
 
 #[test]
@@ -173,33 +297,46 @@ fn session_numbering_is_repository_and_backend_local_and_independent_of_legacy_i
 
 #[test]
 fn concurrent_creators_reserve_distinct_session_numbers() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = SessionStore::new(dir.path(), &repo(dir.path())).unwrap();
-    let barrier = std::sync::Barrier::new(16);
-    let saved = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..16)
-            .map(|index| {
-                let store = &store;
-                let barrier = &barrier;
-                scope.spawn(move || {
-                    let mut review = review();
-                    review.view.filter = format!("creator-{index}");
-                    barrier.wait();
-                    store.create(review).unwrap().0
+    for recycled in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path(), &repo(dir.path())).unwrap();
+        if recycled {
+            for number in 1..=16 {
+                fs::write(store.directory.join(format!("r{number}.lock")), "").unwrap();
+                age_session_lock(&store, &format!("r{number}"), DAY * 8);
+            }
+        }
+        let barrier = std::sync::Barrier::new(16);
+        let saved = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..16)
+                .map(|index| {
+                    let store = &store;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        let mut review = review();
+                        review.view.filter = format!("creator-{index}");
+                        barrier.wait();
+                        store.create(review).unwrap().0
+                    })
                 })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|handle| handle.join().unwrap())
-            .collect::<Vec<_>>()
-    });
-    let ids: std::collections::BTreeSet<_> = saved.iter().map(|saved| saved.id.clone()).collect();
-    assert_eq!(ids, (1..=16).map(|number| format!("r{number}")).collect());
-    assert_eq!(store.list().unwrap().len(), 16);
-    for saved in saved {
-        let (loaded, _lock) = store.open(&saved.id).unwrap();
-        assert_eq!(loaded.review.view.filter, saved.review.view.filter);
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let ids: std::collections::BTreeSet<_> =
+            saved.iter().map(|saved| saved.id.clone()).collect();
+        assert_eq!(
+            ids,
+            (1..=16).map(|number| format!("r{number}")).collect(),
+            "recycled: {recycled}"
+        );
+        assert_eq!(store.list().unwrap().len(), 16);
+        for saved in saved {
+            let (loaded, _lock) = store.open(&saved.id).unwrap();
+            assert_eq!(loaded.review.view.filter, saved.review.view.filter);
+        }
     }
 }
 
