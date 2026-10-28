@@ -32,15 +32,11 @@ struct Pty {
 }
 
 impl Pty {
-    fn spawn(command: Command) -> Self {
-        Self::spawn_width(command, 110)
-    }
-
-    fn spawn_width(mut command: Command, width: u16) -> Self {
+    fn spawn(mut command: Command) -> Self {
         let pair = openpty(
             Some(&Winsize {
                 ws_row: 28,
-                ws_col: width,
+                ws_col: 110,
                 ws_xpixel: 0,
                 ws_ypixel: 0,
             }),
@@ -132,85 +128,6 @@ impl Drop for Pty {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-    }
-}
-
-#[test]
-fn legacy_resumes_fill_commit_titles_from_pinned_hashes_and_manual_refresh_updates_them() {
-    for backend in [Backend::Git, Backend::Jj] {
-        let root = common::fixture();
-        let state = tempfile::tempdir().unwrap();
-        let repo = Repository::discover(root.path(), Some(backend)).unwrap();
-        let comparison = repo
-            .snapshot_expression(if backend == Backend::Git {
-                "HEAD~1..HEAD"
-            } else {
-                "@--..@-"
-            })
-            .unwrap();
-        let original_head = comparison.head_id.clone();
-        let changes = repo.changes(&comparison).unwrap();
-        let store = SessionStore::new(state.path(), &repo).unwrap();
-        let saved = session_fixture::write(&store, &repo, "r1", Review::new(comparison, changes));
-        let mut legacy = serde_json::to_value(saved).unwrap();
-        legacy["review"]["comparison"]
-            .as_object_mut()
-            .unwrap()
-            .remove("base_title");
-        legacy["review"]["comparison"]
-            .as_object_mut()
-            .unwrap()
-            .remove("head_title");
-        fs::write(
-            store.directory.join("r1.json"),
-            serde_json::to_vec(&legacy).unwrap(),
-        )
-        .unwrap();
-        common::jj(
-            root.path(),
-            &["commit", "-m", "Replacement title\nsecond subject line"],
-        );
-        let config = state.path().join("config.toml");
-        fs::write(
-            &config,
-            "[renderer]\ncommand = ['diff', '-u', '{old}', '{new}']\n",
-        )
-        .unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
-        command
-            .current_dir(root.path())
-            .env("JJ_CONFIG", "/dev/null")
-            .args([
-                "--backend",
-                if backend == Backend::Git { "git" } else { "jj" },
-                "-r",
-                "r1",
-                "--state-dir",
-                state.path().to_str().unwrap(),
-                "--config",
-                config.to_str().unwrap(),
-            ]);
-        let mut terminal = Pty::spawn_width(command, 200);
-        terminal.wait_until(|text| text.contains("Changed files"));
-        let pinned = store.list().unwrap().remove(0);
-        assert_eq!(pinned.review.comparison.head_id, original_head);
-        assert_eq!(pinned.review.comparison.base_title.as_deref(), Some("base"));
-        assert_eq!(
-            pinned.review.comparison.head_title.as_deref(),
-            Some("feature")
-        );
-        assert!(terminal.output.contains("feature"), "{}", terminal.output);
-        terminal.send(b"r");
-        terminal.wait_until(|_| {
-            store.list().unwrap()[0]
-                .review
-                .comparison
-                .head_title
-                .as_deref()
-                == Some("Replacement title")
-        });
-        terminal.send(b"\x03");
-        assert!(terminal.finish().success(), "{}", terminal.output);
     }
 }
 

@@ -128,11 +128,8 @@ fn revision_titles(comparison: &Comparison, available: usize) -> [Span<'static>;
     let [base_width, head_width] = titles
         .each_ref()
         .map(|title| Span::raw(title.as_str()).width());
-    let base_width = base_width.min(available / 2);
-    let head_width = head_width.min(available - base_width);
-    let base_width = Span::raw(titles[0].as_str())
-        .width()
-        .min(available - head_width);
+    let head_width = head_width.min(available - base_width.min(available / 2));
+    let base_width = base_width.min(available - head_width);
     [(&titles[0], base_width), (&titles[1], head_width)].map(|(title, width)| {
         let span = Span::raw(title.as_str());
         let mut columns = 0;

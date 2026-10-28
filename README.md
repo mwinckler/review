@@ -78,9 +78,9 @@ in the filename. All counts follow the pinned snapshots when resuming or refresh
 
 Reviews check the selected revisions in the background about once per second.
 Jujutsu `@` follows saved working-copy edits; Git comparisons follow commits as
-`HEAD` or branches advance. File trees, file and directory previews, header IDs/titles,
-and line totals reload together. Updates save automatically, preserving selection,
-pane focus, and scroll positions for unchanged diffs.
+`HEAD` or branches advance. File trees, file and directory previews, header IDs and
+titles, and line totals reload together. Updates save automatically, preserving
+selection, pane focus, and scroll positions for unchanged diffs.
 
 Jujutsu checks snapshot the working copy through `jj`, then read file contents at
 fixed revisions.
