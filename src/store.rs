@@ -1,9 +1,8 @@
 use std::{
     collections::BTreeSet,
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{ErrorKind, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -67,15 +66,31 @@ impl SessionStore {
     }
 
     pub fn create(&self, review: Review) -> Result<(SavedSession, SessionLock)> {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let mut number = 0;
+        for entry in fs::read_dir(&self.directory)? {
+            let path = entry?.path();
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "json" || extension == "lock")
+                && let Some(id) = path.file_stem().and_then(|stem| stem.to_str())
+                && let Some(existing) = session_number(id)
+            {
+                number = number.max(existing);
+            }
+        }
         let (id, lock) = loop {
-            let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-            let seed = format!(
-                "{nanos:x}-{:x}-{:x}",
-                std::process::id(),
-                COUNTER.fetch_add(1, Ordering::Relaxed)
-            );
-            let id = blake3::hash(seed.as_bytes()).to_hex()[..12].to_owned();
+            number = number.checked_add(1).context("session numbers exhausted")?;
+            let id = format!("r{number}");
+            // Persistent lock files atomically reserve numbers across creators and deletions.
+            match OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(self.directory.join(format!("{id}.lock")))
+            {
+                Ok(_) => {}
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error).context("reserving a review session number"),
+            }
             let lock = self.lock(&id)?;
             if !lock.target.try_exists()? {
                 break (id, lock);
@@ -194,6 +209,10 @@ impl SessionStore {
         sessions.sort_by(|a, b| {
             b.updated_at
                 .cmp(&a.updated_at)
+                .then_with(|| match (session_number(&a.id), session_number(&b.id)) {
+                    (Some(a), Some(b)) => b.cmp(&a),
+                    _ => b.id.cmp(&a.id),
+                })
                 .then_with(|| b.id.cmp(&a.id))
         });
         Ok(sessions)
@@ -241,12 +260,20 @@ impl SessionStore {
     }
 }
 
+fn session_number(id: &str) -> Option<u64> {
+    id.strip_prefix('r')?.parse().ok()
+}
+
 fn validate_id(id: &str) -> Result<()> {
+    let numbered = id
+        .strip_prefix('r')
+        .is_some_and(|number| number.bytes().all(|byte| byte.is_ascii_digit()));
     ensure!(
         !id.is_empty()
-            && id
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() || byte == b'-'),
+            && (numbered
+                || id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')),
         "invalid session ID"
     );
     Ok(())

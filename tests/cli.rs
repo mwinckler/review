@@ -54,6 +54,48 @@ fn lists_saved_sessions_without_a_terminal() {
 }
 
 #[test]
+fn short_session_numbers_are_listed_resumable_and_accepted_when_forgetting() {
+    let repo_dir = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let repo = Repository::discover(repo_dir.path(), Some(Backend::Git)).unwrap();
+    let comparison = repo.snapshot_expression("HEAD~1..HEAD").unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    for number in 1..=2 {
+        let (saved, _lock) = store
+            .create(Review::new(comparison.clone(), changes.clone()))
+            .unwrap();
+        assert_eq!(saved.id, format!("r{number}"));
+    }
+    let output = cli(repo_dir.path(), state.path())
+        .arg("--list")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.lines().any(|line| line.starts_with("r1  ")), "{text}");
+    assert!(text.lines().any(|line| line.starts_with("r2  ")), "{text}");
+    for id in ["r1", "r2"] {
+        let output = cli(repo_dir.path(), state.path())
+            .args(["--resume", id])
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal"));
+    }
+    let output = cli(repo_dir.path(), state.path())
+        .args(["--forget", "r1", "--yes"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(store.list().unwrap()[0].id, "r2");
+    assert_eq!(store.list().unwrap().len(), 1);
+}
+
+#[test]
 fn resume_prefix_errors_are_actionable_and_valid_prefixes_reach_the_terminal_check() {
     let repo_dir = common::fixture();
     let state = tempfile::tempdir().unwrap();

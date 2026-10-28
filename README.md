@@ -88,16 +88,17 @@ fixed revisions.
 ```sh
 review --resume              # Resume the most recently saved session
 review --list                # List saved sessions for this repository/backend
-review --resume <id-prefix>  # Resume a particular session
+review --resume r3           # Resume a particular session
 review --base master         # Start a fresh review
 ```
 
-New sessions use compact 12-character IDs. Resume with a full ID or any unique
-prefix, such as `review --resume a` or `review --resume a3`. Existing saved IDs
-remain valid. On a terminal, `review --list` highlights each session's shortest
-unique prefix in bold magenta. Ambiguous prefixes report the matching IDs so you
-can choose a longer prefix. Piped listings use plain IDs; `NO_COLOR=1` also selects
-plain terminal output.
+New sessions use short, consecutive IDs: `r1`, `r2`, `r3`, and so on, starting at
+`r1` for each repository/backend. IDs stay with their sessions as progress is saved,
+and forgotten sessions' numbers remain reserved. The `r` prefix keeps these IDs
+distinct from older hash IDs. Existing saved IDs and unique prefixes remain valid.
+On a terminal, `review --list` highlights each session's shortest unique prefix in
+bold magenta. Ambiguous prefixes report the matching IDs so you can choose a longer
+prefix. Piped listings use plain IDs; `NO_COLOR=1` also selects plain terminal output.
 
 Press `q` or `Ctrl-c` to save and quit. Viewed changes save immediately;
 navigation state autosaves within 250 ms. Resume restores the comparison,
@@ -124,8 +125,8 @@ open session holds an exclusive lock.
 ### Forget saved sessions
 
 ```sh
-review --forget a3             # Forget one session by ID or unique prefix
-review --forget a3 b7          # Forget several sessions
+review --forget r3             # Forget one session by ID or unique prefix
+review --forget r3 r7          # Forget several sessions
 review --forget-all            # Forget every closed session in this repository/backend
 review --forget-all --yes      # Confirm immediately, suitable for scripts
 ```

@@ -158,7 +158,7 @@ fn session_list_highlights_unique_prefixes_and_resume_accepts_them() {
     let comparison = repo.snapshot_expression("HEAD~1..HEAD").unwrap();
     let changes = repo.changes(&comparison).unwrap();
     let store = SessionStore::new(state.path(), &repo).unwrap();
-    for id in ["abc123000001", "abc9ff000002", "f123456789ab"] {
+    for id in ["abc123000001", "abc9ff000002", "f123456789ab", "r1", "r10"] {
         session_fixture::write(
             &store,
             &repo,
@@ -189,6 +189,8 @@ fn session_list_highlights_unique_prefixes_and_resume_accepts_them() {
         ("abc1", "23000001"),
         ("abc9", "ff000002"),
         ("f", "123456789ab"),
+        ("r1", ""),
+        ("r10", ""),
     ] {
         let highlighted = format!("{}{}", prefix.magenta().bold(), suffix.dark_grey());
         assert!(
@@ -204,16 +206,23 @@ fn session_list_highlights_unique_prefixes_and_resume_accepts_them() {
     terminal.pump();
     assert!(terminal.output.contains("abc123000001"));
     assert!(!terminal.output.contains('\u{1b}'));
-    for (prefix, id) in [("abc1", "abc123000001"), ("f", "f123456789ab")] {
+    for (prefix, id) in [
+        ("abc1", "abc123000001"),
+        ("f", "f123456789ab"),
+        ("r1", "r1"),
+        ("r10", "r10"),
+    ] {
         let mut resume = command();
         resume.args(["--resume", prefix]);
         let mut terminal = Pty::spawn(resume);
         terminal.wait_until(|text| text.contains(&format!("Session {id}")));
         terminal.send(b"q");
         assert!(terminal.finish().success(), "{}", terminal.output);
-        assert_eq!(store.list().unwrap().len(), 3);
-        assert!(!store.directory.join(format!("{prefix}.json")).exists());
-        assert!(!store.directory.join(format!("{prefix}.lock")).exists());
+        assert_eq!(store.list().unwrap().len(), 5);
+        if prefix != id {
+            assert!(!store.directory.join(format!("{prefix}.json")).exists());
+            assert!(!store.directory.join(format!("{prefix}.lock")).exists());
+        }
     }
 }
 

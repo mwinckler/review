@@ -51,7 +51,7 @@ struct Cli {
     /// Head revision (defaults to HEAD for Git, @ for Jujutsu)
     #[arg(long, requires = "base")]
     head: Option<String>,
-    /// Resume by full ID or unique prefix, or the latest session when omitted
+    /// Resume by short ID (such as r3) or unique prefix; omit to resume the latest
     #[arg(long, value_name = "ID", num_args = 0..=1, default_missing_value = "latest", conflicts_with = "base")]
     resume: Option<String>,
     /// List this repository's saved review sessions

@@ -102,22 +102,151 @@ fn session_roundtrip_preserves_snapshots_progress_and_navigation() {
 }
 
 #[test]
-fn new_session_ids_are_compact_lowercase_hex_and_distinct() {
+fn new_session_ids_are_short_consecutive_review_numbers() {
     let dir = tempfile::tempdir().unwrap();
     let store = SessionStore::new(dir.path(), &repo(dir.path())).unwrap();
-    let mut ids = std::collections::BTreeSet::new();
-    for _ in 0..32 {
+    for number in 1..=32 {
         let (saved, _lock) = store.create(review()).unwrap();
-        assert_eq!(saved.id.len(), 12);
-        assert!(
-            saved
-                .id
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        );
-        assert!(ids.insert(saved.id));
+        assert_eq!(saved.id, format!("r{number}"));
     }
     assert_eq!(store.list().unwrap().len(), 32);
+}
+
+#[test]
+fn session_numbers_survive_reopening_and_remain_reserved_after_forgetting() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let store = SessionStore::new(dir.path(), &repo).unwrap();
+    let (first, lock) = store.create(review()).unwrap();
+    assert_eq!(first.id, "r1");
+    drop(lock);
+    let store = SessionStore::new(dir.path(), &repo).unwrap();
+    let (second, lock) = store.create(review()).unwrap();
+    assert_eq!(second.id, "r2");
+    drop(lock);
+    assert_eq!(store.forget(&[first.id, second.id]).unwrap(), 2);
+    assert!(store.list().unwrap().is_empty());
+    let (third, _lock) = store.create(review()).unwrap();
+    assert_eq!(third.id, "r3");
+}
+
+#[test]
+fn session_numbers_skip_existing_records_and_reservations() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let store = SessionStore::new(dir.path(), &repo).unwrap();
+    session_fixture::write(&store, &repo, "r5", review());
+    let previous = fs::read(store.directory.join("r5.json")).unwrap();
+    fs::write(store.directory.join("r8.lock"), "").unwrap();
+    fs::write(store.directory.join("r99.tmp"), "unrelated file").unwrap();
+    let (saved, _lock) = store.create(review()).unwrap();
+    assert_eq!(saved.id, "r9");
+    assert_eq!(fs::read(store.directory.join("r5.json")).unwrap(), previous);
+    assert_eq!(store.list().unwrap().len(), 2);
+}
+
+#[test]
+fn session_numbering_is_repository_and_backend_local_and_independent_of_legacy_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let store = SessionStore::new(dir.path(), &repo).unwrap();
+    for id in ["123456789012", "abcdef123456", "18b444222aaa-abc-0"] {
+        session_fixture::write(&store, &repo, id, review());
+    }
+    let (saved, _lock) = store.create(review()).unwrap();
+    assert_eq!(saved.id, "r1");
+    assert_eq!(store.open("123").unwrap().0.id, "123456789012");
+    assert_eq!(store.open("abc").unwrap().0.id, "abcdef123456");
+    let other_repo = Repository {
+        root: dir.path().join("other"),
+        ..repo.clone()
+    };
+    let other_backend = Repository {
+        backend: Backend::Git,
+        ..repo
+    };
+    for repo in [other_repo, other_backend] {
+        let other = SessionStore::new(dir.path(), &repo).unwrap();
+        assert_eq!(other.create(review()).unwrap().0.id, "r1");
+    }
+}
+
+#[test]
+fn concurrent_creators_reserve_distinct_session_numbers() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(dir.path(), &repo(dir.path())).unwrap();
+    let barrier = std::sync::Barrier::new(16);
+    let saved = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..16)
+            .map(|index| {
+                let store = &store;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let mut review = review();
+                    review.view.filter = format!("creator-{index}");
+                    barrier.wait();
+                    store.create(review).unwrap().0
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let ids: std::collections::BTreeSet<_> = saved.iter().map(|saved| saved.id.clone()).collect();
+    assert_eq!(ids, (1..=16).map(|number| format!("r{number}")).collect());
+    assert_eq!(store.list().unwrap().len(), 16);
+    for saved in saved {
+        let (loaded, _lock) = store.open(&saved.id).unwrap();
+        assert_eq!(loaded.review.view.filter, saved.review.view.filter);
+    }
+}
+
+#[test]
+fn numbered_sessions_sort_numerically_and_keep_exact_lookup_and_deletion() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let store = SessionStore::new(dir.path(), &repo).unwrap();
+    for id in ["r1", "r2", "r9", "r10", "r11", "abc123000001"] {
+        session_fixture::write(&store, &repo, id, review());
+    }
+    assert_eq!(
+        store
+            .list()
+            .unwrap()
+            .iter()
+            .map(|saved| saved.id.as_str())
+            .collect::<Vec<_>>(),
+        ["r11", "r10", "r9", "r2", "r1", "abc123000001"]
+    );
+    let (mut saved, lock) = store.open("r1").unwrap();
+    assert_eq!(saved.id, "r1");
+    assert!(store.is_open("r1").unwrap());
+    assert!(!store.is_open("r10").unwrap());
+    saved.review.toggle_viewed(0);
+    lock.save(&mut saved).unwrap();
+    assert_eq!(store.list().unwrap()[0].id, "r1");
+    drop(lock);
+    assert_eq!(store.open("r1").unwrap().0.review.viewed.len(), 1);
+    let error = store.resolve("r").unwrap_err().to_string();
+    assert!(error.contains("Ambiguous session ID prefix"), "{error}");
+    assert!(error.contains("r10"), "{error}");
+    assert_eq!(store.forget(&["r1".into(), "r10".into()]).unwrap(), 2);
+    assert!(store.open("r11").is_ok());
+    assert_eq!(store.open("abc").unwrap().0.id, "abc123000001");
+}
+
+#[test]
+fn exhausted_session_numbers_report_an_error_and_preserve_existing_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(dir.path(), &repo(dir.path())).unwrap();
+    let reservation = store.directory.join(format!("r{}.lock", u64::MAX));
+    fs::write(&reservation, "reserved").unwrap();
+    let error = store.create(review()).err().unwrap().to_string();
+    assert!(error.contains("session numbers exhausted"), "{error}");
+    assert_eq!(fs::read_to_string(reservation).unwrap(), "reserved");
+    assert_eq!(fs::read_dir(&store.directory).unwrap().count(), 1);
 }
 
 #[test]
@@ -256,7 +385,9 @@ fn ambiguous_unknown_and_invalid_prefixes_report_errors_without_creating_files()
     let error = store.open("ff").err().unwrap().to_string();
     assert!(error.contains("No saved review matches"), "{error}");
     assert!(error.contains("ff"), "{error}");
-    for prefix in ["", "../abc", "abc/../", "abc.json", "☃"] {
+    for prefix in [
+        "", "../abc", "abc/../", "abc.json", "r/1", "r-1", "r1.json", "☃",
+    ] {
         assert!(
             store
                 .open(prefix)
@@ -300,6 +431,9 @@ fn listed_prefixes_are_the_shortest_prefixes_that_resolve_each_session() {
         ("abc9ff000002", "abc9"),
         ("7d8fff000003", "7"),
         ("18b444222aaa-abc-0", "1"),
+        ("r1", "r1"),
+        ("r10", "r10"),
+        ("r2", "r2"),
     ];
     for (id, _) in expected {
         session_fixture::write(&store, &repo, id, review());
@@ -310,7 +444,10 @@ fn listed_prefixes_are_the_shortest_prefixes_that_resolve_each_session() {
         assert_eq!(saved.unique_prefix(&sessions), prefix);
         assert_eq!(store.resolve(prefix).unwrap(), id);
         if prefix.len() > 1 {
-            assert!(store.resolve(&prefix[..prefix.len() - 1]).is_err());
+            assert_ne!(
+                store.resolve(&prefix[..prefix.len() - 1]).ok().as_deref(),
+                Some(id)
+            );
         }
     }
     let singleton = &sessions[..1];
