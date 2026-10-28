@@ -24,10 +24,16 @@ pub struct SavedSession {
     pub repository: PathBuf,
     pub backend: Backend,
     pub updated_at: u64,
+    #[serde(default)]
+    pub opened_at: Option<u64>,
     pub review: Review,
 }
 
 impl SavedSession {
+    pub fn last_opened_at(&self) -> u64 {
+        self.opened_at.unwrap_or(self.updated_at)
+    }
+
     pub fn unique_prefix(&self, sessions: &[Self]) -> &str {
         let shared = sessions
             .iter()
@@ -137,6 +143,7 @@ impl SessionStore {
             repository: self.repository.root.clone(),
             backend: self.repository.backend,
             updated_at: 0,
+            opened_at: Some(now_millis()?),
             review,
         };
         lock.save(&mut session)?;
@@ -146,7 +153,9 @@ impl SessionStore {
     pub fn open(&self, id: &str) -> Result<(SavedSession, SessionLock)> {
         let id = self.resolve(id)?;
         let lock = self.lock(&id)?;
-        let session = self.load(&lock.target)?;
+        let mut session = self.load(&lock.target)?;
+        session.opened_at = Some(now_millis()?);
+        lock.save(&mut session)?;
         Ok((session, lock))
     }
 
@@ -296,6 +305,13 @@ fn lock_is_busy(error: &anyhow::Error) -> bool {
         .is_some_and(|error| error.kind() == ErrorKind::WouldBlock)
 }
 
+fn now_millis() -> Result<u64> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_millis()
+        .try_into()?)
+}
+
 fn session_number(id: &str) -> Option<u64> {
     id.strip_prefix('r')?.parse().ok()
 }
@@ -321,10 +337,7 @@ impl SessionLock {
             .target
             .parent()
             .expect("session target includes its directory");
-        session.updated_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)?
-            .as_millis()
-            .try_into()?;
+        session.updated_at = now_millis()?;
         let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
         serde_json::to_writer(&mut temporary, session)?;
         temporary.write_all(b"\n")?;

@@ -102,6 +102,10 @@ On a terminal, `review --list` highlights each session's shortest unique prefix 
 bold magenta. Ambiguous prefixes report the matching IDs so you can choose a longer
 prefix. Piped listings use plain IDs; `NO_COLOR=1` also selects plain terminal output.
 
+Each `review --list` entry includes its last-opened datetime in UTC, for example
+`Opened 2026-10-28T08:30:00Z`. Creating or resuming a review records this time.
+Older sessions use their last saved time until their next resume.
+
 Press `q` or `Ctrl-c` to save and quit. Viewed changes save immediately;
 navigation state autosaves within 250 ms. Resume restores the comparison,
 viewed files, selection, pane focus, directory expansion, filters, layout,

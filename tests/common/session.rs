@@ -13,6 +13,7 @@ pub fn write(store: &SessionStore, repo: &Repository, id: &str, review: Review) 
         repository: repo.root.clone(),
         backend: repo.backend,
         updated_at: 0,
+        opened_at: None,
         review,
     };
     fs::write(

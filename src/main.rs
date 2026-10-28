@@ -24,6 +24,7 @@ use review::{
     ui,
     vcs::{Backend, Repository},
 };
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -143,9 +144,13 @@ fn main() -> Result<()> {
             } else {
                 saved.id.clone()
             };
+            let opened =
+                OffsetDateTime::from_unix_timestamp((saved.last_opened_at() / 1_000) as i64)?
+                    .format(&Rfc3339)?;
             println!(
-                "{}  {} → {}  Viewed {}/{}",
+                "{}  Opened {}  {} → {}  Viewed {}/{}",
                 id,
+                opened,
                 ui::display_path(&saved.review.comparison.base_ref),
                 ui::display_path(&saved.review.comparison.head_ref),
                 saved.review.viewed.len(),

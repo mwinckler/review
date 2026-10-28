@@ -39,6 +39,7 @@ fn sessions(count: usize) -> Vec<SavedSession> {
             repository: "/review-fixture".into(),
             backend: Backend::Git,
             updated_at: 0,
+            opened_at: None,
             review: review(),
         })
         .collect()

@@ -2,7 +2,7 @@ mod common;
 #[path = "common/session.rs"]
 mod session_fixture;
 
-use std::{path::Path, process::Command};
+use std::{fs, path::Path, process::Command};
 
 use review::{
     state::Review,
@@ -50,6 +50,60 @@ fn lists_saved_sessions_without_a_terminal() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains(&saved.id));
     assert!(text.contains("main → feature"));
+    assert!(!text.contains('\u{1b}'));
+}
+
+#[test]
+fn session_list_shows_last_opened_datetimes_in_utc_and_falls_back_for_legacy_sessions() {
+    let root = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let repo = Repository::discover(root.path(), Some(Backend::Git)).unwrap();
+    let comparison = repo.snapshot_expression("HEAD~1..HEAD").unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    let mut records = Vec::new();
+    for (id, opened_at, updated_at, datetime) in [
+        ("r1", Some(0), 1_700_000_000_000_u64, "1970-01-01T00:00:00Z"),
+        ("r2", Some(1_700_000_000_999_u64), 0, "2023-11-14T22:13:20Z"),
+        ("r3", None, 1_000_000_000_000, "2001-09-09T01:46:40Z"),
+    ] {
+        let saved = session_fixture::write(
+            &store,
+            &repo,
+            id,
+            Review::new(comparison.clone(), changes.clone()),
+        );
+        let mut record = serde_json::to_value(saved).unwrap();
+        record["updated_at"] = updated_at.into();
+        if let Some(opened_at) = opened_at {
+            record["opened_at"] = opened_at.into();
+        } else {
+            record.as_object_mut().unwrap().remove("opened_at");
+        }
+        let path = store.directory.join(format!("{id}.json"));
+        let bytes = serde_json::to_vec(&record).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        records.push((id, datetime, path, bytes));
+    }
+    let output = cli(root.path(), state.path())
+        .env("TZ", "Pacific/Honolulu")
+        .arg("--list")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    for (id, datetime, path, bytes) in records {
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with(&format!("{id}  Opened {datetime}  "))),
+            "{text}"
+        );
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
     assert!(!text.contains('\u{1b}'));
 }
 

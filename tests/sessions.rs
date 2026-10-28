@@ -4,7 +4,7 @@ mod session_fixture;
 use std::{
     fs,
     path::Path,
-    time::{Duration, SystemTime},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use fs2::FileExt;
@@ -116,6 +116,48 @@ fn session_roundtrip_preserves_snapshots_progress_and_navigation() {
         loaded.review.comparison.file_line_counts,
         saved.review.comparison.file_line_counts
     );
+}
+
+#[test]
+fn opening_records_a_persistent_timestamp_while_saving_and_listing_preserve_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(dir.path(), &repo(dir.path())).unwrap();
+    let started = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let (mut saved, lock) = store.create(review()).unwrap();
+    let opened_at = serde_json::to_value(&saved).unwrap()["opened_at"]
+        .as_u64()
+        .unwrap();
+    assert!(opened_at >= started);
+    saved.review.toggle_viewed(0);
+    lock.save(&mut saved).unwrap();
+    assert_eq!(
+        serde_json::to_value(&saved).unwrap()["opened_at"],
+        opened_at
+    );
+    drop(lock);
+
+    let path = store.directory.join(format!("{}.json", saved.id));
+    let mut record = serde_json::to_value(&saved).unwrap();
+    record["opened_at"] = 1.into();
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    let (resumed, lock) = store.open(&saved.id).unwrap();
+    let reopened_at = serde_json::to_value(&resumed).unwrap()["opened_at"]
+        .as_u64()
+        .unwrap();
+    assert!(reopened_at >= opened_at);
+    assert_eq!(resumed.review.viewed.len(), 1);
+    let persisted: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(persisted["opened_at"], reopened_at);
+    let before = fs::read(&path).unwrap();
+    assert!(store.is_open(&saved.id).unwrap());
+    assert!(store.open(&saved.id).is_err());
+    store.list().unwrap();
+    drop(lock);
+    assert!(!store.is_open(&saved.id).unwrap());
+    assert_eq!(fs::read(&path).unwrap(), before);
 }
 
 #[test]
