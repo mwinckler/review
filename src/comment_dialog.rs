@@ -7,6 +7,7 @@ use crate::{
     app::{App, Focus},
     comments::{Comment, CommentAnchor, DiffSide, excerpt},
     hunks::SourceLine,
+    input,
     state::Review,
     vcs::Repository,
 };
@@ -186,31 +187,10 @@ impl CommentDraft {
             }
             return;
         }
-        let previous = self.body[..self.cursor]
-            .char_indices()
-            .next_back()
-            .map(|(index, _)| index)
-            .unwrap_or(0);
-        let next = self.body[self.cursor..]
-            .chars()
-            .next()
-            .map(|ch| self.cursor + ch.len_utf8())
-            .unwrap_or(self.cursor);
+        if input::edit(&mut self.body, &mut self.cursor, key.code) {
+            return;
+        }
         match key.code {
-            KeyCode::Left => self.cursor = previous,
-            KeyCode::Right => self.cursor = next,
-            KeyCode::Home => {
-                self.cursor = self.body[..self.cursor]
-                    .rfind('\n')
-                    .map(|index| index + 1)
-                    .unwrap_or(0)
-            }
-            KeyCode::End => {
-                self.cursor = self.body[self.cursor..]
-                    .find('\n')
-                    .map(|index| index + self.cursor)
-                    .unwrap_or(self.body.len())
-            }
             KeyCode::Up | KeyCode::Down => {
                 let start = self.body[..self.cursor]
                     .rfind('\n')
@@ -240,13 +220,6 @@ impl CommentDraft {
                             .map(char::len_utf8)
                             .sum::<usize>();
                 }
-            }
-            KeyCode::Backspace => {
-                self.body.drain(previous..self.cursor);
-                self.cursor = previous;
-            }
-            KeyCode::Delete => {
-                self.body.drain(self.cursor..next);
             }
             KeyCode::Enter => self.insert("\n"),
             KeyCode::Tab => self.insert("\t"),

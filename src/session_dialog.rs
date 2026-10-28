@@ -3,7 +3,10 @@ use std::collections::BTreeSet;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::store::{SavedSession, SessionStore};
+use crate::{
+    input,
+    store::{SavedSession, SessionStore},
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SessionAction {
@@ -33,16 +36,6 @@ impl RenamePrompt {
     }
 
     fn input(&mut self, key: KeyEvent) {
-        let previous = self.value[..self.cursor]
-            .char_indices()
-            .next_back()
-            .map(|(index, _)| index)
-            .unwrap_or(0);
-        let next = self.value[self.cursor..]
-            .chars()
-            .next()
-            .map(|ch| self.cursor + ch.len_utf8())
-            .unwrap_or(self.cursor);
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('u') {
             self.value.clear();
             self.cursor = 0;
@@ -54,20 +47,11 @@ impl RenamePrompt {
         {
             return;
         }
-        match key.code {
-            KeyCode::Left => self.cursor = previous,
-            KeyCode::Right => self.cursor = next,
-            KeyCode::Home => self.cursor = 0,
-            KeyCode::End => self.cursor = self.value.len(),
-            KeyCode::Backspace => {
-                self.value.drain(previous..self.cursor);
-                self.cursor = previous;
-            }
-            KeyCode::Delete => {
-                self.value.drain(self.cursor..next);
-            }
-            KeyCode::Char(ch) => self.insert(&ch.to_string()),
-            _ => {}
+        if input::edit(&mut self.value, &mut self.cursor, key.code) {
+            return;
+        }
+        if let KeyCode::Char(ch) = key.code {
+            self.insert(&ch.to_string());
         }
     }
 }

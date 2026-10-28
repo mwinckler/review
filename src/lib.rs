@@ -5,6 +5,7 @@ pub mod comments;
 pub mod config;
 pub mod editor;
 pub mod hunks;
+mod input;
 pub mod refresh;
 pub mod renderer;
 pub mod session_dialog;
