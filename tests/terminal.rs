@@ -215,7 +215,7 @@ fn session_list_highlights_unique_prefixes_and_resume_accepts_them() {
         let mut resume = command();
         resume.args(["--resume", prefix]);
         let mut terminal = Pty::spawn(resume);
-        terminal.wait_until(|text| text.contains(&format!("Session {id}")));
+        terminal.wait_until(|text| text.contains(&format!("Session {id} ·")));
         terminal.send(b"q");
         assert!(terminal.finish().success(), "{}", terminal.output);
         assert_eq!(store.list().unwrap().len(), 5);

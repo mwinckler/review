@@ -209,10 +209,7 @@ impl SessionStore {
         sessions.sort_by(|a, b| {
             b.updated_at
                 .cmp(&a.updated_at)
-                .then_with(|| match (session_number(&a.id), session_number(&b.id)) {
-                    (Some(a), Some(b)) => b.cmp(&a),
-                    _ => b.id.cmp(&a.id),
-                })
+                .then_with(|| session_number(&b.id).cmp(&session_number(&a.id)))
                 .then_with(|| b.id.cmp(&a.id))
         });
         Ok(sessions)
