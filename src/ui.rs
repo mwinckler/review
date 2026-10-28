@@ -499,8 +499,8 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         );
         frame.render_widget(Clear, area);
         let mut text = String::from(concat!(
-            "j/k, arrows      Move in tree / scroll diff\n",
-            "h/l              Collapse/expand / horizontal scroll\n",
+            "j/k, arrows      Move in tree / scroll diff / move highlighted line\n",
+            "h/l              Collapse/expand / horizontal scroll / old/new side\n",
             "Tab, Ctrl-h/l    Focus tree/diff\n",
             "Ctrl-Left/Right  Resize tree\n",
             "gg / G           First/last row or page\n",

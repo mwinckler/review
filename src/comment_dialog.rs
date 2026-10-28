@@ -487,14 +487,8 @@ impl App {
                         selection.cursor = number;
                     }
                 }
-                KeyCode::Char('v') => {
-                    selection.extending = !selection.extending;
-                    selection.anchor = selection.cursor;
-                }
-                KeyCode::Enter => {
-                    selection.extending = false;
-                    selection.anchor = selection.cursor;
-                }
+                KeyCode::Char('v') => selection.extending = !selection.extending,
+                KeyCode::Enter => selection.extending = false,
                 KeyCode::Esc => {
                     self.line_selection = None;
                     return true;
