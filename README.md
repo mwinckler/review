@@ -391,8 +391,8 @@ characters for shifted letters.
 Actions: `up`, `down`, `left`, `right`, `focus_tree`, `focus_diff`, `first`, `last`,
 `page_down`, `page_up`, `half_page_down`, `half_page_up`, `next_file`,
 `previous_file`, `next_unviewed`, `previous_unviewed`, `next_hunk`, `previous_hunk`,
-`open_editor`, `copy_path`, `add_comment`, `select_line`, `select_lines`, `manage_comments`,
-`toggle_viewed`,
+`open_editor`, `copy_path`, `add_comment`, `select_line`, `select_lines`,
+`manage_comments`, `toggle_viewed`,
 `toggle_unviewed`, `toggle_inline`, `toggle_fullscreen`, `search`, `flash`,
 `manage_sessions`,
 `next_match`, `previous_match`, `refresh`, `clear_filters`, `help`, `quit`.
