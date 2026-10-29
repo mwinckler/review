@@ -83,6 +83,7 @@ pub struct App {
     pub hunks: Vec<Hunk>,
     pub hunk_selection: Option<HunkLocation>,
     pub editor_requested: bool,
+    pub copy_path_requested: bool,
     pub rendering: bool,
     pub session_dialog: Option<SessionDialog>,
     pub session_action: Option<SessionAction>,
@@ -122,6 +123,7 @@ impl App {
             hunks: Vec::new(),
             hunk_selection: None,
             editor_requested: false,
+            copy_path_requested: false,
             rendering: false,
             session_dialog: None,
             session_action: None,
@@ -476,6 +478,9 @@ impl App {
             }
             KeyCode::Char('e') => {
                 self.editor_requested = true;
+            }
+            KeyCode::Char('Y') => {
+                self.copy_path_requested = true;
             }
             KeyCode::Backspace => {
                 self.focus = Focus::Tree;

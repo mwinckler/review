@@ -8,6 +8,7 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use crossterm::{
+    clipboard::CopyToClipboard,
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     style::{Colored, Stylize},
 };
@@ -447,6 +448,22 @@ fn run(
                 }
                 _ => {}
             }
+        }
+        if std::mem::take(&mut app.copy_path_requested) {
+            if app.review.view.active.is_empty() {
+                app.message = "Select a file or directory to copy".into();
+            } else {
+                let path = repo.root.join(app.review.view.active.trim_end_matches('/'));
+                let path = path.to_string_lossy();
+                app.message = match crossterm::execute!(
+                    io::stdout(),
+                    CopyToClipboard::to_clipboard_from(path.as_bytes())
+                ) {
+                    Ok(()) => format!("Copied {}", ui::display_path(&path)),
+                    Err(error) => format!("Clipboard: {error}"),
+                };
+            }
+            redraw = true;
         }
         if let Some(action) = app.comment_action.take() {
             match action {

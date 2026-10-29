@@ -561,7 +561,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     );
     if app.help {
         let width = frame.area().width.min(74);
-        let height = frame.area().height.min(30);
+        let height = frame.area().height.min(31);
         let area = Rect::new(
             frame.area().x + (frame.area().width - width) / 2,
             frame.area().y + (frame.area().height - height) / 2,
@@ -583,6 +583,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "]h / [h          Select next/previous diff hunk\n",
             "]Nh / [Nh        Select hunk number N (1-based)\n",
             "e                Open selected hunk/file in editor\n",
+            "Y                Copy selected file/folder's full path\n",
             "Enter            Highlight a source line in the diff\n",
             "c / v / C        Comment / select line range / comments\n",
             "/                Filter filenames / search diff\n",

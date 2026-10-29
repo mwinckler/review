@@ -11,7 +11,7 @@ ansi-to-tui = "8"
 anyhow = "1"
 blake3 = "1"
 clap = { version = "4", features = ["derive"] }
-crossterm = "0.29"
+crossterm = { version = "0.29", features = ["osc52"] }
 directories = "6"
 fs2 = "0.4"
 ratatui = "0.30"

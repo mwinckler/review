@@ -203,6 +203,7 @@ Repository content and persistent editor snapshots are preserved.
 | `]h` / `[h` | Select and highlight the next/previous diff hunk |
 | `]Nh` / `[Nh` | Select hunk number `N` (1-based) |
 | `e` | Open the selected hunk or file in the editor |
+| `Y` | Copy the selected file or directory's absolute path to the clipboard |
 | `c` | Compose a line comment; `Ctrl-s` saves it locally |
 | `v` | Start a range at the highlighted line; `j` / `k` extend, `v` returns to one line |
 | `C` | Browse comments, edit, delete, jump to source, or write a source TODO |
@@ -221,6 +222,9 @@ Repository content and persistent editor snapshots are preserved.
 Marking a file viewed advances to the next unviewed file matching the current
 filter, expanding its parent folders and wrapping at the end. Pane focus and
 layout are retained. Unmarking keeps the current file selected.
+
+Press `Y` (`Shift-y`) from either pane to copy the highlighted file or folder's
+absolute path using the terminal's OSC 52 clipboard support.
 
 Search and filtering are case-insensitive. Directory counts show progress across
 their changed files. Pressing `Space` on a folder marks all its changed files
@@ -387,7 +391,7 @@ characters for shifted letters.
 Actions: `up`, `down`, `left`, `right`, `focus_tree`, `focus_diff`, `first`, `last`,
 `page_down`, `page_up`, `half_page_down`, `half_page_up`, `next_file`,
 `previous_file`, `next_unviewed`, `previous_unviewed`, `next_hunk`, `previous_hunk`,
-`open_editor`, `add_comment`, `select_line`, `select_lines`, `manage_comments`,
+`open_editor`, `copy_path`, `add_comment`, `select_line`, `select_lines`, `manage_comments`,
 `toggle_viewed`,
 `toggle_unviewed`, `toggle_inline`, `toggle_fullscreen`, `search`, `flash`,
 `manage_sessions`,

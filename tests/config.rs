@@ -4,6 +4,18 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use review::config::Config;
 
 #[test]
+fn copy_path_can_be_aliased_to_another_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "[keybindings]\nP = 'copy_path'\n").unwrap();
+    let config = Config::load(&path, true).unwrap();
+    assert_eq!(
+        config.translate(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT)),
+        [KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::NONE)]
+    );
+}
+
+#[test]
 fn config_loads_renderer_arguments_and_key_aliases() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
