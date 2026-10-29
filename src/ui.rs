@@ -394,7 +394,17 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     }
     if panes.diff.width > 0 {
         let (title, metadata) = if let Some(index) = app.active {
-            change_heading(&app.review.changes[index])
+            let change = &app.review.changes[index];
+            let (mut title, metadata) = change_heading(change);
+            if let Some(ids) = comparison
+                .file_commit_ids
+                .as_ref()
+                .and_then(|files| files.get(&change.path))
+                && !ids.is_empty()
+            {
+                title.push_str(&format!("[{}] ", ids.join(", ")));
+            }
+            (title, metadata)
         } else if app.review.view.active.ends_with('/') {
             (
                 format!(" {} ", display_path(&app.review.view.active)),

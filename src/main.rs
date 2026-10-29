@@ -237,6 +237,7 @@ fn main() -> Result<()> {
     let mut metadata_changed = repo.fill_change_ids(&mut saved.review.comparison)?;
     metadata_changed |= repo.fill_commit_titles(&mut saved.review.comparison)?;
     metadata_changed |= repo.fill_line_counts(&mut saved.review.comparison)?;
+    metadata_changed |= repo.fill_file_commit_ids(&mut saved.review.comparison)?;
     if metadata_changed {
         lock.save(&mut saved)?;
     }

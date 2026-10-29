@@ -132,6 +132,129 @@ impl Drop for Pty {
 }
 
 #[test]
+fn file_commit_ids_fill_legacy_sessions_and_refresh_with_the_review() {
+    let root = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let repo = Repository::discover(root.path(), Some(Backend::Jj)).unwrap();
+    let base = common::jj(
+        root.path(),
+        &["log", "--no-graph", "-r", "feature-", "-T", "commit_id"],
+    );
+    let first = common::jj(
+        root.path(),
+        &[
+            "log",
+            "--no-graph",
+            "-r",
+            "feature",
+            "-T",
+            "change_id.shortest(3)",
+        ],
+    );
+    let comparison = repo
+        .snapshot_expression(&format!("{base}..feature"))
+        .unwrap();
+    let mut review = Review::new(comparison.clone(), repo.changes(&comparison).unwrap());
+    review.view.selected = "src/main.rs".into();
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    let saved = session_fixture::write(&store, &repo, "r1", review);
+    let mut legacy = serde_json::to_value(saved).unwrap();
+    legacy["review"]["comparison"]
+        .as_object_mut()
+        .unwrap()
+        .remove("file_commit_ids");
+    fs::write(
+        store.directory.join("r1.json"),
+        serde_json::to_vec(&legacy).unwrap(),
+    )
+    .unwrap();
+    let config = state.path().join("config.toml");
+    fs::write(&config, "[renderer]\ncommand = ['cat', '{new}']\n").unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
+    command
+        .current_dir(root.path())
+        .env("JJ_CONFIG", "/dev/null")
+        .args([
+            "--backend",
+            "jj",
+            "--resume",
+            "r1",
+            "--state-dir",
+            state.path().to_str().unwrap(),
+            "--config",
+            config.to_str().unwrap(),
+        ]);
+    let mut terminal = Pty::spawn(command);
+    terminal.wait_until(|text| text.contains(&format!("M src/main.rs [{first}]")));
+    fs::write(root.path().join("src/main.rs"), "second file edit\n").unwrap();
+    common::jj(root.path(), &["commit", "-m", "another file edit"]);
+    common::jj(root.path(), &["bookmark", "set", "feature", "-r", "@-"]);
+    let second = common::jj(
+        root.path(),
+        &[
+            "log",
+            "--no-graph",
+            "-r",
+            "@-",
+            "-T",
+            "change_id.shortest(3)",
+        ],
+    );
+    terminal.wait_until(|_| {
+        let saved = serde_json::to_value(store.list().unwrap().pop().unwrap()).unwrap();
+        saved["review"]["comparison"]["file_commit_ids"]["src/main.rs"]
+            == serde_json::json!([first, second])
+    });
+    terminal.send(b"\x03");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+    let saved = serde_json::to_value(store.list().unwrap().pop().unwrap()).unwrap();
+    assert_eq!(
+        saved["review"]["comparison"]["file_commit_ids"]["src/main.rs"],
+        serde_json::json!([first, second])
+    );
+}
+
+#[test]
+fn file_commit_ids_use_git_hashes_when_jj_is_missing_from_path() {
+    let root = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let expected = common::jj(
+        root.path(),
+        &[
+            "log",
+            "--no-graph",
+            "-r",
+            "feature",
+            "-T",
+            "commit_id.short(8)",
+        ],
+    );
+    let bin = state.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let git = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|path| path.join("git"))
+        .find(|path| path.is_file())
+        .unwrap();
+    std::os::unix::fs::symlink(git, bin.join("git")).unwrap();
+    let config = state.path().join("config.toml");
+    fs::write(&config, "[renderer]\ncommand = ['/usr/bin/cat', '{new}']\n").unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
+    command.current_dir(root.path()).env("PATH", &bin).args([
+        "HEAD~1..HEAD",
+        "--backend",
+        "git",
+        "--state-dir",
+        state.path().to_str().unwrap(),
+        "--config",
+        config.to_str().unwrap(),
+    ]);
+    let mut terminal = Pty::spawn(command);
+    terminal.wait_until(|text| text.contains(&format!("M image.bin [{expected}]")));
+    terminal.send(b"\x03");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+}
+
+#[test]
 fn single_line_highlights_and_ranges_save_comments_at_the_chosen_lines() {
     for backend in [Backend::Git, Backend::Jj] {
         let root = common::fixture();

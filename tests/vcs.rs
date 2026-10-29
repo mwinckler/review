@@ -6,6 +6,109 @@ use common::{fixture, jj};
 use review::vcs::{Backend, ComparisonMode, LineCounts, Repository};
 
 #[test]
+fn file_commit_ids_use_jj_history_within_the_pinned_comparison_for_either_backend() {
+    let dir = fixture();
+    jj(dir.path(), &["new", "feature"]);
+    let unusual = "literal[*]\tand\nλ.txt";
+    fs::write(dir.path().join("src/main.rs"), "first edit\n").unwrap();
+    fs::write(dir.path().join("image.bin"), [0, 9, 8, 7]).unwrap();
+    fs::write(dir.path().join(unusual), "literal path\n").unwrap();
+    jj(dir.path(), &["commit", "-m", "first file edit"]);
+    let first = jj(
+        dir.path(),
+        &[
+            "log",
+            "--no-graph",
+            "-r",
+            "@-",
+            "-T",
+            "change_id.shortest(3)",
+        ],
+    );
+    fs::write(dir.path().join("unrelated.txt"), "other file\n").unwrap();
+    jj(dir.path(), &["commit", "-m", "unrelated"]);
+    fs::write(dir.path().join("src/main.rs"), "second edit\n").unwrap();
+    fs::remove_file(dir.path().join("renamed.txt")).unwrap();
+    jj(dir.path(), &["commit", "-m", "second file edit"]);
+    let second = jj(
+        dir.path(),
+        &[
+            "log",
+            "--no-graph",
+            "-r",
+            "@-",
+            "-T",
+            "change_id.shortest(3)",
+        ],
+    );
+    jj(dir.path(), &["bookmark", "create", "file-head", "-r", "@-"]);
+    fs::write(
+        dir.path().join("src/main.rs"),
+        "outside the pinned comparison\n",
+    )
+    .unwrap();
+
+    for backend in [Backend::Git, Backend::Jj] {
+        let repo = Repository::discover(dir.path(), Some(backend)).unwrap();
+        for expression in ["feature..file-head", "file-head..feature"] {
+            let comparison = repo.snapshot_expression(expression).unwrap();
+            let saved = serde_json::to_value(&comparison).unwrap();
+            let files = saved["file_commit_ids"].clone();
+            assert_eq!(
+                files["src/main.rs"],
+                serde_json::json!([first, second]),
+                "{backend:?}: {expression}"
+            );
+            assert_eq!(files["image.bin"], serde_json::json!([first]));
+            assert_eq!(files[unusual], serde_json::json!([first]));
+            assert_eq!(files["renamed.txt"], serde_json::json!([second]));
+            let loaded: review::vcs::Comparison = serde_json::from_value(saved).unwrap();
+            assert_eq!(
+                serde_json::to_value(loaded).unwrap()["file_commit_ids"],
+                files
+            );
+        }
+    }
+}
+
+#[test]
+fn file_commit_ids_fall_back_to_git_hashes_and_include_merge_resolutions() {
+    let dir = fixture();
+    jj(dir.path(), &["new", "feature"]);
+    fs::write(dir.path().join("src/main.rs"), "left\n").unwrap();
+    jj(dir.path(), &["bookmark", "create", "file-left", "-r", "@"]);
+    let left = jj(
+        dir.path(),
+        &["log", "--no-graph", "-r", "@", "-T", "commit_id.short(8)"],
+    );
+    jj(dir.path(), &["new", "feature"]);
+    fs::write(dir.path().join("src/main.rs"), "right\n").unwrap();
+    jj(dir.path(), &["bookmark", "create", "file-right", "-r", "@"]);
+    let right = jj(
+        dir.path(),
+        &["log", "--no-graph", "-r", "@", "-T", "commit_id.short(8)"],
+    );
+    jj(dir.path(), &["new", "file-left", "file-right"]);
+    fs::write(dir.path().join("src/main.rs"), "resolved\n").unwrap();
+    jj(dir.path(), &["commit", "-m", "resolve file"]);
+    let merged = jj(
+        dir.path(),
+        &["log", "--no-graph", "-r", "@-", "-T", "commit_id.short(8)"],
+    );
+    fs::rename(dir.path().join(".jj"), dir.path().join("saved-jj")).unwrap();
+    let repo = Repository::discover(dir.path(), Some(Backend::Git)).unwrap();
+    let comparison = repo.snapshot_expression("feature..HEAD").unwrap();
+    let saved = serde_json::to_value(&comparison).unwrap();
+    let ids = saved["file_commit_ids"]["src/main.rs"]
+        .as_array()
+        .expect("file commit IDs");
+    assert_eq!(ids.len(), 3);
+    assert!(ids.contains(&serde_json::json!(left)));
+    assert!(ids.contains(&serde_json::json!(right)));
+    assert_eq!(ids.last(), Some(&serde_json::json!(merged)));
+}
+
+#[test]
 fn discovers_jj_first_and_allows_git_override_from_a_subdirectory() {
     let dir = fixture();
     let repo = Repository::discover(&dir.path().join("src"), None).unwrap();

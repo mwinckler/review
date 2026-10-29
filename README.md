@@ -76,6 +76,12 @@ including viewed files and files hidden by filters or collapsed folders. The
 directories named `test`, `tests`, `spec`, or `specs`, or with `.test.` or `.spec.`
 in the filename. All counts follow the pinned snapshots when resuming or refreshing.
 
+File titles in the diff pane list the commits that changed the file within the
+comparison, oldest first: `M packages/api/README.md [xnp, qrl]`. IDs use shortest
+unique jj change prefixes (at least three characters) when jj can read the
+repository, and short Git hashes otherwise. File history follows the pinned
+comparison when resuming or refreshing.
+
 Reviews check the selected revisions in the background about once per second.
 Jujutsu `@` follows saved working-copy edits; Git comparisons follow commits as
 `HEAD` or branches advance. File trees, file and directory previews, header IDs and

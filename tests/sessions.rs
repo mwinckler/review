@@ -44,6 +44,7 @@ fn review() -> Review {
             head_title: None,
             base_change_id: None,
             head_change_id: None,
+            file_commit_ids: None,
             mode: ComparisonMode::MergeBase,
             line_counts: Some(LineCounts {
                 added: 12,

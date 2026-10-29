@@ -61,6 +61,8 @@ pub struct Comparison {
     pub line_counts: Option<LineCounts>,
     #[serde(default)]
     pub file_line_counts: Option<BTreeMap<String, LineCounts>>,
+    #[serde(default)]
+    pub file_commit_ids: Option<BTreeMap<String, Vec<String>>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +93,12 @@ impl Sum for LineCounts {
 pub struct Repository {
     pub root: PathBuf,
     pub backend: Backend,
+}
+
+#[derive(Deserialize)]
+struct CommitFiles {
+    id: String,
+    paths: Vec<String>,
 }
 
 impl Repository {
@@ -174,6 +182,7 @@ impl Repository {
         self.fill_change_ids(&mut updated)?;
         self.fill_commit_titles(&mut updated)?;
         self.fill_line_counts(&mut updated)?;
+        self.fill_file_commit_ids(&mut updated)?;
         Ok(Some(updated))
     }
 
@@ -187,6 +196,7 @@ impl Repository {
         self.fill_change_ids(&mut comparison)?;
         self.fill_commit_titles(&mut comparison)?;
         self.fill_line_counts(&mut comparison)?;
+        self.fill_file_commit_ids(&mut comparison)?;
         Ok(comparison)
     }
 
@@ -209,6 +219,7 @@ impl Repository {
             mode,
             line_counts: None,
             file_line_counts: None,
+            file_commit_ids: None,
         })
     }
 
@@ -268,6 +279,79 @@ impl Repository {
             }
         }
         Ok(updated)
+    }
+
+    pub fn fill_file_commit_ids(&self, comparison: &mut Comparison) -> Result<bool> {
+        if comparison.file_commit_ids.is_some() {
+            return Ok(false);
+        }
+        let (base, head) = (&comparison.base_id, &comparison.head_id);
+        let jj = Self {
+            root: self.root.clone(),
+            backend: Backend::Jj,
+        };
+        let commits: Result<Vec<CommitFiles>> = jj
+            .run(
+                &[
+                    "log",
+                    "--no-graph",
+                    "--reversed",
+                    "-r",
+                    &format!("({base}..{head}) | ({head}..{base})"),
+                    "-T",
+                    r#"json({"id" => stringify(change_id.shortest(3)), "paths" => diff.files().map(|file| file.path())}) ++ "\n""#,
+                ],
+                false,
+            )
+            .and_then(|output| {
+                serde_json::Deserializer::from_slice(&output)
+                    .into_iter::<CommitFiles>()
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(Into::into)
+            });
+        let commits = match commits {
+            Ok(commits) => commits,
+            Err(error) if self.backend == Backend::Jj => return Err(error),
+            Err(_) => parse_git_file_commits(&self.run(
+                &[
+                    "log",
+                    "--reverse",
+                    "--topo-order",
+                    "--no-color",
+                    "--no-show-signature",
+                    "--no-notes",
+                    "--format=%h%x00",
+                    "--abbrev=8",
+                    "--raw",
+                    "-z",
+                    "--no-renames",
+                    "--diff-merges=combined",
+                    "--root",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    &format!("{base}...{head}"),
+                    "--",
+                ],
+                false,
+            )?)?,
+        };
+        let mut files = BTreeMap::new();
+        for change in self.changes(comparison)? {
+            let mut ids = Vec::new();
+            for commit in &commits {
+                if commit
+                    .paths
+                    .iter()
+                    .any(|path| path == &change.path || path == &change.old_path)
+                    && !ids.contains(&commit.id)
+                {
+                    ids.push(commit.id.clone());
+                }
+            }
+            files.insert(change.path, ids);
+        }
+        comparison.file_commit_ids = Some(files);
+        Ok(true)
     }
 
     fn merge_base(&self, base: &str, head: &str) -> Result<String> {
@@ -688,6 +772,30 @@ fn parse_git_changes(output: &[u8]) -> Result<Vec<Change>> {
         });
     }
     Ok(changes)
+}
+
+fn parse_git_file_commits(output: &[u8]) -> Result<Vec<CommitFiles>> {
+    let mut fields = output
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty());
+    let mut commits = Vec::<CommitFiles>::new();
+    while let Some(field) = fields.next() {
+        let header = std::str::from_utf8(field)?.trim_start_matches('\n');
+        if header.starts_with(':') {
+            let path = std::str::from_utf8(fields.next().context("missing Git history path")?)?;
+            commits
+                .last_mut()
+                .context("missing Git history commit")?
+                .paths
+                .push(path.to_owned());
+        } else {
+            commits.push(CommitFiles {
+                id: header.to_owned(),
+                paths: Vec::new(),
+            });
+        }
+    }
+    Ok(commits)
 }
 
 fn parse_numstat(output: &[u8]) -> Result<BTreeMap<String, LineCounts>> {
