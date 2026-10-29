@@ -184,6 +184,7 @@ Repository content and persistent editor snapshots are preserved.
 | Keys | Action |
 |---|---|
 | `j` / `k`, arrows | Move in the tree, scroll the diff, or move a highlighted line |
+| `Ctrl-n` / `Ctrl-p` | Next/previous visible tree row, keeping pane focus and layout |
 | `h` / `l` | Collapse/expand directories, scroll horizontally, or choose old/new side |
 | `Enter` | Toggle a directory, focus a file's diff, or highlight one line in the diff |
 | `Tab`, `Ctrl-h` / `Ctrl-l` | Switch panes; focus the tree / diff |

@@ -406,6 +406,7 @@ fn run(
                             && app.comment_dialog.is_none()
                             && !app.searching
                             && !app.help
+                            && !key.modifiers.contains(KeyModifiers::CONTROL)
                             && matches!(key.code, KeyCode::Char('n' | 'N'));
                         let search_enter = app.focus == Focus::Diff
                             && app.searching

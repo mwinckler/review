@@ -424,6 +424,12 @@ impl App {
                 KeyCode::Char('l') => {
                     self.focus = Focus::Diff;
                 }
+                KeyCode::Char('n') => {
+                    self.select(self.selection.saturating_add(1));
+                }
+                KeyCode::Char('p') => {
+                    self.select(self.selection.saturating_sub(1));
+                }
                 KeyCode::Left | KeyCode::Right if terminal_width >= 55 => {
                     let width = self.review.view.tree_width(terminal_width);
                     self.review.view.tree_width = Some(if key.code == KeyCode::Left {

@@ -132,6 +132,73 @@ impl Drop for Pty {
 }
 
 #[test]
+fn control_tree_navigation_keeps_diff_search_and_scroll_positions_independent() {
+    let root = common::fixture();
+    let state = tempfile::tempdir().unwrap();
+    let repo = Repository::discover(root.path(), Some(Backend::Git)).unwrap();
+    let comparison = repo.snapshot_expression("HEAD~1..HEAD").unwrap();
+    let changes = repo.changes(&comparison).unwrap();
+    let mut review = Review::new(comparison, changes);
+    review.view.selected = "src/".into();
+    review.view.diff_focused = true;
+    review.view.fullscreen = true;
+    let store = SessionStore::new(state.path(), &repo).unwrap();
+    session_fixture::write(&store, &repo, "r1", review);
+    let rendered = state.path().join("rendered.txt");
+    fs::write(&rendered, format!("intro\nneedle\n{}", "row\n".repeat(100))).unwrap();
+    let config = state.path().join("config.toml");
+    fs::write(
+        &config,
+        format!("[renderer]\ncommand = ['cat', '{}']\n", rendered.display()),
+    )
+    .unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
+    command.current_dir(root.path()).args([
+        "--backend",
+        "git",
+        "--resume",
+        "r1",
+        "--state-dir",
+        state.path().to_str().unwrap(),
+        "--config",
+        config.to_str().unwrap(),
+    ]);
+    let mut terminal = Pty::spawn(command);
+    terminal.wait_until(|text| text.contains("needle"));
+    terminal.send(b"/needle\r");
+    terminal.wait_until(|_| {
+        store.list().unwrap()[0]
+            .review
+            .view
+            .positions
+            .get("src/")
+            .is_some_and(|position| position.vertical > 0)
+    });
+    let directory_scroll = store.list().unwrap()[0].review.view.positions["src/"].vertical;
+    terminal.send(b"\x0e");
+    terminal.wait_until(|_| store.list().unwrap()[0].review.view.selected == "src/main.rs");
+    let saved = store.list().unwrap().pop().unwrap();
+    assert_eq!(saved.review.view.positions["src/main.rs"].vertical, 0);
+    assert!(saved.review.view.diff_focused);
+    assert!(saved.review.view.fullscreen);
+    terminal.send(b"n");
+    terminal.wait_until(|_| {
+        store.list().unwrap()[0].review.view.positions["src/main.rs"].vertical == 1
+    });
+    terminal.send(b"\x10");
+    terminal.wait_until(|_| store.list().unwrap()[0].review.view.selected == "src/");
+    let saved = store.list().unwrap().pop().unwrap();
+    assert_eq!(
+        saved.review.view.positions["src/"].vertical,
+        directory_scroll
+    );
+    assert!(saved.review.view.diff_focused);
+    assert!(saved.review.view.fullscreen);
+    terminal.send(b"\x03");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+}
+
+#[test]
 fn single_line_highlights_and_ranges_save_comments_at_the_chosen_lines() {
     for backend in [Backend::Git, Backend::Jj] {
         let root = common::fixture();

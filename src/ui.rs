@@ -551,7 +551,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     );
     if app.help {
         let width = frame.area().width.min(74);
-        let height = frame.area().height.min(29);
+        let height = frame.area().height.min(30);
         let area = Rect::new(
             frame.area().x + (frame.area().width - width) / 2,
             frame.area().y + (frame.area().height - height) / 2,
@@ -561,6 +561,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         frame.render_widget(Clear, area);
         let mut text = String::from(concat!(
             "j/k, arrows      Move in tree / scroll diff / move highlighted line\n",
+            "Ctrl-n/p         Next/previous tree row from either pane\n",
             "h/l              Collapse/expand / horizontal scroll / old/new side\n",
             "Tab, Ctrl-h/l    Focus tree/diff\n",
             "Ctrl-Left/Right  Resize tree\n",
