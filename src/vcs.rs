@@ -290,27 +290,21 @@ impl Repository {
             root: self.root.clone(),
             backend: Backend::Jj,
         };
-        let commits: Result<Vec<CommitFiles>> = jj
-            .run(
-                &[
-                    "log",
-                    "--no-graph",
-                    "--reversed",
-                    "-r",
-                    &format!("({base}..{head}) | ({head}..{base})"),
-                    "-T",
-                    r#"json({"id" => stringify(change_id.shortest(3)), "paths" => diff.files().map(|file| file.path())}) ++ "\n""#,
-                ],
-                false,
-            )
-            .and_then(|output| {
-                serde_json::Deserializer::from_slice(&output)
-                    .into_iter::<CommitFiles>()
-                    .collect::<std::result::Result<Vec<_>, _>>()
-                    .map_err(Into::into)
-            });
-        let commits = match commits {
-            Ok(commits) => commits,
+        let commits = match jj.run(
+            &[
+                "log",
+                "--no-graph",
+                "--reversed",
+                "-r",
+                &format!("({base}..{head}) | ({head}..{base})"),
+                "-T",
+                r#"json({"id" => stringify(change_id.shortest(3)), "paths" => diff.files().map(|file| file.path())}) ++ "\n""#,
+            ],
+            false,
+        ) {
+            Ok(output) => serde_json::Deserializer::from_slice(&output)
+                .into_iter::<CommitFiles>()
+                .collect::<std::result::Result<Vec<_>, _>>()?,
             Err(error) if self.backend == Backend::Jj => return Err(error),
             Err(_) => parse_git_file_commits(&self.run(
                 &[

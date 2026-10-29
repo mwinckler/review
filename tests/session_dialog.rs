@@ -25,10 +25,10 @@ fn review() -> Review {
             head_title: None,
             base_change_id: None,
             head_change_id: None,
-            file_commit_ids: None,
             mode: Default::default(),
             line_counts: None,
             file_line_counts: None,
+            file_commit_ids: None,
         },
         Vec::new(),
     )

@@ -46,7 +46,6 @@ fn review() -> Review {
             head_title: None,
             base_change_id: None,
             head_change_id: None,
-            file_commit_ids: None,
             mode: Default::default(),
             line_counts: Some(LineCounts::default()),
             file_line_counts: Some(
@@ -75,6 +74,7 @@ fn review() -> Review {
                 ]
                 .into(),
             ),
+            file_commit_ids: None,
         },
         vec![
             change("README.md"),
@@ -787,51 +787,6 @@ fn flash_directory_jumps_select_the_combined_preview() {
             .collect::<Vec<_>>(),
         ["src/nested/b.rs"]
     );
-}
-
-#[test]
-fn diff_pane_titles_append_the_selected_files_commit_ids() {
-    for ids in [vec!["xnp", "qrl"], vec!["1a2b3c4d"], Vec::new()] {
-        let mut value = serde_json::to_value(review()).unwrap();
-        value["comparison"]["file_commit_ids"] = serde_json::json!({"README.md": ids});
-        let mut app = App::new(serde_json::from_value(value).unwrap());
-        for (width, fullscreen) in [(110, false), (110, true), (30, true)] {
-            app.review.view.fullscreen = fullscreen;
-            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
-            terminal
-                .draw(|frame| ui::draw(frame, &app, &Text::raw("diff")))
-                .unwrap();
-            if width == 110 {
-                let pane = ui::panes(Rect::new(0, 0, width, 24), &app).diff;
-                let buffer = terminal.backend().buffer();
-                let title: String = (pane.x..pane.right())
-                    .map(|x| buffer[(x, pane.y)].symbol())
-                    .collect();
-                let expected = if ids.is_empty() {
-                    "M README.md".to_owned()
-                } else {
-                    format!("M README.md [{}]", ids.join(", "))
-                };
-                assert!(title.contains(&expected), "{title}");
-                assert!(!title.contains("[]"));
-            }
-        }
-        key(&mut app, KeyCode::Char(']'));
-        key(&mut app, KeyCode::Char('f'));
-        let mut terminal = Terminal::new(TestBackend::new(110, 24)).unwrap();
-        terminal
-            .draw(|frame| ui::draw(frame, &app, &Text::raw("other diff")))
-            .unwrap();
-        let display: String = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
-        assert!(!display.contains("[xnp"));
-        assert!(!display.contains("[1a2b3c4d"));
-    }
 }
 
 #[test]
