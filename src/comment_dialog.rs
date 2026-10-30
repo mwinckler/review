@@ -6,6 +6,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::{
     app::{App, Focus},
     comments::{Comment, CommentAnchor, DiffSide, excerpt},
+    gitlab_comments::CommentEntry,
+    gitlab_worker::GitLabJob,
     hunks::SourceLine,
     input,
     state::Review,
@@ -444,7 +446,8 @@ impl App {
                 }
                 if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     match draft.save(&mut self.review) {
-                        Ok(selection) => {
+                        Ok(index) => {
+                            let selection = self.review.comment_entries().position(|entry| matches!(entry, CommentEntry::Local(comment) if comment.id == self.review.comments[index].id)).unwrap_or(0);
                             self.dirty = true;
                             self.comments_changed = true;
                             self.message = "Comment saved locally".into();
@@ -461,19 +464,27 @@ impl App {
                 }
             }
             CommentDialog::Browse(list) => {
-                list.selection = list
-                    .selection
-                    .min(self.review.comments.len().saturating_sub(1));
+                let count = self.review.comment_entries().count();
+                list.selection = list.selection.min(count.saturating_sub(1));
+                let selected = self.review.comment_entries().nth(list.selection);
+                let target = selected.and_then(|entry| entry.target(&self.review));
+                let local = selected
+                    .and_then(|entry| entry.local(&self.review))
+                    .cloned();
+                let has_position = selected.is_some_and(|entry| match entry {
+                    CommentEntry::Local(_) => true,
+                    CommentEntry::GitLab(discussion) => discussion.position().is_some(),
+                });
                 if let Some(confirmation) = list.confirming {
                     match key.code {
                         KeyCode::Char('y') => {
-                            if let Some(comment) = self.review.comments.get(list.selection) {
+                            if let Some(comment) = &local {
                                 match confirmation {
                                     CommentConfirmation::Delete => {
-                                        self.review.comments.remove(list.selection);
-                                        list.selection = list
-                                            .selection
-                                            .min(self.review.comments.len().saturating_sub(1));
+                                        self.review.comments.retain(|local| local.id != comment.id);
+                                        list.selection = list.selection.min(
+                                            self.review.comment_entries().count().saturating_sub(1),
+                                        );
                                         self.dirty = true;
                                         self.comments_changed = true;
                                         self.message = "Local comment deleted".into();
@@ -511,8 +522,7 @@ impl App {
                             return;
                         }
                         KeyCode::Char('j') | KeyCode::Down => {
-                            list.selection = (list.selection + 1)
-                                .min(self.review.comments.len().saturating_sub(1));
+                            list.selection = (list.selection + 1).min(count.saturating_sub(1));
                             list.scroll = 0;
                         }
                         KeyCode::Char('k') | KeyCode::Up => {
@@ -524,7 +534,7 @@ impl App {
                             list.scroll = 0;
                         }
                         KeyCode::End | KeyCode::Char('G') => {
-                            list.selection = self.review.comments.len().saturating_sub(1);
+                            list.selection = count.saturating_sub(1);
                             list.scroll = 0;
                         }
                         KeyCode::PageDown => {
@@ -532,12 +542,10 @@ impl App {
                                 list.scroll.saturating_add(page / 2).min(u16::MAX as usize)
                         }
                         KeyCode::PageUp => list.scroll = list.scroll.saturating_sub(page / 2),
-                        KeyCode::Char('d') | KeyCode::Delete
-                            if !self.review.comments.is_empty() =>
-                        {
+                        KeyCode::Char('d') | KeyCode::Delete if local.is_some() => {
                             if self
                                 .review
-                                .comment_submitted(&self.review.comments[list.selection].id)
+                                .comment_submitted(&local.as_ref().expect("local comment").id)
                             {
                                 self.message =
                                     "Submitted comments are retained with their GitLab receipts"
@@ -546,11 +554,11 @@ impl App {
                                 list.confirming = Some(CommentConfirmation::Delete)
                             }
                         }
-                        KeyCode::Char('t') if !self.review.comments.is_empty() => {
+                        KeyCode::Char('t') if local.is_some() => {
                             list.confirming = Some(CommentConfirmation::Todo)
                         }
                         KeyCode::Char('e') => {
-                            if let Some(comment) = self.review.comments.get(list.selection) {
+                            if let Some(comment) = &local {
                                 if self.review.comment_submitted(&comment.id) {
                                     self.message = "This comment has a GitLab submission receipt; add a new comment for further feedback".into();
                                     self.comment_dialog = Some(dialog);
@@ -562,32 +570,32 @@ impl App {
                                 return;
                             }
                         }
+                        KeyCode::Char('r') if self.review.gitlab.is_some() => {
+                            self.submission_action = Some(GitLabJob::Discussions);
+                        }
                         KeyCode::Enter => {
-                            if let Some(comment) = self.review.comments.get(list.selection) {
-                                if let Some(change) = comment.anchor.change(&self.review.changes) {
-                                    let target = LineSelection {
-                                        path: change.path.clone(),
-                                        side: comment.anchor.side,
-                                        anchor: comment.anchor.start_line,
-                                        cursor: comment.anchor.end_line,
-                                        extending: comment.anchor.start_line
-                                            != comment.anchor.end_line,
-                                    };
-                                    self.review.view.selected = change.path.clone();
-                                    self.review.view.filter.clear();
-                                    self.review.view.unviewed_only = false;
-                                    self.review
-                                        .view
-                                        .collapsed
-                                        .retain(|parent| !target.path.starts_with(parent));
-                                    self.rebuild();
-                                    self.line_selection = Some(target);
-                                    self.focus = Focus::Diff;
-                                    self.dirty = true;
-                                    return;
-                                }
-                                self.message =
-                                    "Comment is outdated; its original source is shown here".into();
+                            if let Some(target) = target {
+                                self.review.view.selected = target.path.clone();
+                                self.review.view.filter.clear();
+                                self.review.view.unviewed_only = false;
+                                self.review
+                                    .view
+                                    .collapsed
+                                    .retain(|parent| !target.path.starts_with(parent));
+                                self.rebuild();
+                                self.line_selection = Some(LineSelection {
+                                    path: target.path,
+                                    side: target.side,
+                                    anchor: target.start_line,
+                                    cursor: target.end_line,
+                                    extending: target.start_line != target.end_line,
+                                });
+                                self.focus = Focus::Diff;
+                                self.dirty = true;
+                                return;
+                            }
+                            if has_position {
+                                self.message = "Comment is outdated or outside the reviewed diff; its original discussion is shown here".into();
                             }
                         }
                         _ => {}

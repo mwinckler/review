@@ -288,6 +288,7 @@ fn main() -> Result<()> {
             .join("review/config.toml"),
     };
     let config = Config::load(&config_path, cli.config.is_some())?;
+    let resuming = resume_id.is_some();
     let (mut saved, lock) = if let Some(id) = resume_id {
         store.open(&id)?
     } else {
@@ -327,6 +328,9 @@ fn main() -> Result<()> {
     let mut app = App::new(saved.review.clone());
     app.session_label = saved.label();
     app.message = format!("Session {} · ? help", app.session_label);
+    if resuming && app.review.gitlab.is_some() {
+        app.submission_action = Some(GitLabJob::Discussions);
+    }
     app.bindings_help = config
         .keybindings
         .iter()
@@ -783,6 +787,13 @@ fn run(
                 requested = None;
             }
             match reply.result {
+                Ok(GitLabOutcome::DiscussionsLoaded) => {
+                    app.message = "GitLab comments reloaded · C browse comments".into();
+                    if let Some(CommentDialog::Browse(list)) = &mut app.comment_dialog {
+                        list.selection = 0;
+                        list.scroll = 0;
+                    }
+                }
                 Ok(GitLabOutcome::Refreshed(invalidated)) => {
                     app.message =
                         format!("MR snapshots refreshed · {invalidated} viewed marks reset");

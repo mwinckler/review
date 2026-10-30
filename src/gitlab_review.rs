@@ -10,6 +10,7 @@ use sha1::{Digest, Sha1};
 use crate::{
     comments::{Comment, DiffSide},
     gitlab::{DiffRefs, GitLab, GitLabReview, User},
+    gitlab_comments::Discussion,
     state::Review,
     store::{SavedSession, SessionLock, now_millis},
 };
@@ -92,19 +93,6 @@ struct DraftNote {
 }
 
 #[derive(Deserialize)]
-struct Discussion {
-    id: String,
-    notes: Vec<RemoteNote>,
-}
-
-#[derive(Deserialize)]
-struct RemoteNote {
-    id: u64,
-    body: String,
-    author: User,
-}
-
-#[derive(Deserialize)]
 struct DiffVersion {
     id: u64,
     base_commit_sha: String,
@@ -174,16 +162,19 @@ impl GitLab {
         );
         let endpoint = mr_endpoint(&context);
         let drafts: Vec<DraftNote> = self.list(&format!("{endpoint}/draft_notes?per_page=100"))?;
-        let discussions: Vec<Discussion> =
-            self.list(&format!("{endpoint}/discussions?per_page=100"))?;
-        let publication = &mut saved
-            .review
-            .gitlab
-            .as_mut()
-            .expect("MR session")
-            .publication;
-        publication.user_id = Some(user.id);
-        let reconciled = reconcile(publication, &drafts, &discussions, user.id);
+        let discussions = self.discussions(
+            context.merge_request.target_project_id,
+            context.merge_request.iid,
+        )?;
+        let gitlab = saved.review.gitlab.as_mut().expect("MR session");
+        gitlab.discussions = discussions;
+        gitlab.publication.user_id = Some(user.id);
+        let reconciled = reconcile(
+            &mut gitlab.publication,
+            &drafts,
+            &gitlab.discussions,
+            user.id,
+        );
         lock.save(saved)?;
         ensure!(
             !reconciled?,
@@ -511,17 +502,17 @@ impl GitLab {
             Some(&body),
             false,
         )?;
-        let discussions: Vec<Discussion> =
-            self.list(&format!("{endpoint}/discussions?per_page=100"))?;
+        let context = saved.review.gitlab.as_ref().expect("MR session");
+        let discussions = self.discussions(
+            context.merge_request.target_project_id,
+            context.merge_request.iid,
+        )?;
+        let gitlab = saved.review.gitlab.as_mut().expect("MR session");
+        gitlab.discussions = discussions;
         let result = reconcile(
-            &mut saved
-                .review
-                .gitlab
-                .as_mut()
-                .expect("MR session")
-                .publication,
+            &mut gitlab.publication,
             &[],
-            &discussions,
+            &gitlab.discussions,
             approved.user_id,
         );
         lock.save(saved)?;

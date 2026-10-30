@@ -2,6 +2,7 @@ use crate::{
     app::{App, Focus},
     comment_dialog::{CommentConfirmation, CommentDialog, DraftField},
     comments::DiffSide,
+    gitlab_comments::CommentEntry,
     gitlab_ui,
     session_dialog::SessionDialog,
     tree,
@@ -174,9 +175,8 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     let panes = panes(frame.area(), app);
     let comments: Vec<_> = app
         .review
-        .comments
-        .iter()
-        .map(|comment| (comment, comment.anchor.change(&app.review.changes)))
+        .comment_entries()
+        .map(|comment| (comment, comment.target(&app.review)))
         .collect();
     let viewed = app.review.viewed.len();
     let comparison = &app.review.comparison;
@@ -328,11 +328,11 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 }
                 let count = comments
                     .iter()
-                    .filter(|(comment, change)| {
-                        let path = change
-                            .map(|change| change.path.as_str())
-                            .unwrap_or(&comment.anchor.path);
-                        path == row.path || (row.path.ends_with('/') && path.starts_with(&row.path))
+                    .filter(|(comment, _)| {
+                        comment.path(&app.review).is_some_and(|path| {
+                            path == row.path
+                                || (row.path.ends_with('/') && path.starts_with(&row.path))
+                        })
                     })
                     .count();
                 if count > 0 {
@@ -517,11 +517,13 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                     Style::default().bg(Color::Rgb(55, 50, 25)),
                 );
             }
-            let has_comment = comments.iter().any(|(comment, change)| {
-                change.is_some_and(|change| change.path == source.location.path)
-                    && source.number(comment.anchor.side).is_some_and(|line| {
-                        (comment.anchor.start_line..=comment.anchor.end_line).contains(&line)
-                    })
+            let has_comment = comments.iter().any(|(_, target)| {
+                target.as_ref().is_some_and(|target| {
+                    target.path == source.location.path
+                        && source.number(target.side).is_some_and(|line| {
+                            (target.start_line..=target.end_line).contains(&line)
+                        })
+                })
             });
             if has_comment {
                 frame.render_widget(
@@ -661,7 +663,9 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
     let title = match dialog {
         CommentDialog::Compose(draft) if draft.id.is_some() => " Edit line comment ".to_owned(),
         CommentDialog::Compose(_) => " New line comment ".to_owned(),
-        CommentDialog::Browse(_) => format!(" Comments · {} ", app.review.comments.len()),
+        CommentDialog::Browse(_) => {
+            format!(" Comments · {} ", app.review.comment_entries().count())
+        }
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -769,88 +773,171 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
             );
         }
         CommentDialog::Browse(list) => {
+            let comments: Vec<_> = app.review.comment_entries().collect();
+            let selection = list.selection.min(comments.len().saturating_sub(1));
             let [entries, detail, message, controls] = Layout::vertical([
-                Constraint::Length(app.review.comments.len().clamp(1, 5) as u16),
+                Constraint::Length(comments.len().clamp(1, 5) as u16),
                 Constraint::Min(0),
                 Constraint::Length(1),
                 Constraint::Length(1),
             ])
             .areas(inner);
-            let visible = tree::visible_range(
-                app.review.comments.len(),
-                list.selection,
-                entries.height as usize,
-            );
+            let visible = tree::visible_range(comments.len(), selection, entries.height as usize);
             let offset = visible.start;
-            let items: Vec<_> = app
-                .review
-                .comments
+            let items: Vec<_> = comments
                 .iter()
                 .skip(offset)
                 .take(visible.len())
-                .map(|comment| {
-                    let anchor = &comment.anchor;
-                    let status = if anchor.is_outdated(&app.review.changes) {
-                        " · outdated"
-                    } else {
-                        ""
-                    };
-                    let todo = if comment.source_todo.is_some() {
-                        " · TODO written"
-                    } else {
-                        ""
-                    };
-                    let remote = app
-                        .review
-                        .gitlab
-                        .as_ref()
-                        .and_then(|gitlab| gitlab.publication.comments.get(&comment.id))
-                        .map(|receipt| {
-                            if receipt.note_id.is_some() {
-                                " · published"
-                            } else if receipt.uncertain {
-                                " · GitLab outcome uncertain"
+                .map(|entry| match entry {
+                    CommentEntry::Local(comment) => {
+                        let anchor = &comment.anchor;
+                        let status = if anchor.is_outdated(&app.review.changes) {
+                            " · outdated"
+                        } else {
+                            ""
+                        };
+                        let todo = if comment.source_todo.is_some() {
+                            " · TODO written"
+                        } else {
+                            ""
+                        };
+                        let remote = app
+                            .review
+                            .gitlab
+                            .as_ref()
+                            .and_then(|gitlab| gitlab.publication.comments.get(&comment.id))
+                            .map(|receipt| {
+                                if receipt.note_id.is_some() {
+                                    " · published"
+                                } else if receipt.uncertain {
+                                    " · GitLab outcome uncertain"
+                                } else {
+                                    " · GitLab draft"
+                                }
+                            })
+                            .unwrap_or("");
+                        ListItem::new(format!(
+                            "{}:{}-{} ({}){status}{todo}{remote}",
+                            display_path(&anchor.path),
+                            anchor.start_line,
+                            anchor.end_line,
+                            anchor.side.label()
+                        ))
+                    }
+                    CommentEntry::GitLab(discussion) => {
+                        let note = discussion.comments().next().expect("visible discussion");
+                        let location = if let Some(target) = discussion.location() {
+                            format!(
+                                "{}:{}-{} ({})",
+                                display_path(&target.path),
+                                target.start_line,
+                                target.end_line,
+                                target.side.label()
+                            )
+                        } else if let Some(path) = discussion.path() {
+                            display_path(path)
+                        } else {
+                            "MR discussion".into()
+                        };
+                        let status = if note.resolvable {
+                            if note.resolved {
+                                " · resolved"
                             } else {
-                                " · GitLab draft"
+                                " · open"
                             }
-                        })
-                        .unwrap_or("");
-                    ListItem::new(format!(
-                        "{}:{}-{} ({}){status}{todo}{remote}",
-                        display_path(&anchor.path),
-                        anchor.start_line,
-                        anchor.end_line,
-                        anchor.side.label()
-                    ))
+                        } else {
+                            ""
+                        };
+                        let outdated = if discussion.is_outdated(&app.review) {
+                            " · outdated"
+                        } else {
+                            ""
+                        };
+                        let replies = discussion.comments().count().saturating_sub(1);
+                        let todo = if entry
+                            .local(&app.review)
+                            .is_some_and(|comment| comment.source_todo.is_some())
+                        {
+                            " · TODO written"
+                        } else {
+                            ""
+                        };
+                        ListItem::new(format!(
+                            "GitLab @{}{status}{outdated}{todo} · {location} · {replies} replies",
+                            display_path(&note.author.username)
+                        ))
+                    }
                 })
                 .collect();
             let mut state =
-                ListState::default().with_selected(Some(list.selection.saturating_sub(offset)));
+                ListState::default().with_selected(Some(selection.saturating_sub(offset)));
             frame.render_stateful_widget(
                 List::new(items).highlight_style(Style::default().bg(Color::Rgb(35, 45, 60))),
                 entries,
                 &mut state,
             );
-            if let Some(comment) = app.review.comments.get(list.selection) {
-                let mut text = vec![Line::styled(
-                    "Original source",
-                    Style::default().fg(Color::DarkGray),
-                )];
-                text.extend(
-                    comment
-                        .anchor
-                        .excerpt
-                        .lines()
-                        .map(|line| Line::from(display_path(line))),
-                );
-                text.push(Line::default());
-                text.push(Line::styled("Comment", Style::default().fg(Color::Magenta)));
-                text.extend(
-                    comment
-                        .body
-                        .lines()
-                        .map(|line| Line::from(display_path(line))),
-                );
+            if let Some(entry) = comments.get(selection) {
+                let text = match entry {
+                    CommentEntry::Local(comment) => {
+                        let mut text = vec![Line::styled(
+                            "Original source",
+                            Style::default().fg(Color::DarkGray),
+                        )];
+                        text.extend(
+                            comment
+                                .anchor
+                                .excerpt
+                                .lines()
+                                .map(|line| Line::from(display_path(line))),
+                        );
+                        text.push(Line::default());
+                        text.push(Line::styled("Comment", Style::default().fg(Color::Magenta)));
+                        text.extend(
+                            comment
+                                .body
+                                .lines()
+                                .map(|line| Line::from(display_path(line))),
+                        );
+                        text
+                    }
+                    CommentEntry::GitLab(discussion) => {
+                        let mut text = Vec::new();
+                        if let Some(gitlab) = &app.review.gitlab
+                            && let Some(note) = discussion.comments().next()
+                        {
+                            text.push(Line::styled(
+                                display_path(&format!(
+                                    "{}#note_{}",
+                                    gitlab.merge_request.web_url, note.id
+                                )),
+                                Style::default().fg(Color::Cyan),
+                            ));
+                        }
+                        for note in discussion.comments() {
+                            text.push(Line::default());
+                            let created = note
+                                .created_at
+                                .as_ref()
+                                .map(|created| format!(" · {created}"))
+                                .unwrap_or_default();
+                            text.push(Line::styled(
+                                display_path(&format!("@{}{created}", note.author.username)),
+                                Style::default().fg(Color::Magenta),
+                            ));
+                            text.extend(
+                                note.body
+                                    .lines()
+                                    .filter(|line| {
+                                        !((line.starts_with("<!-- review:")
+                                            || line.starts_with("<!-- review-batch:"))
+                                            && line.ends_with(" -->"))
+                                    })
+                                    .map(|line| Line::from(display_path(line))),
+                            );
+                        }
+                        text
+                    }
+                };
                 frame.render_widget(
                     Paragraph::new(text)
                         .wrap(Wrap { trim: false })
@@ -880,7 +967,30 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
                 Paragraph::new(prompt).style(Style::default().fg(Color::Yellow)),
                 message,
             );
-            frame.render_widget(Paragraph::new("j/k select · Enter jump · e edit · d delete · t TODO · PgUp/PgDn read · Esc close").style(Style::default().fg(Color::Cyan)), controls);
+            let actions = if let Some(comment) = comments
+                .get(selection)
+                .and_then(|entry| entry.local(&app.review))
+            {
+                if app.review.comment_submitted(&comment.id) {
+                    " · t TODO"
+                } else {
+                    " · e edit · d delete · t TODO"
+                }
+            } else {
+                ""
+            };
+            let reload = if app.review.gitlab.is_some() {
+                " · r reload"
+            } else {
+                ""
+            };
+            frame.render_widget(
+                Paragraph::new(format!(
+                    "j/k select · Enter jump{actions} · PgUp/PgDn read{reload} · Esc close"
+                ))
+                .style(Style::default().fg(Color::Cyan)),
+                controls,
+            );
         }
     }
 }

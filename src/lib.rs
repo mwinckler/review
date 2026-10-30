@@ -5,6 +5,7 @@ pub mod comments;
 pub mod config;
 pub mod editor;
 pub mod gitlab;
+pub mod gitlab_comments;
 pub mod gitlab_review;
 pub mod gitlab_ui;
 pub mod gitlab_worker;

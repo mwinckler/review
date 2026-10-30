@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
 use crate::{
+    gitlab_comments::Discussion,
     gitlab_review::Publication,
     vcs::{Change, Comparison, Repository, validate_commit_id},
 };
@@ -176,6 +177,8 @@ pub struct GitLabReview {
     pub merge_request: MergeRequest,
     #[serde(default)]
     pub publication: Publication,
+    #[serde(default)]
+    pub discussions: Vec<Discussion>,
 }
 
 impl GitLabReview {
@@ -308,6 +311,12 @@ impl GitLab {
         bail!("GitLab is still preparing MR !{iid}; retry shortly")
     }
 
+    pub fn discussions(&self, project_id: u64, iid: u64) -> Result<Vec<Discussion>> {
+        self.list(&format!(
+            "projects/{project_id}/merge_requests/{iid}/discussions?per_page=100"
+        ))
+    }
+
     pub fn prepare(&self, repo: &Repository, remote: &str, iid: u64) -> Result<PreparedReview> {
         repo.ensure_clean()?;
         let remotes = repo.remotes()?;
@@ -384,6 +393,7 @@ impl GitLab {
                 "opening MR snapshots; fetch complete repository history if objects are missing",
             )?;
         let changes = repo.changes(&comparison)?;
+        let discussions = self.discussions(current.target_project_id, iid)?;
         repo.checkout_review(
             &mr.source_branch,
             &refs.head_sha,
@@ -396,6 +406,7 @@ impl GitLab {
                 remote: remote.to_owned(),
                 merge_request: current,
                 publication: Publication::default(),
+                discussions,
             },
             comparison,
             changes,

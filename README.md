@@ -137,6 +137,21 @@ prepare the latest MR version, preserving matching viewed markers and comment
 anchors. GitLab requests and fetches have a 90-second command timeout; refresh
 runs in the background while the working copy is being prepared.
 
+### Read existing GitLab comments
+
+Opening an MR also loads its existing discussions. Press `C` to browse line
+comments, review summaries, and conversation threads alongside local comments.
+Each GitLab thread shows its author, replies, creation times, resolved status,
+and a link to the conversation. File-tree counts and diff-line markers include
+existing discussions. `Enter` jumps to a thread's source range in the reviewed
+snapshots; older-version discussions remain available with an outdated label.
+
+Discussions are saved with the session and reloaded when resuming an MR review.
+Press `r` inside the comments browser to reload conversations while keeping the
+reviewed snapshots and working copy. The normal `r` refresh updates both the MR
+snapshots and discussions. Local feedback and publication receipts are preserved
+through reloads, and cached conversations stay available if GitLab is unreachable.
+
 ### Submit a GitLab review
 
 Compose comments with `c` and save each locally with `Ctrl-s`. Press `P` to

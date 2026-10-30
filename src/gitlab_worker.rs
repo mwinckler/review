@@ -15,12 +15,14 @@ use crate::{
 
 pub enum GitLabJob {
     Refresh,
+    Discussions,
     Preview(String),
     Publish(Box<SubmissionPreview>),
 }
 
 pub enum GitLabOutcome {
     Refreshed(usize),
+    DiscussionsLoaded,
     Preview(SubmissionPreview),
     Published(String),
 }
@@ -54,6 +56,13 @@ impl GitLabWorker {
                 let context = saved.review.gitlab.as_ref().context("Open a GitLab MR first")?.clone();
                 let client = GitLab::new(&repo, &context.project);
                 match job {
+                    GitLabJob::Discussions => {
+                        let discussions = client.discussions(context.merge_request.target_project_id, context.merge_request.iid)
+                            .context("Reloading comments (cached discussions retained)")?;
+                        saved.review.gitlab.as_mut().expect("MR session").discussions = discussions;
+                        lock.save(&mut saved)?;
+                        Ok(GitLabOutcome::DiscussionsLoaded)
+                    }
                     GitLabJob::Refresh => {
                         ensure!(context.publication.attempt.is_none(), "A pending draft review is saved. Finish it in GitLab or start a fresh MR review; P rechecks its receipts");
                         let mut prepared = client.prepare(&repo, &context.remote, context.merge_request.iid)?;
