@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::{ErrorKind, Write},
@@ -61,6 +62,15 @@ impl SavedSession {
 
     pub fn last_opened_at(&self) -> u64 {
         self.opened_at.unwrap_or(self.updated_at)
+    }
+
+    fn cmp_saved(&self, other: &Self) -> Ordering {
+        self.updated_at
+            .cmp(&other.updated_at)
+            .then_with(|| session_number(&self.id).cmp(&session_number(&other.id)))
+            .then_with(|| self.id.cmp(&other.id))
+            .then_with(|| self.repository.cmp(&other.repository))
+            .then_with(|| (self.backend == Backend::Jj).cmp(&(other.backend == Backend::Jj)))
     }
 
     pub fn unique_prefix(&self, sessions: &[Self]) -> &str {
@@ -171,13 +181,7 @@ impl SessionStore {
                     saved
                         .last_opened_at()
                         .cmp(&previous.last_opened_at())
-                        .then_with(|| saved.updated_at.cmp(&previous.updated_at))
-                        .then_with(|| session_number(&saved.id).cmp(&session_number(&previous.id)))
-                        .then_with(|| saved.id.cmp(&previous.id))
-                        .then_with(|| saved.repository.cmp(&previous.repository))
-                        .then_with(|| {
-                            (saved.backend == Backend::Jj).cmp(&(previous.backend == Backend::Jj))
-                        })
+                        .then_with(|| saved.cmp_saved(previous))
                         .is_gt()
                 }) {
                     last = Some(saved);
@@ -411,12 +415,7 @@ impl SessionStore {
                 sessions.push(self.load(&path)?);
             }
         }
-        sessions.sort_by(|a, b| {
-            b.updated_at
-                .cmp(&a.updated_at)
-                .then_with(|| session_number(&b.id).cmp(&session_number(&a.id)))
-                .then_with(|| b.id.cmp(&a.id))
-        });
+        sessions.sort_by(|a, b| b.cmp_saved(a));
         Ok(sessions)
     }
 

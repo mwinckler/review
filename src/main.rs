@@ -294,22 +294,18 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
-    let resume_id = if last_id.is_some() {
-        last_id
-    } else {
-        match cli.resume.as_deref() {
-            Some("latest") => Some(
-                store
-                    .list()?
-                    .first()
-                    .context("No saved review. Start one with review")?
-                    .id
-                    .clone(),
-            ),
-            Some(id) => Some(store.resolve(id)?),
-            None => None,
-        }
-    };
+    let resume_id = last_id.or(match cli.resume.as_deref() {
+        Some("latest") => Some(
+            store
+                .list()?
+                .first()
+                .context("No saved review. Start one with review")?
+                .id
+                .clone(),
+        ),
+        Some(id) => Some(store.resolve(id)?),
+        None => None,
+    });
     ensure!(
         io::stdin().is_terminal() && io::stdout().is_terminal(),
         "review needs an interactive terminal"
