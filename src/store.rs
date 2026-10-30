@@ -32,6 +32,26 @@ pub struct SavedSession {
 }
 
 impl SavedSession {
+    fn read(path: &Path) -> Result<Self> {
+        let session: Self = serde_json::from_reader(
+            File::open(path).with_context(|| format!("opening session {}", path.display()))?,
+        )
+        .with_context(|| format!("reading session {}", path.display()))?;
+        ensure!(
+            session.version == 1,
+            "unsupported session version {} in {}",
+            session.version,
+            path.display()
+        );
+        ensure!(
+            path.file_stem()
+                .is_some_and(|stem| stem == session.id.as_str()),
+            "session ID differs from its filename"
+        );
+        validate_id(&session.id)?;
+        Ok(session)
+    }
+
     pub fn label(&self) -> String {
         match &self.name {
             Some(name) => format!("{} · {name}", self.id),
@@ -72,14 +92,99 @@ pub struct SessionLock {
 
 impl SessionStore {
     pub fn new(directory: &Path, repo: &Repository) -> Result<Self> {
-        let identity = serde_json::to_vec(&(&repo.root, repo.backend))?;
-        let directory = directory.join(blake3::hash(&identity).to_hex().as_str());
+        let directory = repository_directory(directory, &repo.root, repo.backend)?;
         fs::create_dir_all(&directory)
             .with_context(|| format!("creating state directory {}", directory.display()))?;
         Ok(Self {
             directory,
             repository: repo.clone(),
         })
+    }
+
+    pub fn last_opened(
+        directory: &Path,
+        repository: Option<&Path>,
+        backend: Option<Backend>,
+    ) -> Result<Option<SavedSession>> {
+        let directories = if let Some(root) = repository {
+            [Backend::Git, Backend::Jj]
+                .into_iter()
+                .filter(|candidate| backend.is_none_or(|backend| backend == *candidate))
+                .map(|backend| repository_directory(directory, root, backend))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            let entries = match fs::read_dir(directory) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("reading state directory {}", directory.display())
+                    });
+                }
+            };
+            let mut directories = Vec::new();
+            for entry in entries {
+                let entry = entry?;
+                if entry.file_type()?.is_dir()
+                    && entry.file_name().to_str().is_some_and(|name| {
+                        name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
+                {
+                    directories.push(entry.path());
+                }
+            }
+            directories
+        };
+        let mut last: Option<SavedSession> = None;
+        for folder in directories {
+            let entries = match fs::read_dir(&folder) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    continue;
+                }
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("reading sessions in {}", folder.display()));
+                }
+            };
+            for entry in entries {
+                let path = entry?.path();
+                if path.extension().is_none_or(|extension| extension != "json") {
+                    continue;
+                }
+                let saved = match SavedSession::read(&path) {
+                    Ok(saved) => saved,
+                    Err(error) if is_io_error(&error, ErrorKind::NotFound) => {
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                ensure!(
+                    repository_directory(directory, &saved.repository, saved.backend)? == folder,
+                    "session repository identity differs from its state directory: {}",
+                    path.display()
+                );
+                if backend.is_some_and(|backend| backend != saved.backend) {
+                    continue;
+                }
+                if last.as_ref().is_none_or(|previous| {
+                    saved
+                        .last_opened_at()
+                        .cmp(&previous.last_opened_at())
+                        .then_with(|| saved.updated_at.cmp(&previous.updated_at))
+                        .then_with(|| session_number(&saved.id).cmp(&session_number(&previous.id)))
+                        .then_with(|| saved.id.cmp(&previous.id))
+                        .then_with(|| saved.repository.cmp(&previous.repository))
+                        .then_with(|| {
+                            (saved.backend == Backend::Jj).cmp(&(previous.backend == Backend::Jj))
+                        })
+                        .is_gt()
+                }) {
+                    last = Some(saved);
+                }
+            }
+        }
+        Ok(last)
     }
 
     pub fn create(&self, review: Review) -> Result<(SavedSession, SessionLock)> {
@@ -316,27 +421,12 @@ impl SessionStore {
     }
 
     fn load(&self, path: &Path) -> Result<SavedSession> {
-        let session: SavedSession = serde_json::from_reader(
-            File::open(path).with_context(|| format!("opening session {}", path.display()))?,
-        )
-        .with_context(|| format!("reading session {}", path.display()))?;
-        ensure!(
-            session.version == 1,
-            "unsupported session version {} in {}",
-            session.version,
-            path.display()
-        );
+        let session = SavedSession::read(path)?;
         ensure!(
             session.repository == self.repository.root
                 && session.backend == self.repository.backend,
             "session repository identity differs from the current repository"
         );
-        ensure!(
-            path.file_stem()
-                .is_some_and(|stem| stem == session.id.as_str()),
-            "session ID differs from its filename"
-        );
-        validate_id(&session.id)?;
         Ok(session)
     }
 
@@ -355,6 +445,11 @@ impl SessionStore {
             target: self.directory.join(format!("{id}.json")),
         })
     }
+}
+
+fn repository_directory(directory: &Path, root: &Path, backend: Backend) -> Result<PathBuf> {
+    let identity = serde_json::to_vec(&(root, backend))?;
+    Ok(directory.join(blake3::hash(&identity).to_hex().as_str()))
 }
 
 fn is_io_error(error: &anyhow::Error, kind: ErrorKind) -> bool {

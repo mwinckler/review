@@ -101,6 +101,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Open the most recently opened review for this repository, or overall outside a repository
+    Last,
     /// Select a GitLab merge request and prepare its source branch for review
     Gitlab(GitLabArgs),
 }
@@ -147,7 +149,7 @@ fn main() -> Result<()> {
             || cli.cleanup
             || cli.yes)
     {
-        Cli::command().error(clap::error::ErrorKind::ArgumentConflict, "GitLab commands cannot be used with local comparison or session-management options").exit();
+        Cli::command().error(clap::error::ErrorKind::ArgumentConflict, "Startup commands cannot be used with local comparison or session-management options").exit();
     }
     if let Some(Commands::Gitlab(args)) = &cli.command
         && let Some(GitLabCommand::Login { web, device }) = args.command
@@ -162,7 +164,6 @@ fn main() -> Result<()> {
         }
         return GitLab::login(args.hostname.as_deref(), web, device);
     }
-    let repo = Repository::discover(&cli.repo, cli.backend)?;
     let state_dir = match cli.state_dir {
         Some(directory) => directory,
         None => {
@@ -172,6 +173,35 @@ fn main() -> Result<()> {
                 .unwrap_or(base.data_local_dir())
                 .join("review")
         }
+    };
+    let (repo, last_id) = if matches!(cli.command, Some(Commands::Last)) {
+        let current = Repository::find(&cli.repo, cli.backend)?;
+        let saved = SessionStore::last_opened(
+            &state_dir,
+            current.as_ref().map(|repo| repo.root.as_path()),
+            cli.backend,
+        )?
+        .context(if current.is_some() {
+            "No saved review for this repository. Start one with review"
+        } else {
+            "No saved reviews. Start one with review in a repository"
+        })?;
+        let repo =
+            Repository::discover(&saved.repository, Some(saved.backend)).with_context(|| {
+                format!(
+                    "opening last review {} in {}",
+                    saved.id,
+                    saved.repository.display()
+                )
+            })?;
+        ensure!(
+            repo.root == saved.repository,
+            "The last review's repository has moved or is no longer a repository: {}",
+            saved.repository.display()
+        );
+        (repo, Some(saved.id))
+    } else {
+        (Repository::discover(&cli.repo, cli.backend)?, None)
     };
     let store = SessionStore::new(&state_dir, &repo)?;
     if let [id, name] = cli.rename.as_slice() {
@@ -264,17 +294,21 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
-    let resume_id = match cli.resume.as_deref() {
-        Some("latest") => Some(
-            store
-                .list()?
-                .first()
-                .context("No saved review. Start one with review")?
-                .id
-                .clone(),
-        ),
-        Some(id) => Some(store.resolve(id)?),
-        None => None,
+    let resume_id = if last_id.is_some() {
+        last_id
+    } else {
+        match cli.resume.as_deref() {
+            Some("latest") => Some(
+                store
+                    .list()?
+                    .first()
+                    .context("No saved review. Start one with review")?
+                    .id
+                    .clone(),
+            ),
+            Some(id) => Some(store.resolve(id)?),
+            None => None,
+        }
     };
     ensure!(
         io::stdin().is_terminal() && io::stdout().is_terminal(),

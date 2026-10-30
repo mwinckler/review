@@ -348,6 +348,10 @@ impl Repository {
     }
 
     pub fn discover(path: &Path, backend: Option<Backend>) -> Result<Self> {
+        Self::find(path, backend)?.context("no Git or Jujutsu repository found")
+    }
+
+    pub fn find(path: &Path, backend: Option<Backend>) -> Result<Option<Self>> {
         let path = path
             .canonicalize()
             .context("opening repository directory")?;
@@ -360,11 +364,12 @@ impl Repository {
                 None
             }
         });
+        let Some(detected) = detected else {
+            return Ok(None);
+        };
         let mut repo = Self {
             root: path,
-            backend: backend
-                .or(detected)
-                .context("no Git or Jujutsu repository found")?,
+            backend: backend.unwrap_or(detected),
         };
         let args = match repo.backend {
             Backend::Git => vec!["rev-parse", "--show-toplevel"],
@@ -372,7 +377,7 @@ impl Repository {
         };
         let root = String::from_utf8(repo.run(&args, false)?)?;
         repo.root = PathBuf::from(root.strip_suffix('\n').unwrap_or(&root)).canonicalize()?;
-        Ok(repo)
+        Ok(Some(repo))
     }
 
     pub fn snapshot(&self, base: &str, head: &str) -> Result<Comparison> {

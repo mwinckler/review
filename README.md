@@ -220,6 +220,7 @@ session writer, keeping saved submission checkpoints consistent.
 ## Stop and resume
 
 ```sh
+review last                  # Open the most recently opened review
 review --resume              # Resume the most recently saved session
 review --list                # List saved sessions for this repository/backend
 review --resume r3           # Resume a particular session
@@ -229,6 +230,14 @@ review --base master         # Start a fresh review
 
 `-r` is a shortcut for `--resume`: use `review -r` for the latest session or
 `review -r r3` for a particular session.
+
+`review last` opens the most recently opened review for the current repository,
+including reviews saved with either Git or Jujutsu. Outside a repository, it opens
+the most recently opened review across all repositories and uses that review's
+saved repository and backend. `-C <directory>` selects the starting directory;
+`--backend git` or `--backend jj` narrows the history to that backend. Selection
+uses the last-opened timestamp, with the last saved time for older sessions.
+Resuming restores the existing session and updates its last-opened time.
 
 New sessions use short IDs: `r1`, `r2`, `r3`, and so on, starting at
 `r1` for each repository/backend. IDs stay with their sessions as progress is saved,
