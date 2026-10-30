@@ -2,6 +2,7 @@ use crate::{
     app::{App, Focus},
     comment_dialog::{CommentConfirmation, CommentDialog, DraftField},
     comments::DiffSide,
+    gitlab_ui,
     session_dialog::SessionDialog,
     tree,
     vcs::{Change, Comparison, LineCounts},
@@ -18,6 +19,7 @@ use ratatui::{
 };
 
 pub struct Panes {
+    mr_header: Rect,
     header: Rect,
     pub tree: Rect,
     pub diff: Rect,
@@ -25,7 +27,8 @@ pub struct Panes {
 }
 
 pub fn panes(area: Rect, app: &App) -> Panes {
-    let [header, body, footer] = Layout::vertical([
+    let [mr_header, header, body, footer] = Layout::vertical([
+        Constraint::Length(u16::from(app.review.gitlab.is_some())),
         Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(1),
@@ -45,6 +48,7 @@ pub fn panes(area: Rect, app: &App) -> Panes {
             (tree, diff)
         };
     Panes {
+        mr_header,
         header,
         tree,
         diff,
@@ -176,6 +180,22 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         .collect();
     let viewed = app.review.viewed.len();
     let comparison = &app.review.comparison;
+    if let Some(gitlab) = &app.review.gitlab {
+        let mr = &gitlab.merge_request;
+        frame.render_widget(
+            Paragraph::new(display_path(&format!(
+                " GitLab !{} {} → {} · {} · {}",
+                mr.iid, mr.source_branch, mr.target_branch, mr.title, gitlab.project.path
+            )))
+            .style(Style::default().fg(Color::Cyan)),
+            panes.mr_header,
+        );
+    }
+    let session_label = if app.review.gitlab.is_some() {
+        app.session_label.split(" · ").next().unwrap_or_default()
+    } else {
+        &app.session_label
+    };
     let mut header = Line::from(vec![
         Span::styled(
             " review ",
@@ -184,10 +204,10 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            if app.session_label.is_empty() {
+            if session_label.is_empty() {
                 String::new()
             } else {
-                format!("{}  ", display_path(&app.session_label))
+                format!("{}  ", display_path(session_label))
             },
             Style::default().fg(Color::Magenta),
         ),
@@ -222,7 +242,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         app.review
             .gitlab
             .as_ref()
-            .map(|gitlab| gitlab.merge_request.target_branch.as_str())
+            .map(|_| "base")
             .unwrap_or(&comparison.base_ref),
         &comparison.base_id,
         comparison.base_change_id.as_deref(),
@@ -231,7 +251,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         app.review
             .gitlab
             .as_ref()
-            .map(|gitlab| gitlab.merge_request.source_branch.as_str())
+            .map(|_| "head")
             .unwrap_or(&comparison.head_ref),
         &comparison.head_id,
         comparison.head_change_id.as_deref(),
@@ -569,7 +589,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     );
     if app.help {
         let width = frame.area().width.min(74);
-        let height = frame.area().height.min(31);
+        let height = frame.area().height.min(32);
         let area = Rect::new(
             frame.area().x + (frame.area().width - width) / 2,
             frame.area().y + (frame.area().height - height) / 2,
@@ -594,6 +614,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "Y                Copy selected file/folder's full path\n",
             "Enter            Highlight a source line in the diff\n",
             "c / v / C        Comment / select line range / comments\n",
+            "P                Preview and submit a GitLab review\n",
             "/                Filter filenames / search diff\n",
             "s                Flash jump in the tree from either pane\n",
             "S                Manage / rename / forget review sessions\n",
@@ -623,6 +644,9 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     }
     if let Some(dialog) = &app.comment_dialog {
         draw_comment_dialog(frame, app, dialog);
+    }
+    if let Some(dialog) = &app.submission_dialog {
+        gitlab_ui::draw_submission(frame, app, dialog);
     }
 }
 
@@ -771,8 +795,23 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
                     } else {
                         ""
                     };
+                    let remote = app
+                        .review
+                        .gitlab
+                        .as_ref()
+                        .and_then(|gitlab| gitlab.publication.comments.get(&comment.id))
+                        .map(|receipt| {
+                            if receipt.note_id.is_some() {
+                                " · published"
+                            } else if receipt.uncertain {
+                                " · GitLab outcome uncertain"
+                            } else {
+                                " · GitLab draft"
+                            }
+                        })
+                        .unwrap_or("");
                     ListItem::new(format!(
-                        "{}:{}-{} ({}){status}{todo}",
+                        "{}:{}-{} ({}){status}{todo}{remote}",
                         display_path(&anchor.path),
                         anchor.start_line,
                         anchor.end_line,

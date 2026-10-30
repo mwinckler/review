@@ -7,7 +7,10 @@ use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
-use crate::vcs::{Change, Comparison, Repository, validate_commit_id};
+use crate::{
+    gitlab_review::Publication,
+    vcs::{Change, Comparison, Repository, validate_commit_id},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Project {
@@ -162,6 +165,8 @@ pub struct GitLabReview {
     pub project: Project,
     pub remote: String,
     pub merge_request: MergeRequest,
+    #[serde(default)]
+    pub publication: Publication,
 }
 
 impl GitLabReview {
@@ -219,7 +224,7 @@ impl GitLab {
         Ok(())
     }
 
-    fn api(
+    pub(crate) fn api(
         &self,
         method: &str,
         endpoint: &str,
@@ -384,6 +389,7 @@ impl GitLab {
                 project: self.project.clone(),
                 remote: remote.to_owned(),
                 merge_request: current,
+                publication: Publication::default(),
             },
             comparison,
             changes,

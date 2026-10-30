@@ -151,6 +151,7 @@ fn action_keys(action: &str) -> Option<&'static [&'static str]> {
         "select_line" => &["Ctrl-l", "Enter"],
         "select_lines" => &["v"],
         "manage_comments" => &["C"],
+        "submit_review" => &["P"],
         "toggle_viewed" => &["Space"],
         "toggle_unviewed" => &["u"],
         "toggle_inline" => &["i"],

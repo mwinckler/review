@@ -2,8 +2,7 @@ use std::{
     collections::BTreeSet,
     io::{self, IsTerminal, Write},
     path::PathBuf,
-    sync::mpsc,
-    thread,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -21,9 +20,10 @@ use review::{
     comments::write_todo,
     config::Config,
     editor::EditorWorker,
-    gitlab::{GitLab, MrReference, PreparedReview, Project},
-    gitlab_ui::{self, Pick},
-    refresh::{RefreshResult, RefreshWorker},
+    gitlab::{GitLab, MrReference, Project},
+    gitlab_ui::{self, Pick, SubmissionAction},
+    gitlab_worker::{GitLabJob, GitLabOutcome, GitLabWorker},
+    refresh::RefreshWorker,
     renderer::{RenderOptions, RenderWorker},
     session_dialog::{SessionAction, SessionDialog},
     state::Review,
@@ -323,6 +323,7 @@ fn main() -> Result<()> {
     if metadata_changed {
         lock.save(&mut saved)?;
     }
+    let lock = Arc::new(lock);
     let mut app = App::new(saved.review.clone());
     app.session_label = saved.label();
     app.message = format!("Session {} · ? help", app.session_label);
@@ -334,18 +335,25 @@ fn main() -> Result<()> {
         .join(" · ");
     let worker = RenderWorker::new(config.renderer.clone());
     let editor = EditorWorker::new(config.editor.clone(), store.directory.join("snapshots"));
-    let result = ratatui::run(|terminal| {
+    let mut gitlab_worker = GitLabWorker::default();
+    let mut result = ratatui::run(|terminal| {
         crossterm::execute!(io::stdout(), event::EnableBracketedPaste)?;
         let _paste = PasteMode;
         run(
             terminal,
             &repo,
             &mut app,
-            (&worker, &editor),
+            (&worker, &editor, &mut gitlab_worker),
             (&store, &mut saved, &lock),
             &config,
         )
     });
+    // A terminal error can occur mid-request. Join the writer before any final save.
+    if let Some(reply) = gitlab_worker.finish() {
+        saved = reply.saved;
+        app.review = saved.review.clone();
+        result = result.and(reply.result.map(|_| ()).map_err(anyhow::Error::msg));
+    }
     saved.review = app.review;
     let saved_result = lock.save(&mut saved);
     result.and(saved_result)
@@ -419,11 +427,11 @@ fn run(
     terminal: &mut ratatui::DefaultTerminal,
     repo: &Repository,
     app: &mut App,
-    workers: (&RenderWorker, &EditorWorker),
-    session: (&SessionStore, &mut SavedSession, &SessionLock),
+    workers: (&RenderWorker, &EditorWorker, &mut GitLabWorker),
+    session: (&SessionStore, &mut SavedSession, &Arc<SessionLock>),
     config: &Config,
 ) -> Result<()> {
-    let (worker, editor) = workers;
+    let (worker, editor, gitlab_worker) = workers;
     let (store, saved, lock) = session;
     let mut diff = Text::raw("Select a changed file");
     let mut requested = None;
@@ -435,8 +443,6 @@ fn run(
         .gitlab
         .is_none()
         .then(|| RefreshWorker::new(repo, &app.review.comparison));
-    let (mr_results, mr_receiver) = mpsc::channel::<Result<PreparedReview, String>>();
-    let mut refreshing_mr = false;
     while !app.quit {
         let size = terminal.size()?;
         let panes = ui::panes(Rect::new(0, 0, size.width, size.height), app);
@@ -539,9 +545,8 @@ fn run(
         let mut force_save = false;
         if event::poll(Duration::from_millis(30))? {
             match event::read()? {
-                Event::Key(_) | Event::Paste(_) if refreshing_mr => {
-                    app.message =
-                        "Preparing the MR working copy; waiting for the fetch to finish…".into();
+                Event::Key(_) | Event::Paste(_) if app.network_busy => {
+                    app.message = "Waiting for the current GitLab operation to finish…".into();
                     redraw = true;
                 }
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
@@ -550,6 +555,7 @@ fn run(
                         || app.flash.is_some()
                         || app.session_dialog.is_some()
                         || app.comment_dialog.is_some()
+                        || app.submission_dialog.is_some()
                         || app.help
                         || (key.code == KeyCode::Char('c')
                             && key.modifiers.contains(KeyModifiers::CONTROL))
@@ -562,6 +568,7 @@ fn run(
                         let search = app.focus == Focus::Diff
                             && app.session_dialog.is_none()
                             && app.comment_dialog.is_none()
+                            && app.submission_dialog.is_none()
                             && !app.searching
                             && !app.help
                             && !key.modifiers.contains(KeyModifiers::CONTROL)
@@ -570,16 +577,19 @@ fn run(
                             && app.searching
                             && app.session_dialog.is_none()
                             && app.comment_dialog.is_none()
+                            && app.submission_dialog.is_none()
                             && key.code == KeyCode::Enter;
-                        let input_page =
-                            if app.session_dialog.is_some() || app.comment_dialog.is_some() {
-                                ui::session_dialog_area(Rect::new(0, 0, size.width, size.height))
-                                    .height
-                                    .saturating_sub(5)
-                                    .max(1) as usize
-                            } else {
-                                page
-                            };
+                        let input_page = if app.session_dialog.is_some()
+                            || app.comment_dialog.is_some()
+                            || app.submission_dialog.is_some()
+                        {
+                            ui::session_dialog_area(Rect::new(0, 0, size.width, size.height))
+                                .height
+                                .saturating_sub(5)
+                                .max(1) as usize
+                        } else {
+                            page
+                        };
                         app.handle_key(key, input_page, diff.lines.len(), size.width);
                         force_save |= key.code == KeyCode::Char(' ')
                             && app.session_dialog.is_none()
@@ -599,6 +609,9 @@ fn run(
                         redraw = true;
                     } else if let Some(CommentDialog::Compose(draft)) = &mut app.comment_dialog {
                         draft.insert(&text);
+                        redraw = true;
+                    } else if let Some(dialog) = &mut app.submission_dialog {
+                        dialog.insert(&text);
                         redraw = true;
                     }
                 }
@@ -701,28 +714,37 @@ fn run(
             }
             redraw = true;
         }
+        let mut gitlab_job = app.submission_action.take().map(|action| match action {
+            SubmissionAction::Preview(summary) => GitLabJob::Preview(summary),
+            SubmissionAction::Publish(preview) => GitLabJob::Publish(preview),
+        });
         if app.refresh {
             app.refresh = false;
-            if let Some(gitlab) = &app.review.gitlab {
-                if !refreshing_mr {
-                    let context = gitlab.clone();
-                    let repo = repo.clone();
-                    let results = mr_results.clone();
-                    thread::spawn(move || {
-                        let result = GitLab::new(&repo, &context.project).prepare(
-                            &repo,
-                            &context.remote,
-                            context.merge_request.iid,
-                        );
-                        let _ = results.send(result.map_err(|error| format!("{error:#}")));
-                    });
-                    refreshing_mr = true;
-                    app.message = "Fetching the latest MR version…".into();
-                    redraw = true;
-                }
+            if app.review.gitlab.is_some() {
+                gitlab_job = Some(GitLabJob::Refresh);
             } else if let Some(refresher) = &refresher {
                 refresher.request();
             }
+        }
+        if let Some(job) = gitlab_job {
+            let started = (|| -> Result<()> {
+                saved.review = app.review.clone();
+                lock.save(saved)?;
+                gitlab_worker.start(repo, saved.clone(), Arc::clone(lock), job)
+            })();
+            match started {
+                Ok(()) => {
+                    app.network_busy = true;
+                    app.message = "Contacting GitLab…".into();
+                }
+                Err(error) => {
+                    app.message = format!("GitLab: {error:#}");
+                    if let Some(dialog) = &mut app.submission_dialog {
+                        dialog.message = app.message.clone();
+                    }
+                }
+            }
+            redraw = true;
         }
         if app.editor_requested
             && !app.rendering
@@ -749,21 +771,53 @@ fn run(
             };
             redraw = true;
         }
-        let mut refreshed: Vec<_> = refresher
+        if let Some(reply) = gitlab_worker.take_finished() {
+            app.network_busy = false;
+            let previous_preview: Vec<_> = app.preview_changes().cloned().collect();
+            *saved = reply.saved;
+            app.review = saved.review.clone();
+            app.rebuild();
+            let preview_changed = !previous_preview.iter().eq(app.preview_changes());
+            if preview_changed {
+                app.hunk_selection = None;
+                app.line_selection = None;
+                app.editor_requested = false;
+                request_id = worker.cancel();
+                requested = None;
+            }
+            match reply.result {
+                Ok(GitLabOutcome::Refreshed(invalidated)) => {
+                    app.message =
+                        format!("MR snapshots refreshed · {invalidated} viewed marks reset");
+                    request_id = worker.cancel();
+                    requested = None;
+                }
+                Ok(GitLabOutcome::Preview(preview)) => {
+                    if let Some(dialog) = &mut app.submission_dialog {
+                        dialog.preview = Some(preview);
+                        dialog.message.clear();
+                    }
+                }
+                Ok(GitLabOutcome::Published(message)) => {
+                    app.submission_dialog = None;
+                    app.message = message;
+                }
+                Err(error) => {
+                    app.message = format!("GitLab: {error}");
+                    if let Some(dialog) = &mut app.submission_dialog {
+                        dialog.preview = None;
+                        dialog.message = app.message.clone();
+                    }
+                }
+            }
+            app.dirty = true;
+            force_save = true;
+            redraw = true;
+        }
+        let refreshed: Vec<_> = refresher
             .as_ref()
             .map(|worker| worker.results.try_iter().collect())
             .unwrap_or_default();
-        for result in mr_receiver.try_iter() {
-            refreshing_mr = false;
-            let snapshot = result.map(|prepared| {
-                app.review.gitlab = Some(prepared.gitlab);
-                (prepared.comparison, prepared.changes)
-            });
-            refreshed.push(RefreshResult {
-                manual: true,
-                snapshot,
-            });
-        }
         for result in refreshed {
             match result.snapshot {
                 Ok((comparison, changes)) => {
@@ -804,6 +858,7 @@ fn run(
         }
         force_save |= std::mem::take(&mut app.comments_changed);
         if app.dirty
+            && !app.network_busy
             && (force_save || app.quit || last_save.elapsed() >= Duration::from_millis(250))
         {
             saved.review = app.review.clone();

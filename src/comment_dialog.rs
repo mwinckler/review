@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::{
@@ -128,6 +128,10 @@ impl CommentDraft {
 
     fn save(&self, review: &mut Review) -> Result<usize> {
         if let Some(id) = &self.id {
+            ensure!(
+                !review.comment_submitted(id),
+                "This comment has a GitLab submission receipt; add a new comment for further feedback"
+            );
             let index = review
                 .comments
                 .iter()
@@ -582,13 +586,27 @@ impl App {
                         KeyCode::Char('d') | KeyCode::Delete
                             if !self.review.comments.is_empty() =>
                         {
-                            list.confirming = Some(CommentConfirmation::Delete)
+                            if self
+                                .review
+                                .comment_submitted(&self.review.comments[list.selection].id)
+                            {
+                                self.message =
+                                    "Submitted comments are retained with their GitLab receipts"
+                                        .into();
+                            } else {
+                                list.confirming = Some(CommentConfirmation::Delete)
+                            }
                         }
                         KeyCode::Char('t') if !self.review.comments.is_empty() => {
                             list.confirming = Some(CommentConfirmation::Todo)
                         }
                         KeyCode::Char('e') => {
                             if let Some(comment) = self.review.comments.get(list.selection) {
+                                if self.review.comment_submitted(&comment.id) {
+                                    self.message = "This comment has a GitLab submission receipt; add a new comment for further feedback".into();
+                                    self.comment_dialog = Some(dialog);
+                                    return;
+                                }
                                 self.comment_dialog = Some(CommentDialog::Compose(Box::new(
                                     CommentDraft::edit(comment),
                                 )));

@@ -6,6 +6,7 @@ use std::{
 use crate::{
     comment_dialog::{CommentAction, CommentDialog, CommentList, LineSelection},
     comments::DiffSide,
+    gitlab_ui::{SubmissionAction, SubmissionDialog},
     hunks::{Hunk, HunkLocation, SourceLine},
     session_dialog::{SessionAction, SessionDialog},
     state::{Position, Review},
@@ -92,6 +93,9 @@ pub struct App {
     pub comment_dialog: Option<CommentDialog>,
     pub comment_action: Option<CommentAction>,
     pub comments_changed: bool,
+    pub submission_dialog: Option<SubmissionDialog>,
+    pub submission_action: Option<SubmissionAction>,
+    pub network_busy: bool,
     hunk_actions: VecDeque<HunkNavigation>,
     prefix: Option<(char, Option<usize>)>,
     search_original: String,
@@ -132,6 +136,9 @@ impl App {
             comment_dialog: None,
             comment_action: None,
             comments_changed: false,
+            submission_dialog: None,
+            submission_action: None,
+            network_busy: false,
             hunk_actions: VecDeque::new(),
             prefix: None,
             search_original: String::new(),
@@ -322,6 +329,10 @@ impl App {
     }
 
     fn handle_input(&mut self, key: KeyEvent, page: usize, diff_lines: usize, terminal_width: u16) {
+        if self.network_busy {
+            self.message = "Waiting for the current GitLab operation to finish…".into();
+            return;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.quit = true;
             return;
@@ -332,6 +343,10 @@ impl App {
         }
         if self.comment_dialog.is_some() {
             self.handle_comment_dialog(key, page);
+            return;
+        }
+        if self.submission_dialog.is_some() {
+            self.handle_submission_dialog(key, page);
             return;
         }
         self.dirty = true;
@@ -475,6 +490,13 @@ impl App {
             }
             KeyCode::Char('S') => {
                 self.session_action = Some(SessionAction::Open);
+            }
+            KeyCode::Char('P') => {
+                if self.review.gitlab.is_some() {
+                    self.submission_dialog = Some(SubmissionDialog::new(&self.review));
+                } else {
+                    self.message = "Open a GitLab MR with review gitlab to submit a review".into();
+                }
             }
             KeyCode::Char('e') => {
                 self.editor_requested = true;

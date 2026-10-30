@@ -1,0 +1,98 @@
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::Arc,
+    thread::{self, JoinHandle},
+};
+
+use anyhow::{Context, Result, ensure};
+
+use crate::{
+    gitlab::GitLab,
+    gitlab_review::SubmissionPreview,
+    store::{SavedSession, SessionLock},
+    vcs::Repository,
+};
+
+pub enum GitLabJob {
+    Refresh,
+    Preview(String),
+    Publish(Box<SubmissionPreview>),
+}
+
+pub enum GitLabOutcome {
+    Refreshed(usize),
+    Preview(SubmissionPreview),
+    Published(String),
+}
+
+pub struct GitLabReply {
+    pub saved: SavedSession,
+    pub result: Result<GitLabOutcome, String>,
+}
+
+#[derive(Default)]
+pub struct GitLabWorker {
+    thread: Option<JoinHandle<GitLabReply>>,
+}
+
+impl GitLabWorker {
+    /// The UI pauses editing and saving while this worker owns the session writer.
+    pub fn start(
+        &mut self,
+        repo: &Repository,
+        mut saved: SavedSession,
+        lock: Arc<SessionLock>,
+        job: GitLabJob,
+    ) -> Result<()> {
+        ensure!(
+            self.thread.is_none(),
+            "A GitLab operation is already running"
+        );
+        let repo = repo.clone();
+        self.thread = Some(thread::Builder::new().name("gitlab".into()).spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| -> Result<GitLabOutcome> {
+                let context = saved.review.gitlab.as_ref().context("Open a GitLab MR first")?.clone();
+                let client = GitLab::new(&repo, &context.project);
+                match job {
+                    GitLabJob::Refresh => {
+                        ensure!(context.publication.attempt.is_none(), "Reconcile the pending GitLab submission with P before changing its reviewed snapshots");
+                        let mut prepared = client.prepare(&repo, &context.remote, context.merge_request.iid)?;
+                        prepared.gitlab.publication = context.publication;
+                        let invalidated = saved.review.reconcile(prepared.comparison, prepared.changes);
+                        saved.review.gitlab = Some(prepared.gitlab);
+                        lock.save(&mut saved)?;
+                        Ok(GitLabOutcome::Refreshed(invalidated))
+                    }
+                    GitLabJob::Preview(summary) => client.preview_submission(&mut saved, &lock, &summary).map(GitLabOutcome::Preview),
+                    GitLabJob::Publish(preview) => client.submit_review(&mut saved, &lock, &preview).map(GitLabOutcome::Published),
+                }
+            })).map_err(|_| "GitLab worker failed; recheck the saved submission before retrying".to_owned()).and_then(|result| result.map_err(|error| format!("{error:#}")));
+            GitLabReply { saved, result }
+        }).context("starting GitLab worker")?);
+        Ok(())
+    }
+
+    pub fn take_finished(&mut self) -> Option<GitLabReply> {
+        if self
+            .thread
+            .as_ref()
+            .is_some_and(|thread| thread.is_finished())
+        {
+            self.finish()
+        } else {
+            None
+        }
+    }
+
+    pub fn finish(&mut self) -> Option<GitLabReply> {
+        self.thread
+            .take()
+            .map(|thread| thread.join().expect("GitLab task panics are captured"))
+    }
+}
+
+impl Drop for GitLabWorker {
+    fn drop(&mut self) {
+        let _ = self.finish();
+    }
+}

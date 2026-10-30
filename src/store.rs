@@ -17,7 +17,7 @@ use crate::{
 
 const WEEK: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedSession {
     pub version: u32,
     pub id: String,

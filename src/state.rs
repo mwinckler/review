@@ -50,6 +50,12 @@ pub struct Review {
 }
 
 impl Review {
+    pub fn comment_submitted(&self, id: &str) -> bool {
+        self.gitlab
+            .as_ref()
+            .is_some_and(|gitlab| gitlab.publication.comments.contains_key(id))
+    }
+
     pub fn test_line_counts(&self) -> Option<LineCounts> {
         self.comparison.file_line_counts.as_ref().and_then(|files| {
             self.changes

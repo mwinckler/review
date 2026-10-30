@@ -137,6 +137,42 @@ prepare the latest MR version, preserving matching viewed markers and comment
 anchors. GitLab requests and fetches have a 90-second command timeout; refresh
 runs in the background while the working copy is being prepared.
 
+### Submit a GitLab review
+
+Compose comments with `c` and save each locally with `Ctrl-s`. Press `P` to
+preview a GitLab review. Use `Tab` to switch between the Markdown summary and
+pending comments; `j` / `k` select comments and `PageUp` / `PageDown` scroll their
+source and text. An empty summary uses “Review completed.” when comments are
+present.
+
+Press `Ctrl-s` to check the current MR version, source anchors, authenticated
+account, and pending GitLab drafts. Then press `y` to stage the comments as native
+GitLab draft notes and publish the review, or `n` / `Esc` to return to editing.
+Token authentication requires the `api` scope for submission.
+
+**Publishing includes all of your pending GitLab drafts on this MR.** The
+confirmation shows the count of drafts from outside the session, including
+browser-created drafts. Changes to those drafts during submission require a fresh
+preview and confirmation.
+
+Comments on added, removed, unchanged context, and renamed-file lines use GitLab's
+recorded diff positions. Inclusive ranges become multiline GitLab comments.
+Outdated anchors and lines outside GitLab's available diff are flagged for
+correction before staging. MR updates and retargeting require another refresh and
+review.
+
+Submission intents, draft IDs, and published-note receipts are saved after each
+step. Hidden identity markers associate remote notes with local comments, allowing
+an interrupted request to be reconciled on the next preview. `C` shows draft,
+published, and uncertain statuses. Submitted comments retain their original text
+and receipts; add a new comment for further feedback.
+
+If a response is lost, press `Ctrl-s` in the submission dialog to recheck GitLab.
+**Check the MR in GitLab before acknowledging an uncertain retry:** a previous
+write may already be visible. `X`, then `y`, acknowledges that risk and allows a
+fresh preview. Quitting and editing pause while a GitLab operation owns the
+session writer, keeping saved submission checkpoints consistent.
+
 ## Stop and resume
 
 ```sh
@@ -253,6 +289,7 @@ Repository content and persistent editor snapshots are preserved.
 | `c` | Compose a line comment; `Ctrl-s` saves it locally |
 | `v` | Start a range at the highlighted line; `j` / `k` extend, `v` returns to one line |
 | `C` | Browse comments, edit, delete, jump to source, or write a source TODO |
+| `P` | Preview and submit comments as a GitLab review |
 | `/` | Filter filenames in the tree; search text in the diff |
 | `s` | Flash jump to a visible tree entry from either pane |
 | `S` | Manage, rename, and forget saved sessions with multiselect |
@@ -349,7 +386,7 @@ In the composer, type or paste multiline text. `Enter` adds a newline, arrows mo
 the text cursor, and `Ctrl-s` submits the comment. `Tab` / `Shift-Tab` cycle between
 the body and the inclusive start/end line fields for a new comment; `Ctrl-u` clears
 a line field. These fields also support renderers with custom output. `Esc`
-discards the draft. Comment bodies support Markdown text for future remote reviews.
+discards the draft. Comment bodies support Markdown text for GitLab reviews.
 
 Press `C` to browse every comment in the session, including comments on hidden or
 viewed files. `j` / `k` select a comment, `Enter` jumps to its source, `e` edits its
@@ -357,7 +394,7 @@ body, and `d` asks to delete it. `PageUp` / `PageDown` or `Ctrl-u` / `Ctrl-d` sc
 long comments and source excerpts. Magenta `●` markers identify commented diff
 lines and show per-file/folder comment counts in the tree.
 
-Comments are local session data stored alongside progress in the state directory.
+Comments are saved as local session data alongside progress in the state directory.
 Each comment retains a stable ID, timestamps, the original base/head revision IDs,
 the selected side and repository-relative path, an inclusive source range, a file
 object identity, and the quoted source. Refresh preserves these original anchors.
@@ -365,9 +402,9 @@ When the anchored file side changes or disappears, the comment is labeled
 `outdated` and remains available with its original source excerpt.
 
 The provider-independent records in `src/comments.rs` are separate from terminal
-line mapping and dialogs. A future GitHub, GitLab, or Gitea adapter can translate
-the revision/side/range anchor and Markdown body into a remote review comment,
-using the local ID to associate a remote record with its saved counterpart.
+line mapping and dialogs. The GitLab adapter translates revision/side/range
+anchors and Markdown bodies into remote draft notes, keeping submission receipts
+with the MR session.
 
 #### Write a source TODO
 
@@ -438,7 +475,7 @@ Actions: `up`, `down`, `left`, `right`, `focus_tree`, `focus_diff`, `first`, `la
 `page_down`, `page_up`, `half_page_down`, `half_page_up`, `next_file`,
 `previous_file`, `next_unviewed`, `previous_unviewed`, `next_hunk`, `previous_hunk`,
 `open_editor`, `copy_path`, `add_comment`, `select_line`, `select_lines`,
-`manage_comments`, `toggle_viewed`,
+`manage_comments`, `submit_review`, `toggle_viewed`,
 `toggle_unviewed`, `toggle_inline`, `toggle_fullscreen`, `search`, `flash`,
 `manage_sessions`,
 `next_match`, `previous_match`, `refresh`, `clear_filters`, `help`, `quit`.
