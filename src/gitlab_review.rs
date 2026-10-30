@@ -10,7 +10,7 @@ use sha1::{Digest, Sha1};
 use crate::{
     comments::{Comment, DiffSide},
     gitlab::{DiffRefs, GitLab, GitLabReview, User},
-    gitlab_comments::Discussion,
+    gitlab_comments::{Discussion, DiscussionReply},
     state::Review,
     store::{SavedSession, SessionLock, now_millis},
 };
@@ -41,6 +41,8 @@ pub struct RemoteComment {
     pub note_id: Option<u64>,
     pub discussion_id: Option<String>,
     pub uncertain: bool,
+    #[serde(default)]
+    pub in_reply_to_discussion_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -71,6 +73,7 @@ struct PreparedNote {
     marker: String,
     note: String,
     position: Value,
+    in_reply_to_discussion_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -90,6 +93,23 @@ struct DraftNote {
     note: String,
     #[serde(default)]
     position: Option<Value>,
+    #[serde(default)]
+    discussion_id: Option<String>,
+}
+
+impl DraftNote {
+    fn matches(&self, note: &str, position: &Value, discussion_id: Option<&str>) -> bool {
+        self.note == note
+            && if let Some(id) = discussion_id {
+                self.discussion_id.as_deref() == Some(id)
+            } else {
+                self.discussion_id.is_none()
+                    && self
+                        .position
+                        .as_ref()
+                        .is_some_and(|actual| contains(actual, position))
+            }
+    }
 }
 
 #[derive(Deserialize)]
@@ -120,6 +140,18 @@ pub fn pending_comments(review: &Review) -> impl Iterator<Item = &Comment> {
             .as_ref()
             .and_then(|gitlab| gitlab.publication.comments.get(&comment.id))
             .is_none_or(|receipt| receipt.note_id.is_none())
+    })
+}
+
+pub fn pending_replies(review: &Review) -> impl Iterator<Item = &DiscussionReply> {
+    review.gitlab.iter().flat_map(|gitlab| {
+        gitlab.replies.iter().filter(|reply| {
+            gitlab
+                .publication
+                .comments
+                .get(&reply.id)
+                .is_none_or(|receipt| receipt.note_id.is_none())
+        })
     })
 }
 
@@ -201,16 +233,22 @@ impl GitLab {
                 && saved.review.comparison.head_id == refs.head_sha,
             "MR changed since this review. Close this dialog and refresh with r before submitting"
         );
-        let versions: Vec<DiffVersion> = self.list(&format!("{endpoint}/versions?per_page=100"))?;
-        let version = versions
-            .iter()
-            .find(|version| {
-                version.base_commit_sha == refs.base_sha
-                    && version.head_commit_sha == refs.head_sha
-                    && version.start_commit_sha == refs.start_sha
-            })
-            .context("GitLab's reviewed diff version is unavailable; refresh the MR")?;
-        let diff: VersionDiffs = self.get(&format!("{endpoint}/versions/{}", version.id))?;
+        let diffs = if pending_comments(&saved.review).next().is_some() {
+            let versions: Vec<DiffVersion> =
+                self.list(&format!("{endpoint}/versions?per_page=100"))?;
+            let version = versions
+                .iter()
+                .find(|version| {
+                    version.base_commit_sha == refs.base_sha
+                        && version.head_commit_sha == refs.head_sha
+                        && version.start_commit_sha == refs.start_sha
+                })
+                .context("GitLab's reviewed diff version is unavailable; refresh the MR")?;
+            let diff: VersionDiffs = self.get(&format!("{endpoint}/versions/{}", version.id))?;
+            diff.diffs
+        } else {
+            Vec::new()
+        };
         let mut notes = Vec::new();
         for comment in pending_comments(&saved.review) {
             ensure!(
@@ -219,7 +257,7 @@ impl GitLab {
                 comment.anchor.path,
                 comment.anchor.start_line
             );
-            let position = position(comment, &refs, &diff.diffs).with_context(|| {
+            let position = position(comment, &refs, &diffs).with_context(|| {
                 format!(
                     "Comment at {}:{}",
                     comment.anchor.path, comment.anchor.start_line
@@ -228,9 +266,40 @@ impl GitLab {
             let hash = blake3::hash(&serde_json::to_vec(&(&comment.body, &position))?).to_hex();
             let marker = format!("<!-- review:{}:{} -->", comment.id, &hash[..16]);
             let note = format!("{}\n\n{marker}", comment.body);
-            if let Some(receipt) = context.publication.comments.get(&comment.id) {
+            notes.push(PreparedNote {
+                id: comment.id.clone(),
+                marker,
+                note,
+                position,
+                in_reply_to_discussion_id: None,
+            });
+        }
+        for reply in pending_replies(&saved.review) {
+            ensure!(
+                context
+                    .discussions
+                    .iter()
+                    .any(|discussion| discussion.id == reply.discussion_id
+                        && discussion.comments().next().is_some()),
+                "The reply's GitLab thread is unavailable; reload comments before submitting"
+            );
+            let hash =
+                blake3::hash(&serde_json::to_vec(&(&reply.body, &reply.discussion_id))?).to_hex();
+            let marker = format!("<!-- review:{}:{} -->", reply.id, &hash[..16]);
+            notes.push(PreparedNote {
+                id: reply.id.clone(),
+                note: format!("{}\n\n{marker}", reply.body),
+                marker,
+                position: Value::Null,
+                in_reply_to_discussion_id: Some(reply.discussion_id.clone()),
+            });
+        }
+        for note in &notes {
+            if let Some(receipt) = context.publication.comments.get(&note.id) {
                 ensure!(
-                    receipt.note == note && receipt.position == position,
+                    receipt.note == note.note
+                        && receipt.position == note.position
+                        && receipt.in_reply_to_discussion_id == note.in_reply_to_discussion_id,
                     "A staged comment changed locally; restore its original text or reconcile it on GitLab"
                 );
                 ensure!(
@@ -238,12 +307,6 @@ impl GitLab {
                     "A comment write has an uncertain outcome. Recheck with Ctrl-s; after verifying the MR on GitLab, use X to acknowledge a retry"
                 );
             }
-            notes.push(PreparedNote {
-                id: comment.id.clone(),
-                marker,
-                note,
-                position,
-            });
         }
         ensure!(
             !notes.is_empty() || !summary.trim().is_empty(),
@@ -357,11 +420,17 @@ impl GitLab {
                     note_id: None,
                     discussion_id: None,
                     uncertain: true,
+                    in_reply_to_discussion_id: note.in_reply_to_discussion_id.clone(),
                 },
             );
             // Persist the intent before sending a mutation; failed responses require reconciliation.
             lock.save(saved)?;
-            let body = json!({"note":note.note,"position":note.position});
+            let mut body = json!({"note":note.note});
+            if let Some(id) = &note.in_reply_to_discussion_id {
+                body["in_reply_to_discussion_id"] = json!(id);
+            } else {
+                body["position"] = note.position.clone();
+            }
             let output = self.api(
                 "POST",
                 &format!("{endpoint}/draft_notes"),
@@ -371,11 +440,11 @@ impl GitLab {
             let draft: DraftNote =
                 serde_json::from_slice(&output).context("decoding the created GitLab draft")?;
             ensure!(
-                draft.note == note.note
-                    && draft
-                        .position
-                        .as_ref()
-                        .is_some_and(|position| contains(position, &note.position)),
+                draft.matches(
+                    &note.note,
+                    &note.position,
+                    note.in_reply_to_discussion_id.as_deref()
+                ),
                 "GitLab returned a different draft; recheck before continuing"
             );
             let receipt = saved
@@ -441,11 +510,11 @@ impl GitLab {
                 .find(|receipt| receipt.draft_id == Some(draft.id))
             {
                 ensure!(
-                    draft.note == receipt.note
-                        && draft
-                            .position
-                            .as_ref()
-                            .is_some_and(|position| contains(position, &receipt.position)),
+                    draft.matches(
+                        &receipt.note,
+                        &receipt.position,
+                        receipt.in_reply_to_discussion_id.as_deref()
+                    ),
                     "A staged GitLab comment changed; preview again before publishing"
                 );
             } else if attempt.summary_draft_id == Some(draft.id) {
@@ -539,7 +608,15 @@ fn reconcile(
             discussion
                 .notes
                 .iter()
-                .find(|note| note.author.id == user_id && note.body.contains(&receipt.marker))
+                .find(|note| {
+                    !note.system
+                        && note.author.id == user_id
+                        && note.body.contains(&receipt.marker)
+                        && receipt
+                            .in_reply_to_discussion_id
+                            .as_ref()
+                            .is_none_or(|id| id == &discussion.id)
+                })
                 .map(|note| (discussion, note))
         }) {
             receipt.note_id = Some(note.id);
@@ -557,11 +634,11 @@ fn reconcile(
             );
             if let Some(draft) = matches.first() {
                 ensure!(
-                    draft.note == receipt.note
-                        && draft
-                            .position
-                            .as_ref()
-                            .is_some_and(|position| contains(position, &receipt.position)),
+                    draft.matches(
+                        &receipt.note,
+                        &receipt.position,
+                        receipt.in_reply_to_discussion_id.as_deref()
+                    ),
                     "A GitLab draft was edited outside Review; inspect it before publishing"
                 );
                 receipt.draft_id = Some(draft.id);

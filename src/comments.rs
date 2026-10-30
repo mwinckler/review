@@ -145,14 +145,7 @@ pub struct Comment {
 impl Comment {
     pub fn new(anchor: CommentAnchor, body: String) -> Result<Self> {
         validate_body(&body)?;
-        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-        let identity = (
-            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos(),
-            std::process::id(),
-            SEQUENCE.fetch_add(1, Ordering::Relaxed),
-            &anchor,
-        );
-        let id = blake3::hash(&serde_json::to_vec(&identity)?).to_hex()[..32].to_owned();
+        let id = comment_id()?;
         let now = now_millis()?;
         Ok(Self {
             id,
@@ -172,7 +165,17 @@ impl Comment {
     }
 }
 
-fn validate_body(body: &str) -> Result<()> {
+pub(crate) fn comment_id() -> Result<String> {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let identity = (
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos(),
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed),
+    );
+    Ok(blake3::hash(&serde_json::to_vec(&identity)?).to_hex()[..32].to_owned())
+}
+
+pub(crate) fn validate_body(body: &str) -> Result<()> {
     ensure!(!body.trim().is_empty(), "Write a comment before saving");
     ensure!(
         body.chars()

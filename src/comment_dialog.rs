@@ -5,12 +5,14 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::{
     app::{App, Focus},
-    comments::{Comment, CommentAnchor, DiffSide, excerpt},
-    gitlab_comments::CommentEntry,
+    comments::{Comment, CommentAnchor, DiffSide, excerpt, validate_body},
+    gitlab_comments::{CommentEntry, DiscussionReply, ThreadId},
+    gitlab_review::pending_replies,
     gitlab_worker::GitLabJob,
     hunks::SourceLine,
     input,
     state::Review,
+    store::now_millis,
     vcs::Repository,
 };
 
@@ -70,6 +72,7 @@ pub struct CommentDraft {
     pub cursor: usize,
     pub field: DraftField,
     pub message: String,
+    pub preview: bool,
     source: Option<String>,
 }
 
@@ -98,6 +101,7 @@ impl CommentDraft {
             cursor: 0,
             field: DraftField::Body,
             message: String::new(),
+            preview: false,
             source: Some(String::from_utf8(content)?),
         })
     }
@@ -112,6 +116,7 @@ impl CommentDraft {
             cursor: comment.body.len(),
             field: DraftField::Body,
             message: String::new(),
+            preview: false,
             source: None,
         }
     }
@@ -154,7 +159,7 @@ impl CommentDraft {
     }
 
     pub fn insert(&mut self, text: &str) {
-        if self.field == DraftField::Body {
+        if self.field == DraftField::Body && !self.preview {
             input::insert(&mut self.body, &mut self.cursor, text);
         }
     }
@@ -206,6 +211,77 @@ pub struct CommentList {
 pub enum CommentDialog {
     Compose(Box<CommentDraft>),
     Browse(CommentList),
+    Reply(ReplyDraft),
+}
+
+pub struct ReplyDraft {
+    pub id: Option<String>,
+    pub discussion_id: String,
+    pub body: String,
+    pub cursor: usize,
+    pub preview: bool,
+    pub message: String,
+}
+
+impl ReplyDraft {
+    pub(crate) fn new(review: &Review, thread: &ThreadId) -> Result<Self> {
+        let Some(CommentEntry::GitLab(discussion)) = thread.entry(review) else {
+            anyhow::bail!("Publish the local comment with P to start a GitLab thread");
+        };
+        let reply = pending_replies(review).find(|reply| reply.discussion_id == discussion.id);
+        ensure!(
+            reply.is_none_or(|reply| !review.comment_submitted(&reply.id)),
+            "This reply has a GitLab submission receipt; P rechecks the pending review"
+        );
+        let body = reply.map(|reply| reply.body.clone()).unwrap_or_default();
+        Ok(Self {
+            id: reply.map(|reply| reply.id.clone()),
+            discussion_id: discussion.id.clone(),
+            cursor: body.len(),
+            body,
+            preview: false,
+            message: String::new(),
+        })
+    }
+
+    pub fn insert(&mut self, value: &str) {
+        if !self.preview {
+            input::insert(&mut self.body, &mut self.cursor, value);
+        }
+    }
+
+    fn save(&self, review: &mut Review) -> Result<()> {
+        validate_body(&self.body)?;
+        ensure!(
+            self.id
+                .as_ref()
+                .is_none_or(|id| !review.comment_submitted(id)),
+            "The reply is already staged; P rechecks its receipt"
+        );
+        let gitlab = review.gitlab.as_mut().context("Open a GitLab MR first")?;
+        ensure!(
+            gitlab
+                .discussions
+                .iter()
+                .any(|discussion| discussion.id == self.discussion_id),
+            "Thread was removed; reload comments"
+        );
+        if let Some(id) = &self.id {
+            let reply = gitlab
+                .replies
+                .iter_mut()
+                .find(|reply| &reply.id == id)
+                .context("Reply was removed")?;
+            reply.body.clone_from(&self.body);
+            reply.updated_at = now_millis()?;
+        } else {
+            gitlab.replies.push(DiscussionReply::new(
+                self.discussion_id.clone(),
+                self.body.clone(),
+            )?);
+        }
+        Ok(())
+    }
 }
 
 impl App {
@@ -468,8 +544,37 @@ impl App {
                         }
                         Err(error) => draft.message = format!("{error:#}"),
                     }
-                } else {
+                } else if key.code == KeyCode::Char('p')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    draft.preview = !draft.preview;
+                } else if !draft.preview {
                     draft.input(key);
+                }
+            }
+            CommentDialog::Reply(draft) => {
+                if key.code == KeyCode::Esc {
+                    return;
+                }
+                if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    match draft.save(&mut self.review) {
+                        Ok(()) => {
+                            self.comments_changed = true;
+                            self.dirty = true;
+                            if let Some(thread) = &mut self.thread {
+                                thread.scroll = usize::MAX;
+                            }
+                            self.message = "Reply saved locally · P preview and publish".into();
+                            return;
+                        }
+                        Err(error) => draft.message = format!("{error:#}"),
+                    }
+                } else if key.code == KeyCode::Char('p')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    draft.preview = !draft.preview;
+                } else if !draft.preview {
+                    input::multiline(&mut draft.body, &mut draft.cursor, key);
                 }
             }
             CommentDialog::Browse(list) => {
@@ -521,6 +626,16 @@ impl App {
                         return;
                     }
                     match key.code {
+                        KeyCode::Char('o' | 'f' | 'R') => {
+                            if let Some(entry) = selected {
+                                let id = entry.id();
+                                self.open_thread(id, key.code == KeyCode::Char('f'));
+                                if key.code == KeyCode::Char('R') {
+                                    self.reply_to_thread();
+                                }
+                                return;
+                            }
+                        }
                         KeyCode::Esc | KeyCode::Char('q' | 'C') => {
                             return;
                         }

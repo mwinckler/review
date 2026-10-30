@@ -66,6 +66,7 @@ impl GitLabWorker {
                         ensure!(context.publication.attempt.is_none(), "A pending draft review is saved. Finish it in GitLab or start a fresh MR review; P rechecks its receipts");
                         let mut prepared = client.prepare(&repo, &context.remote, context.merge_request.iid)?;
                         prepared.gitlab.publication = context.publication;
+                        prepared.gitlab.replies = context.replies;
                         let invalidated = saved.review.reconcile(prepared.comparison, prepared.changes);
                         saved.review.gitlab = Some(prepared.gitlab);
                         lock.save(&mut saved)?;

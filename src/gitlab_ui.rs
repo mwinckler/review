@@ -12,9 +12,9 @@ use ratatui::{
 
 use crate::{
     app::App,
-    gitlab_review::{SubmissionPreview, acknowledge_retry, pending_comments},
+    gitlab_review::{SubmissionPreview, acknowledge_retry, pending_comments, pending_replies},
     gitlab_worker::GitLabJob,
-    input,
+    input, markdown,
     state::Review,
     tree,
     ui::{display_path, session_dialog_area},
@@ -106,7 +106,8 @@ impl App {
         } else if dialog.summary_focused {
             input::multiline(&mut dialog.summary, &mut dialog.cursor, key);
         } else {
-            let count = pending_comments(&self.review).count();
+            let count =
+                pending_comments(&self.review).count() + pending_replies(&self.review).count();
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
                     dialog.selection = (dialog.selection + 1).min(count.saturating_sub(1));
@@ -139,7 +140,46 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
         .border_style(Style::default().fg(Color::Cyan));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let comments: Vec<_> = pending_comments(&app.review).collect();
+    let comments: Vec<_> = pending_comments(&app.review)
+        .map(|comment| {
+            (
+                format!(
+                    "{}:{}-{} ({}){}",
+                    display_path(&comment.anchor.path),
+                    comment.anchor.start_line,
+                    comment.anchor.end_line,
+                    comment.anchor.side.label(),
+                    if comment.anchor.is_outdated(&app.review.changes) {
+                        " · outdated"
+                    } else {
+                        ""
+                    }
+                ),
+                comment.anchor.excerpt.as_str(),
+                comment.body.as_str(),
+            )
+        })
+        .chain(pending_replies(&app.review).map(|reply| {
+            let discussion = app.review.gitlab.as_ref().and_then(|gitlab| {
+                gitlab
+                    .discussions
+                    .iter()
+                    .find(|discussion| discussion.id == reply.discussion_id)
+            });
+            let location = discussion
+                .and_then(|discussion| discussion.path())
+                .unwrap_or("MR discussion");
+            (
+                format!(
+                    "Reply to {} · {}",
+                    display_path(location),
+                    display_path(&reply.discussion_id)
+                ),
+                "",
+                reply.body.as_str(),
+            )
+        }))
+        .collect();
     let [identity, entries, detail, summary, message, controls] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(comments.len().clamp(1, 3) as u16),
@@ -161,20 +201,7 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
         .iter()
         .skip(visible.start)
         .take(visible.len())
-        .map(|comment| {
-            ListItem::new(format!(
-                "{}:{}-{} ({}){}",
-                display_path(&comment.anchor.path),
-                comment.anchor.start_line,
-                comment.anchor.end_line,
-                comment.anchor.side.label(),
-                if comment.anchor.is_outdated(&app.review.changes) {
-                    " · outdated"
-                } else {
-                    ""
-                }
-            ))
-        })
+        .map(|(label, _, _)| ListItem::new(label.clone()))
         .collect();
     let mut state =
         ListState::default().with_selected(Some(selection.saturating_sub(visible.start)));
@@ -183,13 +210,15 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
         entries,
         &mut state,
     );
-    if let Some(comment) = comments.get(selection) {
-        let text = format!("{}\n\n{}", comment.anchor.excerpt, comment.body);
-        let text = Text::from(
-            text.lines()
-                .map(|line| Line::from(display_path(line)))
-                .collect::<Vec<_>>(),
-        );
+    if let Some((_, source, body)) = comments.get(selection) {
+        let mut text: Vec<_> = source
+            .lines()
+            .map(|line| Line::from(display_path(line)))
+            .collect();
+        if !text.is_empty() {
+            text.push(Line::default());
+        }
+        text.extend(markdown::render(body, detail.width.saturating_sub(2)).lines);
         frame.render_widget(
             Paragraph::new(text)
                 .wrap(Wrap { trim: false })
@@ -197,7 +226,7 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" Pending comment "),
+                        .title(" Pending feedback "),
                 ),
             detail,
         );
@@ -215,17 +244,22 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
     if dialog.preview.is_none() && dialog.summary_focused && !dialog.reset_confirmation {
         text.insert(dialog.cursor, '▏');
     }
-    let text = Text::from(
-        text.split('\n')
-            .map(|line| Line::from(display_path(line)))
-            .collect::<Vec<_>>(),
-    );
+    let text = if dialog.preview.is_some() || !dialog.summary_focused {
+        markdown::render(&text, summary.width.saturating_sub(2))
+    } else {
+        Text::from(
+            text.split('\n')
+                .map(|line| Line::from(display_path(line)))
+                .collect::<Vec<_>>(),
+        )
+    };
     let row = dialog.summary[..dialog.cursor]
         .bytes()
         .filter(|byte| *byte == b'\n')
         .count();
     frame.render_widget(
         Paragraph::new(text)
+            .wrap(Wrap { trim: false })
             .scroll((
                 row.saturating_sub(summary.height.saturating_sub(3) as usize)
                     .min(u16::MAX as usize) as u16,
@@ -253,7 +287,7 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
     } else if let Some(preview) = &dialog.preview {
         (
             format!(
-                "Publish {} comments and a summary? Includes {} existing drafts from outside this session. ALL your pending MR drafts will be published.",
+                "Publish {} comments/replies and a summary? Includes {} existing drafts from outside this session. ALL your pending MR drafts will be published.",
                 preview.comment_ids.len(),
                 preview.external_drafts
             ),

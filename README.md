@@ -146,17 +146,46 @@ and a link to the conversation. File-tree counts and diff-line markers include
 existing discussions. `Enter` jumps to a thread's source range in the reviewed
 snapshots; older-version discussions remain available with an outdated label.
 
+Highlight a commented line and press `o` to expand its conversation in a
+right-side overlay aligned with the source range. `]c` / `[c` open the
+next/previous thread in the current file or directory preview. In `C`, press `o`
+to open the selected thread, or `f` for the expanded view. General and historical
+conversations open in the expanded view.
+
+Within a thread, `j` / `k`, arrows, and the page keys scroll through all comments
+and replies. `f` switches between source-aligned and expanded layouts; `n` / `N`
+or `Tab` / `BackTab` switch threads. `o` / `Esc` closes the thread and returns to
+the diff. Authors, resolved/outdated status, and conversation links stay available
+in both layouts.
+
+Comment readers render Markdown, including emphasis, lists, quotes, links,
+fenced code, and tables. While composing a comment or reply, `Ctrl-p` toggles
+between editing Markdown and its rendered preview.
+
 Discussions are saved with the session and reloaded when resuming an MR review.
 Press `r` inside the comments browser to reload conversations while keeping the
 reviewed snapshots and working copy. The normal `r` refresh updates both the MR
 snapshots and discussions. Local feedback and publication receipts are preserved
 through reloads, and cached conversations stay available if GitLab is unreachable.
 
+### Reply to a thread
+
+Press `R` in a GitLab thread or on its entry in `C`. Write the reply, then
+`Ctrl-s` saves it locally beneath the conversation. `R` reopens a pending reply
+for editing; `d`, then `y`, discards the pending reply. `Esc` discards unsaved
+composer edits. Replies to general, resolved, and historical conversations retain
+the original GitLab discussion identity.
+
+Press `P` to preview and publish pending replies together with line comments and
+the review summary. Replies use native GitLab draft notes and the same saved
+write intents, receipts, and uncertain-response recovery as line comments.
+Staged replies remain attached to their submission receipts.
+
 ### Submit a GitLab review
 
 Compose comments with `c` and save each locally with `Ctrl-s`. Press `P` to
 preview a GitLab review. Use `Tab` to switch between the Markdown summary and
-pending comments; `j` / `k` select comments and `PageUp` / `PageDown` scroll their
+pending comments/replies; `j` / `k` select feedback and `PageUp` / `PageDown` scroll its
 source and text. An empty summary uses “Review completed.” when comments are
 present.
 
@@ -302,8 +331,10 @@ Repository content and persistent editor snapshots are preserved.
 | `e` | Open the selected hunk or file in the editor |
 | `Y` | Copy the selected file or directory's absolute path to the clipboard |
 | `c` | Compose a line comment; `Ctrl-s` saves it locally |
+| `o` | Expand/collapse a comment thread beside its source line |
+| `]c` / `[c` | Open the next/previous thread in the current preview |
 | `v` | Start a range at the highlighted line; `j` / `k` extend, `v` returns to one line |
-| `C` | Browse comments, edit, delete, jump to source, or write a source TODO |
+| `C` | Browse comments; `o` opens a thread, `R` replies, `Enter` jumps to source |
 | `P` | Preview and submit comments as a GitLab review |
 | `/` | Filter filenames in the tree; search text in the diff |
 | `s` | Flash jump to a visible tree entry from either pane |
@@ -401,13 +432,15 @@ In the composer, type or paste multiline text. `Enter` adds a newline, arrows mo
 the text cursor, and `Ctrl-s` submits the comment. `Tab` / `Shift-Tab` cycle between
 the body and the inclusive start/end line fields for a new comment; `Ctrl-u` clears
 a line field. These fields also support renderers with custom output. `Esc`
-discards the draft. Comment bodies support Markdown text for GitLab reviews.
+discards the draft. `Ctrl-p` toggles the rendered Markdown preview.
 
 Press `C` to browse every comment in the session, including comments on hidden or
 viewed files. `j` / `k` select a comment, `Enter` jumps to its source, `e` edits its
 body, and `d` asks to delete it. `PageUp` / `PageDown` or `Ctrl-u` / `Ctrl-d` scroll
 long comments and source excerpts. Magenta `●` markers identify commented diff
 lines and show per-file/folder comment counts in the tree.
+Press `o` to read a conversation beside its source, or `f` to expand it in the
+diff pane. These views render Markdown for both local and GitLab comments.
 
 Comments are saved as local session data alongside progress in the state directory.
 Each comment retains a stable ID, timestamps, the original base/head revision IDs,

@@ -97,6 +97,7 @@ pub struct App {
     pub submission_dialog: Option<SubmissionDialog>,
     pub submission_action: Option<GitLabJob>,
     pub network_busy: bool,
+    pub thread: Option<crate::thread::ThreadView>,
     hunk_actions: VecDeque<HunkNavigation>,
     prefix: Option<(char, Option<usize>)>,
     search_original: String,
@@ -140,6 +141,7 @@ impl App {
             submission_dialog: None,
             submission_action: None,
             network_busy: false,
+            thread: None,
             hunk_actions: VecDeque::new(),
             prefix: None,
             search_original: String::new(),
@@ -166,6 +168,7 @@ impl App {
                 self.hunks.clear();
                 self.source_lines.clear();
                 self.line_selection = None;
+                self.thread = None;
                 self.hunk_selection = None;
                 self.editor_requested = false;
                 self.hunk_actions.clear();
@@ -180,6 +183,7 @@ impl App {
             self.hunks.clear();
             self.source_lines.clear();
             self.line_selection = None;
+            self.thread = None;
             self.hunk_selection = None;
             self.editor_requested = false;
             self.hunk_actions.clear();
@@ -350,6 +354,10 @@ impl App {
             self.handle_submission_dialog(key, page);
             return;
         }
+        if self.thread.is_some() {
+            self.handle_thread_key(key, page, terminal_width);
+            return;
+        }
         self.dirty = true;
         if self.help {
             self.help = false;
@@ -423,6 +431,10 @@ impl App {
                     self.jump_file(prefix == ']', key.code == KeyCode::Char('u'));
                     return;
                 }
+                ('[' | ']', None, KeyCode::Char('c')) => {
+                    self.jump_thread(prefix == ']');
+                    return;
+                }
                 ('g', None, KeyCode::Char('g')) => {
                     self.move_to(0);
                     return;
@@ -473,6 +485,7 @@ impl App {
             return;
         }
         match key.code {
+            KeyCode::Char('o') => self.expand_comment(),
             KeyCode::Char('c') => {
                 if self.rendering {
                     self.message = "Wait for the diff to finish rendering".into();

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
 use crate::{
-    gitlab_comments::Discussion,
+    gitlab_comments::{Discussion, DiscussionReply},
     gitlab_review::Publication,
     vcs::{Change, Comparison, Repository, validate_commit_id},
 };
@@ -179,6 +179,8 @@ pub struct GitLabReview {
     pub publication: Publication,
     #[serde(default)]
     pub discussions: Vec<Discussion>,
+    #[serde(default)]
+    pub replies: Vec<DiscussionReply>,
 }
 
 impl GitLabReview {
@@ -401,6 +403,7 @@ impl GitLab {
             merge_request: current,
             publication: Publication::default(),
             discussions: Vec::new(),
+            replies: Vec::new(),
         };
         self.load_discussions(&mut gitlab)?;
         repo.checkout_review(

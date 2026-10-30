@@ -1,13 +1,15 @@
 //! Saved GitLab discussions and their mapping onto the reviewed snapshots.
 
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
     comment_dialog::LineTarget,
-    comments::{Comment, DiffSide},
+    comments::{Comment, DiffSide, comment_id, validate_body},
     gitlab::User,
     state::Review,
+    store::now_millis,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -31,6 +33,58 @@ pub struct DiscussionNote {
     pub resolved: bool,
     #[serde(default)]
     pub position: Option<Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DiscussionReply {
+    pub id: String,
+    pub discussion_id: String,
+    pub body: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+impl DiscussionReply {
+    pub(crate) fn new(discussion_id: String, body: String) -> Result<Self> {
+        validate_body(&body)?;
+        let now = now_millis()?;
+        Ok(Self {
+            id: comment_id()?,
+            discussion_id,
+            body,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ThreadId {
+    Local(String),
+    GitLab(String),
+}
+
+impl ThreadId {
+    pub(crate) fn entry<'a>(&self, review: &'a Review) -> Option<CommentEntry<'a>> {
+        match self {
+            Self::Local(id) => {
+                let comment = review.comments.iter().find(|comment| &comment.id == id)?;
+                Some(
+                    review
+                        .published_discussion(comment)
+                        .map(CommentEntry::GitLab)
+                        .unwrap_or(CommentEntry::Local(comment)),
+                )
+            }
+            Self::GitLab(id) => review
+                .gitlab
+                .as_ref()?
+                .discussions
+                .iter()
+                .find(|discussion| &discussion.id == id && discussion.comments().next().is_some())
+                .map(CommentEntry::GitLab),
+        }
+    }
 }
 
 impl Discussion {
@@ -143,6 +197,12 @@ pub(crate) enum CommentEntry<'a> {
 }
 
 impl<'a> CommentEntry<'a> {
+    pub(crate) fn id(self) -> ThreadId {
+        match self {
+            Self::Local(comment) => ThreadId::Local(comment.id.clone()),
+            Self::GitLab(discussion) => ThreadId::GitLab(discussion.id.clone()),
+        }
+    }
     pub(crate) fn local(self, review: &'a Review) -> Option<&'a Comment> {
         match self {
             Self::Local(comment) => Some(comment),

@@ -525,6 +525,7 @@ fn run(
         }
         redraw |= app.apply_hunk_navigation(page, diff.lines.len());
         app.keep_line_selection_visible(page, diff.lines.len());
+        app.keep_thread_visible(page, diff.lines.len());
         for result in editor.results.try_iter() {
             app.message = match result {
                 Ok(location) => format!(
@@ -560,6 +561,7 @@ fn run(
                         || app.session_dialog.is_some()
                         || app.comment_dialog.is_some()
                         || app.submission_dialog.is_some()
+                        || app.thread.is_some()
                         || app.help
                         || (key.code == KeyCode::Char('c')
                             && key.modifiers.contains(KeyModifiers::CONTROL))
@@ -573,6 +575,7 @@ fn run(
                             && app.session_dialog.is_none()
                             && app.comment_dialog.is_none()
                             && app.submission_dialog.is_none()
+                            && app.thread.is_none()
                             && !app.searching
                             && !app.help
                             && !key.modifiers.contains(KeyModifiers::CONTROL)
@@ -582,6 +585,7 @@ fn run(
                             && app.session_dialog.is_none()
                             && app.comment_dialog.is_none()
                             && app.submission_dialog.is_none()
+                            && app.thread.is_none()
                             && key.code == KeyCode::Enter;
                         let input_page = if app.session_dialog.is_some()
                             || app.comment_dialog.is_some()
@@ -612,6 +616,9 @@ fn run(
                         dialog.paste(&text);
                         redraw = true;
                     } else if let Some(CommentDialog::Compose(draft)) = &mut app.comment_dialog {
+                        draft.insert(&text);
+                        redraw = true;
+                    } else if let Some(CommentDialog::Reply(draft)) = &mut app.comment_dialog {
                         draft.insert(&text);
                         redraw = true;
                     } else if let Some(dialog) = &mut app.submission_dialog {
