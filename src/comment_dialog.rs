@@ -447,7 +447,16 @@ impl App {
                 if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     match draft.save(&mut self.review) {
                         Ok(index) => {
-                            let selection = self.review.comment_entries().position(|entry| matches!(entry, CommentEntry::Local(comment) if comment.id == self.review.comments[index].id)).unwrap_or(0);
+                            let id = &self.review.comments[index].id;
+                            let selection = self
+                                .review
+                                .comment_entries()
+                                .position(|entry| {
+                                    entry
+                                        .local(&self.review)
+                                        .is_some_and(|comment| &comment.id == id)
+                                })
+                                .expect("saved comment is visible");
                             self.dirty = true;
                             self.comments_changed = true;
                             self.message = "Comment saved locally".into();
@@ -467,21 +476,15 @@ impl App {
                 let count = self.review.comment_entries().count();
                 list.selection = list.selection.min(count.saturating_sub(1));
                 let selected = self.review.comment_entries().nth(list.selection);
-                let target = selected.and_then(|entry| entry.target(&self.review));
-                let local = selected
-                    .and_then(|entry| entry.local(&self.review))
-                    .cloned();
-                let has_position = selected.is_some_and(|entry| match entry {
-                    CommentEntry::Local(_) => true,
-                    CommentEntry::GitLab(discussion) => discussion.position().is_some(),
-                });
+                let local = selected.and_then(|entry| entry.local(&self.review));
                 if let Some(confirmation) = list.confirming {
                     match key.code {
                         KeyCode::Char('y') => {
                             if let Some(comment) = &local {
                                 match confirmation {
                                     CommentConfirmation::Delete => {
-                                        self.review.comments.retain(|local| local.id != comment.id);
+                                        let id = comment.id.clone();
+                                        self.review.comments.retain(|local| local.id != id);
                                         list.selection = list.selection.min(
                                             self.review.comment_entries().count().saturating_sub(1),
                                         );
@@ -574,7 +577,9 @@ impl App {
                             self.submission_action = Some(GitLabJob::Discussions);
                         }
                         KeyCode::Enter => {
-                            if let Some(target) = target {
+                            if let Some(target) =
+                                selected.and_then(|entry| entry.target(&self.review))
+                            {
                                 self.review.view.selected = target.path.clone();
                                 self.review.view.filter.clear();
                                 self.review.view.unviewed_only = false;
@@ -594,7 +599,10 @@ impl App {
                                 self.dirty = true;
                                 return;
                             }
-                            if has_position {
+                            if selected.is_some_and(|entry| match entry {
+                                CommentEntry::Local(_) => true,
+                                CommentEntry::GitLab(discussion) => discussion.position().is_some(),
+                            }) {
                                 self.message = "Comment is outdated or outside the reviewed diff; its original discussion is shown here".into();
                             }
                         }

@@ -162,12 +162,8 @@ impl GitLab {
         );
         let endpoint = mr_endpoint(&context);
         let drafts: Vec<DraftNote> = self.list(&format!("{endpoint}/draft_notes?per_page=100"))?;
-        let discussions = self.discussions(
-            context.merge_request.target_project_id,
-            context.merge_request.iid,
-        )?;
         let gitlab = saved.review.gitlab.as_mut().expect("MR session");
-        gitlab.discussions = discussions;
+        self.load_discussions(gitlab)?;
         gitlab.publication.user_id = Some(user.id);
         let reconciled = reconcile(
             &mut gitlab.publication,
@@ -502,13 +498,8 @@ impl GitLab {
             Some(&body),
             false,
         )?;
-        let context = saved.review.gitlab.as_ref().expect("MR session");
-        let discussions = self.discussions(
-            context.merge_request.target_project_id,
-            context.merge_request.iid,
-        )?;
         let gitlab = saved.review.gitlab.as_mut().expect("MR session");
-        gitlab.discussions = discussions;
+        self.load_discussions(gitlab)?;
         let result = reconcile(
             &mut gitlab.publication,
             &[],

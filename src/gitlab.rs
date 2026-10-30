@@ -311,10 +311,12 @@ impl GitLab {
         bail!("GitLab is still preparing MR !{iid}; retry shortly")
     }
 
-    pub fn discussions(&self, project_id: u64, iid: u64) -> Result<Vec<Discussion>> {
-        self.list(&format!(
-            "projects/{project_id}/merge_requests/{iid}/discussions?per_page=100"
-        ))
+    pub(crate) fn load_discussions(&self, context: &mut GitLabReview) -> Result<()> {
+        context.discussions = self.list(&format!(
+            "projects/{}/merge_requests/{}/discussions?per_page=100",
+            context.merge_request.target_project_id, context.merge_request.iid
+        ))?;
+        Ok(())
     }
 
     pub fn prepare(&self, repo: &Repository, remote: &str, iid: u64) -> Result<PreparedReview> {
@@ -393,7 +395,14 @@ impl GitLab {
                 "opening MR snapshots; fetch complete repository history if objects are missing",
             )?;
         let changes = repo.changes(&comparison)?;
-        let discussions = self.discussions(current.target_project_id, iid)?;
+        let mut gitlab = GitLabReview {
+            project: self.project.clone(),
+            remote: remote.to_owned(),
+            merge_request: current,
+            publication: Publication::default(),
+            discussions: Vec::new(),
+        };
+        self.load_discussions(&mut gitlab)?;
         repo.checkout_review(
             &mr.source_branch,
             &refs.head_sha,
@@ -401,13 +410,7 @@ impl GitLab {
             &mr.source_branch,
         )?;
         Ok(PreparedReview {
-            gitlab: GitLabReview {
-                project: self.project.clone(),
-                remote: remote.to_owned(),
-                merge_request: current,
-                publication: Publication::default(),
-                discussions,
-            },
+            gitlab,
             comparison,
             changes,
         })

@@ -57,9 +57,8 @@ impl GitLabWorker {
                 let client = GitLab::new(&repo, &context.project);
                 match job {
                     GitLabJob::Discussions => {
-                        let discussions = client.discussions(context.merge_request.target_project_id, context.merge_request.iid)
+                        client.load_discussions(saved.review.gitlab.as_mut().expect("MR session"))
                             .context("Reloading comments (cached discussions retained)")?;
-                        saved.review.gitlab.as_mut().expect("MR session").discussions = discussions;
                         lock.save(&mut saved)?;
                         Ok(GitLabOutcome::DiscussionsLoaded)
                     }
