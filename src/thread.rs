@@ -29,14 +29,13 @@ impl ThreadView {
         let target = self.id.entry(&app.review)?.target(&app.review)?;
         app.source_lines
             .iter()
-            .filter(|source| {
+            .rfind(|source| {
                 source.location.path == target.path
                     && source
                         .number(target.side)
                         .is_some_and(|line| (target.start_line..=target.end_line).contains(&line))
             })
             .map(|source| source.row)
-            .max()
     }
 }
 
@@ -282,12 +281,7 @@ fn thread_area(diff: Rect, app: &App) -> Rect {
         return diff;
     };
     let y = viewport.y + offset as u16 + 1;
-    Rect::new(
-        viewport.x,
-        y,
-        viewport.width,
-        viewport.bottom().saturating_sub(y),
-    )
+    Rect::new(viewport.x, y, viewport.width, viewport.bottom() - y)
 }
 
 pub(crate) fn draw(frame: &mut Frame, app: &App, diff: Rect, footer: Rect) {

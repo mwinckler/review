@@ -524,8 +524,11 @@ fn run(
             }
         }
         redraw |= app.apply_hunk_navigation(page, diff.lines.len());
-        app.keep_line_selection_visible(page, diff.lines.len());
-        app.keep_thread_visible(page);
+        if app.thread.is_some() {
+            app.keep_thread_visible(page);
+        } else {
+            app.keep_line_selection_visible(page, diff.lines.len());
+        }
         for result in editor.results.try_iter() {
             app.message = match result {
                 Ok(location) => format!(
