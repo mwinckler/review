@@ -1,5 +1,6 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
+    fs,
     io::{BufRead, BufReader, Read, Seek},
     iter::Sum,
     path::{Path, PathBuf},
@@ -202,6 +203,20 @@ impl Repository {
     }
 
     pub fn ensure_clean(&self) -> Result<()> {
+        if self.backend == Backend::Jj && self.root.join(".git").exists() {
+            let git = Self {
+                root: self.root.clone(),
+                backend: Backend::Git,
+            };
+            let output = git
+                .command(false)
+                .args(["diff", "--cached", "--quiet", "--no-ext-diff", "--"])
+                .output()?;
+            ensure!(
+                output.status.success(),
+                "Git index contains staged changes or could not be checked. Save the staged work before preparing an MR with jj"
+            );
+        }
         let clean = match self.backend {
             Backend::Git => self
                 .run(
@@ -263,7 +278,16 @@ impl Repository {
                         "Local branch {branch:?} tracks another source. Rename it before reviewing this MR"
                     );
                     self.run(&["switch", "--no-overwrite-ignore", branch], false)?;
-                    self.run(&["merge", "--ff-only", "--no-edit", head], false)?;
+                    self.run(
+                        &[
+                            "merge",
+                            "--ff-only",
+                            "--no-edit",
+                            "--no-overwrite-ignore",
+                            head,
+                        ],
+                        false,
+                    )?;
                 } else {
                     ensure!(
                         existing.code() == Some(1),
@@ -289,12 +313,48 @@ impl Repository {
                 );
             }
             Backend::Jj => {
+                self.check_checkout_paths(head)?;
                 // Keep the reviewed commit immutable; edits belong to a fresh child change.
                 self.run(&["new", head], true)?;
                 ensure!(
                     self.resolve("@-", false)? == head,
                     "Working copy no longer follows the MR head; retry"
                 );
+            }
+        }
+        Ok(())
+    }
+
+    fn check_checkout_paths(&self, head: &str) -> Result<()> {
+        let comparison = self.resolve_snapshot("@", head, ComparisonMode::Direct)?;
+        let changes = self.changes(&comparison)?;
+        let tracked: BTreeSet<_> = changes
+            .iter()
+            .filter(|change| !change.old.kind.is_empty())
+            .map(|change| self.root.join(&change.old_path))
+            .collect();
+        for change in changes.iter().filter(|change| !change.new.kind.is_empty()) {
+            let mut path = self.root.clone();
+            for part in Path::new(&change.path).components() {
+                path.push(part);
+                let metadata = match fs::symlink_metadata(&path) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                    Err(error) => return Err(error).context("checking MR checkout paths"),
+                };
+                if metadata.is_dir() {
+                    if path == self.root.join(&change.path) {
+                        ensure_tracked_contents(&path, &tracked)?;
+                    }
+                } else {
+                    ensure!(
+                        tracked.contains(&path),
+                        "Untracked or ignored path {} would be overwritten by the MR. Move it aside before switching",
+                        path.display()
+                    );
+                    // A tracked file/symlink becoming a directory has no existing children to inspect.
+                    break;
+                }
             }
         }
         Ok(())
@@ -878,6 +938,22 @@ impl Repository {
         );
         Ok(output.stdout)
     }
+}
+
+fn ensure_tracked_contents(path: &Path, tracked: &BTreeSet<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            ensure_tracked_contents(&entry.path(), tracked)?;
+        } else {
+            ensure!(
+                tracked.contains(&entry.path()),
+                "Untracked or ignored path {} would be overwritten by the MR. Move it aside before switching",
+                entry.path().display()
+            );
+        }
+    }
+    Ok(())
 }
 
 fn validate_remote(name: &str) -> Result<()> {
