@@ -1,8 +1,8 @@
 //! Vim editing state for locally composed review feedback.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use edtui::{EditorEventHandler, EditorMode, EditorState, Index2, Lines, RowIndex};
 use edtui::{
+    EditorEventHandler, EditorMode, EditorState, Index2, Lines, RowIndex,
     actions::{self, Action},
     events::{KeyEventRegister, KeyInput},
 };
@@ -18,12 +18,22 @@ pub(crate) struct VimEditor {
 
 impl Default for VimEditor {
     fn default() -> Self {
-        let mut state = EditorState::default();
+        Self::new(Lines::default(), EditorMode::Insert)
+    }
+}
+
+impl VimEditor {
+    fn new(lines: Lines, mode: EditorMode) -> Self {
+        let mut state = EditorState::new(lines);
         let mut handler = EditorEventHandler::vim_mode();
-        handler.on_key_event(
-            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
-            &mut state,
-        );
+        if mode == EditorMode::Insert {
+            handler.on_key_event(
+                KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+                &mut state,
+            );
+        } else {
+            state.mode = mode;
+        }
         Self {
             state,
             handler,
@@ -31,24 +41,12 @@ impl Default for VimEditor {
             pending: String::new(),
         }
     }
-}
 
-impl VimEditor {
     /// Keep the public draft text/cursor and the editor's character indices in sync.
     pub fn sync(&mut self, body: &str, cursor: usize) {
         let text = input::sanitize(body);
         if self.state.lines.to_string() != text {
-            let mode = self.state.mode;
-            self.state = EditorState::new(Lines::from(text));
-            self.reset_pending();
-            if mode == EditorMode::Insert {
-                self.handler.on_key_event(
-                    KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
-                    &mut self.state,
-                );
-            } else {
-                self.state.mode = mode;
-            }
+            *self = Self::new(Lines::from(text), self.state.mode);
         }
         let prefix = input::sanitize(&body[..cursor]);
         self.state.cursor = Index2::new(
