@@ -25,17 +25,18 @@ pub struct ThreadView {
 }
 
 impl ThreadView {
-    fn source_row(&self, app: &App) -> Option<usize> {
+    fn last_source_row(&self, app: &App) -> Option<usize> {
         let target = self.id.entry(&app.review)?.target(&app.review)?;
         app.source_lines
             .iter()
-            .find(|source| {
+            .filter(|source| {
                 source.location.path == target.path
                     && source
                         .number(target.side)
                         .is_some_and(|line| (target.start_line..=target.end_line).contains(&line))
             })
             .map(|source| source.row)
+            .max()
     }
 }
 
@@ -138,15 +139,16 @@ impl App {
         self.open_thread(ids[index].clone(), false);
     }
 
-    pub fn keep_thread_visible(&mut self, page: usize, lines: usize) {
+    pub fn keep_thread_visible(&mut self, page: usize) {
         if let Some(row) = self
             .thread
             .as_ref()
-            .and_then(|thread| thread.source_row(self))
+            .and_then(|thread| thread.last_source_row(self))
         {
+            let space = page.saturating_sub(8).max(1);
             let position = self.position();
-            if row < position.vertical || row >= position.vertical + page.saturating_sub(8).max(1) {
-                position.vertical = row.saturating_sub(page / 4).min(lines.saturating_sub(page));
+            if row < position.vertical || row >= position.vertical + space {
+                position.vertical = row.saturating_sub((page / 4).min(space - 1));
             }
         }
     }
@@ -273,18 +275,17 @@ fn thread_area(diff: Rect, app: &App) -> Rect {
         .map(|position| position.vertical)
         .unwrap_or(0);
     let Some(offset) = thread
-        .source_row(app)
+        .last_source_row(app)
         .and_then(|row| row.checked_sub(position))
         .filter(|row| *row < viewport.height as usize)
     else {
         return diff;
     };
-    let width = (viewport.width / 2).clamp(32, 76).min(viewport.width);
-    let y = viewport.y.saturating_add(offset as u16);
+    let y = viewport.y + offset as u16 + 1;
     Rect::new(
-        viewport.right().saturating_sub(width),
+        viewport.x,
         y,
-        width,
+        viewport.width,
         viewport.bottom().saturating_sub(y),
     )
 }

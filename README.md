@@ -146,8 +146,8 @@ and a link to the conversation. File-tree counts and diff-line markers include
 existing discussions. `Enter` jumps to a thread's source range in the reviewed
 snapshots; older-version discussions remain available with an outdated label.
 
-Highlight a commented line and press `o` to expand its conversation in a
-right-side overlay aligned with the source range. `]c` / `[c` open the
+Highlight a commented line and press `o` to expand its conversation in an
+overlay below the source range, spanning the diff pane. `]c` / `[c` open the
 next/previous thread in the current file or directory preview. In `C`, press `o`
 to open the selected thread, or `f` for the expanded view. General and historical
 conversations open in the expanded view.
@@ -331,7 +331,7 @@ Repository content and persistent editor snapshots are preserved.
 | `e` | Open the selected hunk or file in the editor |
 | `Y` | Copy the selected file or directory's absolute path to the clipboard |
 | `c` | Compose a line comment; `Ctrl-s` saves it locally |
-| `o` | Expand/collapse a comment thread beside its source line |
+| `o` | Expand/collapse a comment thread below its source range |
 | `]c` / `[c` | Open the next/previous thread in the current preview |
 | `v` | Start a range at the highlighted line; `j` / `k` extend, `v` returns to one line |
 | `C` | Browse comments; `o` opens a thread, `R` replies, `Enter` jumps to source |
@@ -439,7 +439,7 @@ viewed files. `j` / `k` select a comment, `Enter` jumps to its source, `e` edits
 body, and `d` asks to delete it. `PageUp` / `PageDown` or `Ctrl-u` / `Ctrl-d` scroll
 long comments and source excerpts. Magenta `●` markers identify commented diff
 lines and show per-file/folder comment counts in the tree.
-Press `o` to read a conversation beside its source, or `f` to expand it in the
+Press `o` to read a conversation below its source range, or `f` to expand it in the
 diff pane. These views render Markdown for both local and GitLab comments.
 
 Comments are saved as local session data alongside progress in the state directory.
