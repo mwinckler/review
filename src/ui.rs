@@ -595,7 +595,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         Paragraph::new(footer).style(Style::default().fg(Color::Cyan)),
         panes.footer,
     );
-    crate::thread::draw(frame, app, panes.diff);
+    crate::thread::draw(frame, app, panes.diff, panes.footer);
     if app.help {
         let width = frame.area().width.min(74);
         let height = frame.area().height.min(32);
@@ -658,6 +658,13 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     if let Some(dialog) = &app.submission_dialog {
         gitlab_ui::draw_submission(frame, app, dialog);
     }
+}
+
+pub(crate) fn max_scroll(paragraph: &Paragraph<'_>, area: Rect) -> usize {
+    paragraph
+        .line_count(area.width)
+        .saturating_sub(area.height as usize)
+        .min(u16::MAX as usize)
 }
 
 pub(crate) fn comment_heading(entry: CommentEntry<'_>, review: &Review) -> String {
@@ -1004,10 +1011,7 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
                     content.width,
                 ))
                 .wrap(Wrap { trim: false });
-                let scroll = paragraph
-                    .line_count(content.width)
-                    .saturating_sub(content.height as usize)
-                    .min(u16::MAX as usize);
+                let scroll = max_scroll(&paragraph, content);
                 frame.render_widget(paragraph.scroll((scroll as u16, 0)).block(block), context);
             }
             draw_markdown_editor(
@@ -1058,17 +1062,9 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
             if let Some(entry) = comments.get(selection) {
                 let text = comment_text(*entry, &app.review, detail.width.saturating_sub(2));
                 let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
-                let scroll = list.scroll.min(
-                    paragraph
-                        .line_count(detail.width.saturating_sub(2))
-                        .saturating_sub(detail.height.saturating_sub(2) as usize),
-                );
-                frame.render_widget(
-                    paragraph
-                        .scroll((scroll.min(u16::MAX as usize) as u16, 0))
-                        .block(Block::default().borders(Borders::ALL)),
-                    detail,
-                );
+                let block = Block::default().borders(Borders::ALL);
+                let scroll = list.scroll.min(max_scroll(&paragraph, block.inner(detail)));
+                frame.render_widget(paragraph.scroll((scroll as u16, 0)).block(block), detail);
             } else {
                 frame.render_widget(
                     Paragraph::new(

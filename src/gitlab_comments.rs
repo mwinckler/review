@@ -72,8 +72,7 @@ impl ThreadId {
                 Some(
                     review
                         .published_discussion(comment)
-                        .map(CommentEntry::GitLab)
-                        .unwrap_or(CommentEntry::Local(comment)),
+                        .map_or(CommentEntry::Local(comment), CommentEntry::GitLab),
                 )
             }
             Self::GitLab(id) => review

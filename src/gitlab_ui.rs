@@ -17,7 +17,7 @@ use crate::{
     input, markdown,
     state::Review,
     tree,
-    ui::{display_path, session_dialog_area},
+    ui::{display_path, max_scroll, session_dialog_area},
 };
 
 pub struct SubmissionDialog {
@@ -219,17 +219,14 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
             text.push(Line::default());
         }
         text.extend(markdown::render(body, detail.width.saturating_sub(2)).lines);
-        frame.render_widget(
-            Paragraph::new(text)
-                .wrap(Wrap { trim: false })
-                .scroll((dialog.scroll as u16, 0))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Pending feedback "),
-                ),
-            detail,
-        );
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Pending feedback ");
+        let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
+        let scroll = dialog
+            .scroll
+            .min(max_scroll(&paragraph, block.inner(detail)));
+        frame.render_widget(paragraph.scroll((scroll as u16, 0)).block(block), detail);
     } else {
         frame.render_widget(
             Paragraph::new("Write a summary to submit a review."),

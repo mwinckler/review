@@ -1,6 +1,5 @@
 //! Source-aligned conversation overlays, independent of renderer row coordinates.
 
-use anyhow::Context;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
@@ -23,6 +22,21 @@ pub struct ThreadView {
     pub scroll: usize,
     pub full: bool,
     pub confirming_delete: bool,
+}
+
+impl ThreadView {
+    fn source_row(&self, app: &App) -> Option<usize> {
+        let target = self.id.entry(&app.review)?.target(&app.review)?;
+        app.source_lines
+            .iter()
+            .find(|source| {
+                source.location.path == target.path
+                    && source
+                        .number(target.side)
+                        .is_some_and(|line| (target.start_line..=target.end_line).contains(&line))
+            })
+            .map(|source| source.row)
+    }
 }
 
 impl App {
@@ -125,24 +139,10 @@ impl App {
     }
 
     pub fn keep_thread_visible(&mut self, page: usize, lines: usize) {
-        let target = self
+        if let Some(row) = self
             .thread
             .as_ref()
-            .and_then(|thread| thread.id.entry(&self.review))
-            .and_then(|entry| entry.target(&self.review));
-        let Some(target) = target else {
-            return;
-        };
-        if let Some(row) = self
-            .source_lines
-            .iter()
-            .find(|source| {
-                source.location.path == target.path
-                    && source
-                        .number(target.side)
-                        .is_some_and(|line| (target.start_line..=target.end_line).contains(&line))
-            })
-            .map(|source| source.row)
+            .and_then(|thread| thread.source_row(self))
         {
             let position = self.position();
             if row < position.vertical || row >= position.vertical + page.saturating_sub(8).max(1) {
@@ -152,12 +152,8 @@ impl App {
     }
 
     pub(crate) fn reply_to_thread(&mut self) {
-        let result = self
-            .thread
-            .as_ref()
-            .context("Open a GitLab thread first")
-            .and_then(|thread| ReplyDraft::new(&self.review, &thread.id));
-        match result {
+        let thread = self.thread.as_ref().expect("open thread");
+        match ReplyDraft::new(&self.review, &thread.id) {
             Ok(draft) => self.comment_dialog = Some(CommentDialog::Reply(draft)),
             Err(error) => self.message = format!("Reply: {error:#}"),
         }
@@ -174,13 +170,11 @@ impl App {
             .saturating_add(4 + usize::from(self.review.gitlab.is_some()))
             .min(u16::MAX as usize) as u16;
         let diff = ui::panes(Rect::new(0, 0, terminal_width, height), self).diff;
-        let area = thread_area(diff, self, entry);
+        let area = thread_area(diff, self);
         let inner = Block::default().borders(Borders::ALL).inner(area);
-        let max_scroll = Paragraph::new(ui::comment_text(entry, &self.review, inner.width))
-            .wrap(Wrap { trim: false })
-            .line_count(inner.width)
-            .saturating_sub(inner.height as usize)
-            .min(u16::MAX as usize);
+        let paragraph = Paragraph::new(ui::comment_text(entry, &self.review, inner.width))
+            .wrap(Wrap { trim: false });
+        let max_scroll = ui::max_scroll(&paragraph, inner);
         let thread = self.thread.as_mut().expect("open thread");
         thread.id = entry.id();
         thread.scroll = thread.scroll.min(max_scroll);
@@ -265,7 +259,7 @@ impl App {
     }
 }
 
-fn thread_area(diff: Rect, app: &App, entry: CommentEntry<'_>) -> Rect {
+fn thread_area(diff: Rect, app: &App) -> Rect {
     let viewport = Block::default().borders(Borders::ALL).inner(diff);
     let thread = app.thread.as_ref().expect("open thread");
     if thread.full {
@@ -278,18 +272,8 @@ fn thread_area(diff: Rect, app: &App, entry: CommentEntry<'_>) -> Rect {
         .get(&app.review.view.active)
         .map(|position| position.vertical)
         .unwrap_or(0);
-    let row = entry.target(&app.review).and_then(|target| {
-        app.source_lines
-            .iter()
-            .find(|source| {
-                source.location.path == target.path
-                    && source
-                        .number(target.side)
-                        .is_some_and(|line| (target.start_line..=target.end_line).contains(&line))
-            })
-            .map(|source| source.row)
-    });
-    let Some(offset) = row
+    let Some(offset) = thread
+        .source_row(app)
         .and_then(|row| row.checked_sub(position))
         .filter(|row| *row < viewport.height as usize)
     else {
@@ -305,14 +289,14 @@ fn thread_area(diff: Rect, app: &App, entry: CommentEntry<'_>) -> Rect {
     )
 }
 
-pub(crate) fn draw(frame: &mut Frame, app: &App, diff: Rect) {
+pub(crate) fn draw(frame: &mut Frame, app: &App, diff: Rect, footer: Rect) {
     let Some(thread) = &app.thread else {
         return;
     };
     let Some(entry) = thread.id.entry(&app.review) else {
         return;
     };
-    let area = thread_area(diff, app, entry);
+    let area = thread_area(diff, app);
     frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -324,10 +308,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App, diff: Rect) {
     let inner = block.inner(area);
     let paragraph = Paragraph::new(ui::comment_text(entry, &app.review, inner.width))
         .wrap(Wrap { trim: false });
-    let max_scroll = paragraph
-        .line_count(inner.width)
-        .saturating_sub(inner.height as usize)
-        .min(u16::MAX as usize);
+    let max_scroll = ui::max_scroll(&paragraph, inner);
     frame.render_widget(
         paragraph
             .scroll((thread.scroll.min(max_scroll) as u16, 0))
@@ -345,12 +326,6 @@ pub(crate) fn draw(frame: &mut Frame, app: &App, diff: Rect) {
     } else {
         "f expand · j/k read · n/N threads · C comments · o/Esc close".into()
     };
-    let footer = Rect::new(
-        frame.area().x,
-        frame.area().bottom().saturating_sub(1),
-        frame.area().width,
-        frame.area().height.min(1),
-    );
     frame.render_widget(
         Paragraph::new(keys).style(Style::default().fg(Color::Cyan)),
         footer,
