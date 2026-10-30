@@ -91,6 +91,52 @@ selection, pane focus, and scroll positions for unchanged diffs.
 Jujutsu checks snapshot the working copy through `jj`, then read file contents at
 fixed revisions.
 
+## Review a GitLab merge request
+
+Install the [GitLab CLI (`glab`)](https://docs.gitlab.com/cli/) and authenticate:
+
+```sh
+review gitlab login
+review gitlab login --hostname gitlab.example.com
+review gitlab login --web       # Browser OAuth
+review gitlab login --device    # Device OAuth for headless environments
+```
+
+Login shares `glab`'s credentials and works outside a repository. Repository
+fetches use your SSH keys or HTTPS credential helper. For HTTPS token access,
+`glab auth login --setup-git-credential-helper` configures the helper.
+
+```sh
+review gitlab                   # Pick an open MR in this repository
+review gitlab 123               # Review a particular MR
+review gitlab https://gitlab.example.com/group/project/-/merge_requests/123
+review -C ../project gitlab --remote upstream
+review gitlab --hostname gitlab.example.com # Override an SSH hostname alias
+```
+
+The picker shows MR titles, authors, draft status, and source/target branches.
+Use `j` / `k` or arrows to move, `Enter` to select, `/` to search, `r` to reload,
+and `Esc` to cancel. All result pages are included. Multiple repository remotes
+offer a selector; `--remote` chooses one directly. MR URLs select a matching
+target-project remote, including projects in nested namespaces.
+
+Selecting an MR fetches its source and target branches and prepares the current
+working copy. Git creates or fast-forwards the source branch. Jujutsu fetches the
+source bookmark and creates a clean working-copy change on its head, keeping the
+reviewed commit intact. Fork MRs reuse a matching source remote or add one named
+`review-gitlab-<project-id>`.
+
+**Local edits and divergent Git branches require attention before switching.**
+Review stops with instructions rather than discarding work or resetting history.
+
+The comparison uses GitLab's recorded merge-base and source-head snapshots. MR
+identity and complete diff references are saved with the session, so resume and
+local comments retain their reviewed version. The header shows the MR's title and
+target/source branch labels with pinned snapshot IDs. Press `r` to fetch and
+prepare the latest MR version, preserving matching viewed markers and comment
+anchors. GitLab requests and fetches have a 90-second command timeout; refresh
+runs in the background while the working copy is being prepared.
+
 ## Stop and resume
 
 ```sh

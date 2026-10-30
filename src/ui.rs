@@ -219,12 +219,20 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     ])
     .areas(panes.header);
     let base = revision_label(
-        &comparison.base_ref,
+        app.review
+            .gitlab
+            .as_ref()
+            .map(|gitlab| gitlab.merge_request.target_branch.as_str())
+            .unwrap_or(&comparison.base_ref),
         &comparison.base_id,
         comparison.base_change_id.as_deref(),
     );
     let head = revision_label(
-        &comparison.head_ref,
+        app.review
+            .gitlab
+            .as_ref()
+            .map(|gitlab| gitlab.merge_request.source_branch.as_str())
+            .unwrap_or(&comparison.head_ref),
         &comparison.head_id,
         comparison.head_change_id.as_deref(),
     );

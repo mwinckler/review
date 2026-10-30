@@ -4,6 +4,8 @@ pub mod comment_dialog;
 pub mod comments;
 pub mod config;
 pub mod editor;
+pub mod gitlab;
+pub mod gitlab_ui;
 pub mod hunks;
 mod input;
 pub mod refresh;

@@ -2,11 +2,13 @@ use std::{
     collections::BTreeSet,
     io::{self, IsTerminal, Write},
     path::PathBuf,
+    sync::mpsc,
+    thread,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, ensure};
-use clap::Parser;
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use crossterm::{
     clipboard::CopyToClipboard,
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -19,7 +21,9 @@ use review::{
     comments::write_todo,
     config::Config,
     editor::EditorWorker,
-    refresh::RefreshWorker,
+    gitlab::{GitLab, MrReference, PreparedReview, Project},
+    gitlab_ui::{self, Pick},
+    refresh::{RefreshResult, RefreshWorker},
     renderer::{RenderOptions, RenderWorker},
     session_dialog::{SessionAction, SessionDialog},
     state::Review,
@@ -41,9 +45,12 @@ impl Drop for PasteMode {
 #[command(
     version,
     about = "Review revision comparisons with a file tree, difft, and Vim keys",
+    subcommand_precedence_over_arg = true,
     group(clap::ArgGroup::new("forget_selection").args(["forget", "forget_all", "cleanup"]))
 )]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
     /// Compare BASE..HEAD directly; REV means REV..@
     ///
     /// Endpoints accept the selected backend's single-revision expressions.
@@ -52,10 +59,10 @@ struct Cli {
     #[arg(value_name = "REVSET", conflicts_with_all = ["base", "head", "resume", "list", "forget_selection"])]
     comparison: Option<String>,
     /// Repository directory (defaults to the current directory)
-    #[arg(short = 'C', long, default_value = ".")]
+    #[arg(short = 'C', long, default_value = ".", global = true)]
     repo: PathBuf,
     /// Override automatic repository detection
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, global = true)]
     backend: Option<Backend>,
     /// Compare from the merge base of this revision (defaults to master)
     #[arg(long)]
@@ -85,15 +92,76 @@ struct Cli {
     #[arg(short = 'y', long, requires = "forget_selection")]
     yes: bool,
     /// Override the review state directory
-    #[arg(long)]
+    #[arg(long, global = true)]
     state_dir: Option<PathBuf>,
     /// Load a TOML config (defaults to $XDG_CONFIG_HOME/review/config.toml)
-    #[arg(long)]
+    #[arg(long, global = true)]
     config: Option<PathBuf>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Commands {
+    /// Select a GitLab merge request and prepare its source branch for review
+    Gitlab(GitLabArgs),
+}
+
+#[derive(Debug, Args)]
+#[command(subcommand_precedence_over_arg = true)]
+struct GitLabArgs {
+    #[command(subcommand)]
+    command: Option<GitLabCommand>,
+    /// Merge request number or URL; omit to select from open MRs
+    mr: Option<String>,
+    /// Repository remote containing the MR's target project
+    #[arg(long)]
+    remote: Option<String>,
+    /// GitLab API hostname, including a port when needed
+    #[arg(long, global = true)]
+    hostname: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum GitLabCommand {
+    /// Authenticate through glab, sharing its saved credentials
+    Login {
+        /// Use browser OAuth authentication
+        #[arg(long, conflicts_with = "device")]
+        web: bool,
+        /// Use OAuth device authentication
+        #[arg(long)]
+        device: bool,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.command.is_some()
+        && (cli.comparison.is_some()
+            || cli.base.is_some()
+            || cli.head.is_some()
+            || cli.resume.is_some()
+            || cli.list
+            || !cli.rename.is_empty()
+            || !cli.forget.is_empty()
+            || cli.forget_all
+            || cli.cleanup
+            || cli.yes)
+    {
+        Cli::command().error(clap::error::ErrorKind::ArgumentConflict, "GitLab commands cannot be used with local comparison or session-management options").exit();
+    }
+    if let Some(Commands::Gitlab(args)) = &cli.command
+        && let Some(GitLabCommand::Login { web, device }) = args.command
+    {
+        if args.mr.is_some() || args.remote.is_some() {
+            Cli::command()
+                .error(
+                    clap::error::ErrorKind::ArgumentConflict,
+                    "GitLab login cannot be used with an MR or --remote",
+                )
+                .exit();
+        }
+        return GitLab::login(args.hostname.as_deref(), web, device);
+    }
     let repo = Repository::discover(&cli.repo, cli.backend)?;
     let state_dir = match cli.state_dir {
         Some(directory) => directory,
@@ -223,17 +291,30 @@ fn main() -> Result<()> {
     let (mut saved, lock) = if let Some(id) = resume_id {
         store.open(&id)?
     } else {
-        let comparison = if let Some(expression) = cli.comparison {
-            repo.snapshot_expression(&expression)?
+        let review = if let Some(Commands::Gitlab(args)) = &cli.command {
+            let Some(review) = start_gitlab(&repo, args)? else {
+                return Ok(());
+            };
+            review
         } else {
-            let head = cli.head.as_deref().unwrap_or(match repo.backend {
-                Backend::Git => "HEAD",
-                Backend::Jj => "@",
-            });
-            repo.snapshot(cli.base.as_deref().unwrap_or("master"), head)?
+            let comparison = if let Some(expression) = cli.comparison {
+                repo.snapshot_expression(&expression)?
+            } else {
+                let head = cli.head.as_deref().unwrap_or(match repo.backend {
+                    Backend::Git => "HEAD",
+                    Backend::Jj => "@",
+                });
+                repo.snapshot(cli.base.as_deref().unwrap_or("master"), head)?
+            };
+            let changes = repo.changes(&comparison)?;
+            Review::new(comparison, changes)
         };
-        let changes = repo.changes(&comparison)?;
-        store.create(Review::new(comparison, changes))?
+        let (mut saved, lock) = store.create(review)?;
+        if let Some(gitlab) = &saved.review.gitlab {
+            let label = gitlab.label();
+            lock.rename(&mut saved, &label)?;
+        }
+        (saved, lock)
     };
     let mut metadata_changed = repo.fill_change_ids(&mut saved.review.comparison)?;
     metadata_changed |= repo.fill_commit_titles(&mut saved.review.comparison)?;
@@ -270,6 +351,70 @@ fn main() -> Result<()> {
     result.and(saved_result)
 }
 
+fn start_gitlab(repo: &Repository, args: &GitLabArgs) -> Result<Option<Review>> {
+    let reference = args.mr.as_deref().map(MrReference::parse).transpose()?;
+    let mut remotes = Vec::new();
+    for (name, url) in repo.remotes()? {
+        let Ok(mut project) = Project::from_remote(&url) else {
+            continue;
+        };
+        if let Some(hostname) = &args.hostname {
+            project.host.clone_from(hostname);
+        }
+        if args.remote.as_ref().is_none_or(|remote| remote == &name)
+            && reference
+                .as_ref()
+                .and_then(|reference| reference.project.as_ref())
+                .is_none_or(|target| target == &project)
+        {
+            remotes.push((name, project));
+        }
+    }
+    ensure!(
+        !remotes.is_empty(),
+        "No matching GitLab target-project remote. Add the MR's target repository as a remote, or select it with --remote and --hostname"
+    );
+    let index = if remotes.len() == 1 {
+        0
+    } else {
+        loop {
+            let labels: Vec<_> = remotes
+                .iter()
+                .map(|(name, project)| format!("{name} · {}/{}", project.host, project.path))
+                .collect();
+            match gitlab_ui::pick("GitLab repository", &labels)? {
+                Pick::Selected(index) => break index,
+                Pick::Reload => continue,
+                Pick::Cancel => return Ok(None),
+            }
+        }
+    };
+    let (remote, project) = &remotes[index];
+    let gitlab = GitLab::new(repo, project);
+    let iid = if let Some(reference) = reference {
+        reference.iid
+    } else {
+        loop {
+            eprintln!(
+                "Loading open merge requests from {}/{}…",
+                project.host, project.path
+            );
+            let requests = gitlab.open_merge_requests()?;
+            let labels: Vec<_> = requests.iter().map(|mr| mr.label()).collect();
+            match gitlab_ui::pick("Open merge requests", &labels)? {
+                Pick::Selected(index) => break requests[index].iid,
+                Pick::Reload => continue,
+                Pick::Cancel => return Ok(None),
+            }
+        }
+    };
+    eprintln!("Fetching and preparing MR !{iid}…");
+    let prepared = gitlab.prepare(repo, remote, iid)?;
+    let mut review = Review::new(prepared.comparison, prepared.changes);
+    review.gitlab = Some(prepared.gitlab);
+    Ok(Some(review))
+}
+
 fn run(
     terminal: &mut ratatui::DefaultTerminal,
     repo: &Repository,
@@ -285,7 +430,13 @@ fn run(
     let mut request_id = 0;
     let mut redraw = true;
     let mut last_save = Instant::now();
-    let refresher = RefreshWorker::new(repo, &app.review.comparison);
+    let refresher = app
+        .review
+        .gitlab
+        .is_none()
+        .then(|| RefreshWorker::new(repo, &app.review.comparison));
+    let (mr_results, mr_receiver) = mpsc::channel::<Result<PreparedReview, String>>();
+    let mut refreshing_mr = false;
     while !app.quit {
         let size = terminal.size()?;
         let panes = ui::panes(Rect::new(0, 0, size.width, size.height), app);
@@ -388,6 +539,11 @@ fn run(
         let mut force_save = false;
         if event::poll(Duration::from_millis(30))? {
             match event::read()? {
+                Event::Key(_) | Event::Paste(_) if refreshing_mr => {
+                    app.message =
+                        "Preparing the MR working copy; waiting for the fetch to finish…".into();
+                    redraw = true;
+                }
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     app.message.clear();
                     let keys = if app.searching
@@ -547,7 +703,26 @@ fn run(
         }
         if app.refresh {
             app.refresh = false;
-            refresher.request();
+            if let Some(gitlab) = &app.review.gitlab {
+                if !refreshing_mr {
+                    let context = gitlab.clone();
+                    let repo = repo.clone();
+                    let results = mr_results.clone();
+                    thread::spawn(move || {
+                        let result = GitLab::new(&repo, &context.project).prepare(
+                            &repo,
+                            &context.remote,
+                            context.merge_request.iid,
+                        );
+                        let _ = results.send(result.map_err(|error| format!("{error:#}")));
+                    });
+                    refreshing_mr = true;
+                    app.message = "Fetching the latest MR version…".into();
+                    redraw = true;
+                }
+            } else if let Some(refresher) = &refresher {
+                refresher.request();
+            }
         }
         if app.editor_requested
             && !app.rendering
@@ -574,7 +749,22 @@ fn run(
             };
             redraw = true;
         }
-        for result in refresher.results.try_iter() {
+        let mut refreshed: Vec<_> = refresher
+            .as_ref()
+            .map(|worker| worker.results.try_iter().collect())
+            .unwrap_or_default();
+        for result in mr_receiver.try_iter() {
+            refreshing_mr = false;
+            let snapshot = result.map(|prepared| {
+                app.review.gitlab = Some(prepared.gitlab);
+                (prepared.comparison, prepared.changes)
+            });
+            refreshed.push(RefreshResult {
+                manual: true,
+                snapshot,
+            });
+        }
+        for result in refreshed {
             match result.snapshot {
                 Ok((comparison, changes)) => {
                     let previous_preview: Vec<_> = app.preview_changes().cloned().collect();

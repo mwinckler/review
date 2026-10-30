@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     comments::Comment,
+    gitlab::GitLabReview,
     vcs::{Change, Comparison, LineCounts},
 };
 
@@ -44,6 +45,8 @@ pub struct Review {
     pub view: ViewState,
     #[serde(default)]
     pub comments: Vec<Comment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gitlab: Option<GitLabReview>,
 }
 
 impl Review {
@@ -104,6 +107,7 @@ impl Review {
             viewed: BTreeMap::new(),
             view: ViewState::default(),
             comments: Vec::new(),
+            gitlab: None,
         }
     }
 

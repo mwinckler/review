@@ -102,6 +102,204 @@ struct CommitFiles {
 }
 
 impl Repository {
+    pub fn remotes(&self) -> Result<Vec<(String, String)>> {
+        match self.backend {
+            Backend::Git => {
+                let names = String::from_utf8(self.run(&["remote"], false)?)?;
+                names
+                    .lines()
+                    .map(|name| {
+                        validate_remote(name)?;
+                        let url = String::from_utf8(
+                            self.run(&["config", "--get", &format!("remote.{name}.url")], false)?,
+                        )?;
+                        Ok((name.to_owned(), url.trim_end_matches('\n').to_owned()))
+                    })
+                    .collect()
+            }
+            Backend::Jj => {
+                let output = String::from_utf8(self.run(&["git", "remote", "list"], false)?)?;
+                let git_dir = String::from_utf8(self.run(&["git", "root"], false)?)?;
+                let git = Self {
+                    root: PathBuf::from(git_dir.trim_end_matches('\n')),
+                    backend: Backend::Git,
+                };
+                output
+                    .lines()
+                    .map(|line| {
+                        let (name, _) =
+                            line.split_once(' ').context("invalid jj remote listing")?;
+                        validate_remote(name)?;
+                        let url = String::from_utf8(
+                            git.run(&["config", "--get", &format!("remote.{name}.url")], false)?,
+                        )?;
+                        Ok((name.to_owned(), url.trim_end_matches('\n').to_owned()))
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    pub fn add_remote(&self, name: &str, url: &str) -> Result<()> {
+        validate_remote(name)?;
+        let args = match self.backend {
+            Backend::Git => vec!["remote", "add", name, url],
+            Backend::Jj => vec!["git", "remote", "add", name, url],
+        };
+        self.run(&args, false)?;
+        Ok(())
+    }
+
+    pub fn fetch(&self, remote: &str, branches: &[&str]) -> Result<()> {
+        validate_remote(remote)?;
+        let mut command = self.command(false);
+        match self.backend {
+            Backend::Git => {
+                command.args(["fetch", "--no-tags", remote]);
+                for branch in branches {
+                    validate_branch(branch)?;
+                    command.arg(format!(
+                        "+refs/heads/{branch}:refs/remotes/{remote}/{branch}"
+                    ));
+                }
+            }
+            Backend::Jj => {
+                command.args([
+                    "--config",
+                    "git.abandon-unreachable-commits=false",
+                    "git",
+                    "fetch",
+                    "--remote",
+                    &format!("exact:{remote}"),
+                ]);
+                for branch in branches {
+                    validate_branch(branch)?;
+                    command.args(["--branch", &format!("exact:{branch}")]);
+                }
+            }
+        }
+        let output = crate::command::output(&mut command, None)?;
+        ensure!(
+            output.status.success(),
+            "fetching {remote}: {}. Check repository SSH/HTTPS credentials and branch access",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        Ok(())
+    }
+
+    pub fn remote_head(&self, remote: &str, branch: &str) -> Result<String> {
+        validate_remote(remote)?;
+        validate_branch(branch)?;
+        let revision = match self.backend {
+            Backend::Git => format!("refs/remotes/{remote}/{branch}"),
+            Backend::Jj => format!(
+                "{}@{}",
+                serde_json::to_string(branch)?,
+                serde_json::to_string(remote)?
+            ),
+        };
+        self.resolve(&revision, false)
+    }
+
+    pub fn ensure_clean(&self) -> Result<()> {
+        let clean = match self.backend {
+            Backend::Git => self
+                .run(
+                    &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                    false,
+                )?
+                .is_empty(),
+            Backend::Jj => {
+                self.run(&["log", "--no-graph", "-r", "@", "-T", "empty"], true)? == b"true"
+            }
+        };
+        ensure!(
+            clean,
+            "Working copy contains local changes. Save your work and prepare a clean working copy before switching to an MR"
+        );
+        Ok(())
+    }
+
+    pub fn checkout_review(
+        &self,
+        branch: &str,
+        head: &str,
+        remote: &str,
+        source: &str,
+    ) -> Result<()> {
+        validate_branch(branch)?;
+        validate_commit_id(head)?;
+        self.ensure_clean()?;
+        match self.backend {
+            Backend::Git => {
+                self.run(&["check-ref-format", "--branch", branch], false)?;
+                let existing = self
+                    .command(false)
+                    .args([
+                        "show-ref",
+                        "--verify",
+                        "--quiet",
+                        &format!("refs/heads/{branch}"),
+                    ])
+                    .output()?
+                    .status;
+                if existing.success() {
+                    let local = self.resolve(&format!("refs/heads/{branch}"), false)?;
+                    ensure!(
+                        self.merge_base(&local, head).ok().as_deref() == Some(&local),
+                        "Local branch {branch:?} has commits absent from the MR. Preserve or rename it before reviewing this MR"
+                    );
+                    let upstream = String::from_utf8(self.run(
+                        &[
+                            "for-each-ref",
+                            "--format=%(upstream)",
+                            &format!("refs/heads/{branch}"),
+                        ],
+                        false,
+                    )?)?;
+                    ensure!(
+                        upstream.trim().is_empty()
+                            || upstream.trim() == format!("refs/remotes/{remote}/{source}"),
+                        "Local branch {branch:?} tracks another source. Rename it before reviewing this MR"
+                    );
+                    self.run(&["switch", "--no-overwrite-ignore", branch], false)?;
+                    self.run(&["merge", "--ff-only", "--no-edit", head], false)?;
+                } else {
+                    ensure!(
+                        existing.code() == Some(1),
+                        "checking local branch {branch:?} failed"
+                    );
+                    self.run(
+                        &["switch", "--no-overwrite-ignore", "--create", branch, head],
+                        false,
+                    )?;
+                    self.run(
+                        &[
+                            "branch",
+                            "--set-upstream-to",
+                            &format!("{remote}/{source}"),
+                            branch,
+                        ],
+                        false,
+                    )?;
+                }
+                ensure!(
+                    self.resolve("HEAD", false)? == head,
+                    "Working copy no longer matches the MR head; retry"
+                );
+            }
+            Backend::Jj => {
+                // Keep the reviewed commit immutable; edits belong to a fresh child change.
+                self.run(&["new", head], true)?;
+                ensure!(
+                    self.resolve("@-", false)? == head,
+                    "Working copy no longer follows the MR head; retry"
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub fn discover(path: &Path, backend: Option<Backend>) -> Result<Self> {
         let path = path
             .canonicalize()
@@ -604,7 +802,7 @@ impl Repository {
         }
     }
 
-    fn resolve(&self, revision: &str, snapshot: bool) -> Result<String> {
+    pub(crate) fn resolve(&self, revision: &str, snapshot: bool) -> Result<String> {
         let output = match self.backend {
             Backend::Git => self.run(
                 &[
@@ -680,6 +878,35 @@ impl Repository {
         );
         Ok(output.stdout)
     }
+}
+
+fn validate_remote(name: &str) -> Result<()> {
+    ensure!(
+        !name.is_empty() && !name.starts_with('-') && !name.chars().any(char::is_whitespace),
+        "invalid remote name {name:?}"
+    );
+    Ok(())
+}
+
+fn validate_branch(branch: &str) -> Result<()> {
+    ensure!(
+        !branch.is_empty()
+            && !branch.starts_with('-')
+            && !branch.chars().any(|ch| ch.is_control()
+                || matches!(ch, ' ' | ':' | '*' | '?' | '[' | '\\' | '~' | '^'))
+            && !branch.contains("..")
+            && !branch.contains("@{"),
+        "invalid branch name {branch:?}"
+    );
+    Ok(())
+}
+
+pub(crate) fn validate_commit_id(id: &str) -> Result<()> {
+    ensure!(
+        matches!(id.len(), 40 | 64) && id.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "GitLab returned an invalid commit SHA"
+    );
+    Ok(())
 }
 
 fn range_separator(expression: &str, backend: Backend) -> Result<Option<(usize, usize)>> {
