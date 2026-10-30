@@ -132,6 +132,15 @@ pub struct MergeRequest {
 }
 
 impl MergeRequest {
+    pub(crate) fn same_version(&self, other: &Self) -> Result<bool> {
+        Ok(self.iid == other.iid
+            && self.target_project_id == other.target_project_id
+            && self.source_project_id == other.source_project_id
+            && self.target_branch == other.target_branch
+            && self.source_branch == other.source_branch
+            && self.refs()? == other.refs()?)
+    }
+
     pub fn label(&self) -> String {
         format!(
             "!{} {}{} · @{} · {} → {}",
@@ -364,10 +373,7 @@ impl GitLab {
         );
         let current = self.merge_request(iid)?;
         ensure!(
-            current.refs()? == &refs
-                && current.source_branch == mr.source_branch
-                && current.target_branch == mr.target_branch
-                && current.source_project_id == mr.source_project_id,
+            current.same_version(&mr)?,
             "MR changed during fetch; retry to review its latest version"
         );
         repo.resolve(&refs.start_sha, false)

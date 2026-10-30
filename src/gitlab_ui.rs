@@ -13,16 +13,12 @@ use ratatui::{
 use crate::{
     app::App,
     gitlab_review::{SubmissionPreview, acknowledge_retry, pending_comments},
+    gitlab_worker::GitLabJob,
     input,
     state::Review,
     tree,
     ui::{display_path, session_dialog_area},
 };
-
-pub enum SubmissionAction {
-    Preview(String),
-    Publish(Box<SubmissionPreview>),
-}
 
 pub struct SubmissionDialog {
     pub summary: String,
@@ -88,8 +84,7 @@ impl App {
         } else if let Some(preview) = &dialog.preview {
             match key.code {
                 KeyCode::Char('y') => {
-                    self.submission_action =
-                        Some(SubmissionAction::Publish(Box::new(preview.clone())))
+                    self.submission_action = Some(GitLabJob::Publish(Box::new(preview.clone())))
                 }
                 KeyCode::Char('n') | KeyCode::Esc => dialog.preview = None,
                 _ => {}
@@ -97,20 +92,13 @@ impl App {
         } else if key.code == KeyCode::Esc {
             return;
         } else if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.submission_action = Some(SubmissionAction::Preview(dialog.summary.clone()));
+            self.submission_action = Some(GitLabJob::Preview(dialog.summary.clone()));
         } else if key.code == KeyCode::Char('X')
-            && self.review.gitlab.as_ref().is_some_and(|gitlab| {
-                gitlab
-                    .publication
-                    .comments
-                    .values()
-                    .any(|receipt| receipt.uncertain)
-                    || gitlab
-                        .publication
-                        .attempt
-                        .as_ref()
-                        .is_some_and(|attempt| attempt.publishing || attempt.summary_uncertain)
-            })
+            && self
+                .review
+                .gitlab
+                .as_ref()
+                .is_some_and(|gitlab| gitlab.publication.uncertain())
         {
             dialog.reset_confirmation = true;
         } else if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
@@ -272,7 +260,20 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
             "y publish all pending drafts · n / Esc edit".to_owned(),
         )
     } else {
-        (dialog.message.clone(), "Ctrl-s preview · Tab summary/comments · PgUp/PgDn read · X reconcile retry · Esc close".to_owned())
+        let retry = if app
+            .review
+            .gitlab
+            .as_ref()
+            .is_some_and(|gitlab| gitlab.publication.uncertain())
+        {
+            " · X acknowledge retry"
+        } else {
+            ""
+        };
+        (
+            dialog.message.clone(),
+            format!("Ctrl-s preview · Tab summary/comments · PgUp/PgDn read{retry} · Esc close"),
+        )
     };
     frame.render_widget(
         Paragraph::new(display_path(&prompt))

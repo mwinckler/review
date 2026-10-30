@@ -153,14 +153,7 @@ impl CommentDraft {
 
     pub fn insert(&mut self, text: &str) {
         if self.field == DraftField::Body {
-            let text: String = text
-                .replace("\r\n", "\n")
-                .replace('\r', "\n")
-                .chars()
-                .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
-                .collect();
-            self.body.insert_str(self.cursor, &text);
-            self.cursor += text.len();
+            input::insert(&mut self.body, &mut self.cursor, text);
         }
     }
 
@@ -191,51 +184,7 @@ impl CommentDraft {
             }
             return;
         }
-        if input::edit(&mut self.body, &mut self.cursor, key.code) {
-            return;
-        }
-        match key.code {
-            KeyCode::Up | KeyCode::Down => {
-                let start = self.body[..self.cursor]
-                    .rfind('\n')
-                    .map(|index| index + 1)
-                    .unwrap_or(0);
-                let column = self.body[start..self.cursor].chars().count();
-                let target = if key.code == KeyCode::Up {
-                    start.checked_sub(1).map(|end| {
-                        self.body[..end]
-                            .rfind('\n')
-                            .map(|index| index + 1)
-                            .unwrap_or(0)
-                    })
-                } else {
-                    self.body[self.cursor..]
-                        .find('\n')
-                        .map(|offset| self.cursor + offset + 1)
-                };
-                if let Some(target) = target {
-                    self.cursor = target
-                        + self.body[target..]
-                            .split('\n')
-                            .next()
-                            .unwrap_or_default()
-                            .chars()
-                            .take(column)
-                            .map(char::len_utf8)
-                            .sum::<usize>();
-                }
-            }
-            KeyCode::Enter => self.insert("\n"),
-            KeyCode::Tab => self.insert("\t"),
-            KeyCode::Char(ch)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                self.insert(&ch.to_string())
-            }
-            _ => {}
-        }
+        input::multiline(&mut self.body, &mut self.cursor, key);
     }
 }
 

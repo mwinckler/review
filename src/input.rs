@@ -12,16 +12,6 @@ pub(crate) fn insert(text: &mut String, cursor: &mut usize, value: &str) {
 }
 
 pub(crate) fn multiline(text: &mut String, cursor: &mut usize, key: KeyEvent) {
-    if key
-        .modifiers
-        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-    {
-        if key.code == KeyCode::Char('u') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            text.clear();
-            *cursor = 0;
-        }
-        return;
-    }
     if edit(text, cursor, key.code) {
         return;
     }
@@ -55,7 +45,13 @@ pub(crate) fn multiline(text: &mut String, cursor: &mut usize, key: KeyEvent) {
         }
         KeyCode::Enter => insert(text, cursor, "\n"),
         KeyCode::Tab => insert(text, cursor, "\t"),
-        KeyCode::Char(ch) => insert(text, cursor, &ch.to_string()),
+        KeyCode::Char(ch)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            insert(text, cursor, &ch.to_string())
+        }
         _ => {}
     }
 }

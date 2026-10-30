@@ -6,7 +6,8 @@ use std::{
 use crate::{
     comment_dialog::{CommentAction, CommentDialog, CommentList, LineSelection},
     comments::DiffSide,
-    gitlab_ui::{SubmissionAction, SubmissionDialog},
+    gitlab_ui::SubmissionDialog,
+    gitlab_worker::GitLabJob,
     hunks::{Hunk, HunkLocation, SourceLine},
     session_dialog::{SessionAction, SessionDialog},
     state::{Position, Review},
@@ -94,7 +95,7 @@ pub struct App {
     pub comment_action: Option<CommentAction>,
     pub comments_changed: bool,
     pub submission_dialog: Option<SubmissionDialog>,
-    pub submission_action: Option<SubmissionAction>,
+    pub submission_action: Option<GitLabJob>,
     pub network_busy: bool,
     hunk_actions: VecDeque<HunkNavigation>,
     prefix: Option<(char, Option<usize>)>,

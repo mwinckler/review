@@ -104,41 +104,28 @@ struct CommitFiles {
 
 impl Repository {
     pub fn remotes(&self) -> Result<Vec<(String, String)>> {
-        match self.backend {
-            Backend::Git => {
-                let names = String::from_utf8(self.run(&["remote"], false)?)?;
-                names
-                    .lines()
-                    .map(|name| {
-                        validate_remote(name)?;
-                        let url = String::from_utf8(
-                            self.run(&["config", "--get", &format!("remote.{name}.url")], false)?,
-                        )?;
-                        Ok((name.to_owned(), url.trim_end_matches('\n').to_owned()))
-                    })
-                    .collect()
-            }
+        let git = match self.backend {
+            Backend::Git => self.clone(),
             Backend::Jj => {
-                let output = String::from_utf8(self.run(&["git", "remote", "list"], false)?)?;
                 let git_dir = String::from_utf8(self.run(&["git", "root"], false)?)?;
-                let git = Self {
+                Self {
                     root: PathBuf::from(git_dir.trim_end_matches('\n')),
                     backend: Backend::Git,
-                };
-                output
-                    .lines()
-                    .map(|line| {
-                        let (name, _) =
-                            line.split_once(' ').context("invalid jj remote listing")?;
-                        validate_remote(name)?;
-                        let url = String::from_utf8(
-                            git.run(&["config", "--get", &format!("remote.{name}.url")], false)?,
-                        )?;
-                        Ok((name.to_owned(), url.trim_end_matches('\n').to_owned()))
-                    })
-                    .collect()
+                }
             }
-        }
+        };
+        // Read configured URLs before insteadOf expansion so API host/project detection is stable.
+        let names = String::from_utf8(git.run(&["remote"], false)?)?;
+        names
+            .lines()
+            .map(|name| {
+                validate_remote(name)?;
+                let url = String::from_utf8(
+                    git.run(&["config", "--get", &format!("remote.{name}.url")], false)?,
+                )?;
+                Ok((name.to_owned(), url.trim_end_matches('\n').to_owned()))
+            })
+            .collect()
     }
 
     pub fn add_remote(&self, name: &str, url: &str) -> Result<()> {

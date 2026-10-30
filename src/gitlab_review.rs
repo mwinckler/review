@@ -21,6 +21,16 @@ pub struct Publication {
     pub attempt: Option<ReviewAttempt>,
 }
 
+impl Publication {
+    pub(crate) fn uncertain(&self) -> bool {
+        self.comments.values().any(|receipt| receipt.uncertain)
+            || self
+                .attempt
+                .as_ref()
+                .is_some_and(|attempt| attempt.publishing || attempt.summary_uncertain)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RemoteComment {
     pub marker: String,
@@ -199,11 +209,7 @@ impl GitLab {
         let current = self.merge_request(context.merge_request.iid)?;
         let refs = current.refs()?.clone();
         ensure!(
-            &refs == context.merge_request.refs()?
-                && current.target_branch == context.merge_request.target_branch
-                && current.source_branch == context.merge_request.source_branch
-                && current.source_project_id == context.merge_request.source_project_id
-                && current.target_project_id == context.merge_request.target_project_id
+            current.same_version(&context.merge_request)?
                 && saved.review.comparison.base_id == refs.base_sha
                 && saved.review.comparison.head_id == refs.head_sha,
             "MR changed since this review. Close this dialog and refresh with r before submitting"
@@ -486,12 +492,8 @@ impl GitLab {
             .merge_request;
         let latest = self.merge_request(reviewed.iid)?;
         ensure!(
-            latest.refs()? == &approved.refs
-                && latest.target_branch == reviewed.target_branch
-                && latest.source_branch == reviewed.source_branch
-                && latest.source_project_id == reviewed.source_project_id
-                && latest.target_project_id == reviewed.target_project_id,
-            "MR changed while preparing the review; recheck its changes before publishing"
+            latest.same_version(reviewed)?,
+            "MR changed while preparing the review. Drafts are saved on GitLab; finish the review there, then reopen the MR to review its latest version"
         );
         attempt.publishing = true;
         saved

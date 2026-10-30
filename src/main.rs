@@ -21,7 +21,7 @@ use review::{
     config::Config,
     editor::EditorWorker,
     gitlab::{GitLab, MrReference, Project},
-    gitlab_ui::{self, Pick, SubmissionAction},
+    gitlab_ui::{self, Pick},
     gitlab_worker::{GitLabJob, GitLabOutcome, GitLabWorker},
     refresh::RefreshWorker,
     renderer::{RenderOptions, RenderWorker},
@@ -714,10 +714,7 @@ fn run(
             }
             redraw = true;
         }
-        let mut gitlab_job = app.submission_action.take().map(|action| match action {
-            SubmissionAction::Preview(summary) => GitLabJob::Preview(summary),
-            SubmissionAction::Publish(preview) => GitLabJob::Publish(preview),
-        });
+        let mut gitlab_job = app.submission_action.take();
         if app.refresh {
             app.refresh = false;
             if app.review.gitlab.is_some() {

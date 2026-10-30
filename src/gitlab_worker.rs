@@ -55,7 +55,7 @@ impl GitLabWorker {
                 let client = GitLab::new(&repo, &context.project);
                 match job {
                     GitLabJob::Refresh => {
-                        ensure!(context.publication.attempt.is_none(), "Reconcile the pending GitLab submission with P before changing its reviewed snapshots");
+                        ensure!(context.publication.attempt.is_none(), "A pending draft review is saved. Finish it in GitLab or start a fresh MR review; P rechecks its receipts");
                         let mut prepared = client.prepare(&repo, &context.remote, context.merge_request.iid)?;
                         prepared.gitlab.publication = context.publication;
                         let invalidated = saved.review.reconcile(prepared.comparison, prepared.changes);

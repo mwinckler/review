@@ -182,12 +182,17 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     let comparison = &app.review.comparison;
     if let Some(gitlab) = &app.review.gitlab {
         let mr = &gitlab.merge_request;
+        let mut identity = format!(
+            " GitLab !{} {} → {} · {} · {}",
+            mr.iid, mr.source_branch, mr.target_branch, mr.title, gitlab.project.path
+        );
+        if let Some((_, name)) = app.session_label.split_once(" · ")
+            && name != gitlab.label()
+        {
+            identity.push_str(&format!(" · {name}"));
+        }
         frame.render_widget(
-            Paragraph::new(display_path(&format!(
-                " GitLab !{} {} → {} · {} · {}",
-                mr.iid, mr.source_branch, mr.target_branch, mr.title, gitlab.project.path
-            )))
-            .style(Style::default().fg(Color::Cyan)),
+            Paragraph::new(display_path(&identity)).style(Style::default().fg(Color::Cyan)),
             panes.mr_header,
         );
     }
