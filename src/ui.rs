@@ -8,7 +8,9 @@ use crate::{
     state::Review,
     tree,
     vcs::{Change, Comparison, LineCounts},
+    vim::VimEditor,
 };
+use edtui::{EditorMode, EditorTheme, EditorView};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
@@ -19,6 +21,7 @@ use ratatui::{
         ScrollbarOrientation, ScrollbarState, Wrap,
     },
 };
+use std::cell::RefCell;
 
 pub struct Panes {
     mr_header: Rect,
@@ -850,15 +853,27 @@ pub(crate) fn comment_text(entry: CommentEntry<'_>, review: &Review, width: u16)
 fn draw_markdown_editor(
     frame: &mut Frame,
     area: Rect,
-    body: &str,
-    cursor: usize,
+    content: (&str, usize),
+    editor: &RefCell<VimEditor>,
     preview: bool,
     focused: bool,
     title: &str,
 ) {
+    let (body, cursor) = content;
+    let mut editor = editor.borrow_mut();
+    editor.sync(body, cursor);
+    let mode = editor.state.mode.name().to_uppercase();
+    let mode = if editor.state.mode == EditorMode::Search {
+        format!("{mode} /{}", display_path(&editor.state.search_pattern()))
+    } else {
+        mode
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(if preview { " Markdown preview " } else { title })
+        .title(format!(
+            "{}· {mode} ",
+            if preview { " Markdown preview " } else { title }
+        ))
         .border_style(border(focused));
     let inner = block.inner(area);
     if preview {
@@ -869,30 +884,17 @@ fn draw_markdown_editor(
             area,
         );
     } else {
-        let mut text = body.to_owned();
-        if focused {
-            text.insert(cursor, '▏');
+        let mut theme = EditorTheme::default()
+            .base(Style::default())
+            .block(block)
+            .hide_status_line()
+            .cursor_style(Style::default().fg(Color::Black).bg(Color::Yellow))
+            .selection_style(Style::default().bg(Color::Rgb(55, 50, 25)));
+        if !focused {
+            theme = theme.hide_cursor();
         }
-        let text = Text::from(
-            text.split('\n')
-                .map(|line| Line::from(display_path(line)))
-                .collect::<Vec<_>>(),
-        );
-        let row = body[..cursor].bytes().filter(|byte| *byte == b'\n').count();
-        let column = Span::raw(display_path(
-            body[..cursor].rsplit('\n').next().unwrap_or_default(),
-        ))
-        .width();
         frame.render_widget(
-            Paragraph::new(text)
-                .scroll((
-                    row.saturating_sub(inner.height.saturating_sub(1) as usize)
-                        .min(u16::MAX as usize) as u16,
-                    column
-                        .saturating_sub(inner.width.saturating_sub(1) as usize)
-                        .min(u16::MAX as usize) as u16,
-                ))
-                .block(block),
+            EditorView::new(&mut editor.state).wrap(true).theme(theme),
             area,
         );
     }
@@ -968,8 +970,8 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
             draw_markdown_editor(
                 frame,
                 body,
-                &draft.body,
-                draft.cursor,
+                (&draft.body, draft.cursor),
+                &draft.editor,
                 draft.preview,
                 draft.field == DraftField::Body,
                 " Comment · Markdown ",
@@ -981,7 +983,7 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
             );
             frame.render_widget(
                 Paragraph::new(
-                    "Ctrl-s save locally · Ctrl-p preview · Tab line fields · Esc discard",
+                    "Esc normal · i insert · Ctrl-s save · Ctrl-p preview · Tab fields · Ctrl-q discard",
                 )
                 .style(Style::default().fg(Color::Cyan)),
                 controls,
@@ -1017,8 +1019,8 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
             draw_markdown_editor(
                 frame,
                 body,
-                &draft.body,
-                draft.cursor,
+                (&draft.body, draft.cursor),
+                &draft.editor,
                 draft.preview,
                 true,
                 " Reply · Markdown ",
@@ -1029,8 +1031,10 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
                 message,
             );
             frame.render_widget(
-                Paragraph::new("Ctrl-s save locally · Ctrl-p preview · Esc discard")
-                    .style(Style::default().fg(Color::Cyan)),
+                Paragraph::new(
+                    "Esc normal · i insert · Ctrl-s save · Ctrl-p preview · Ctrl-q discard",
+                )
+                .style(Style::default().fg(Color::Cyan)),
                 controls,
             );
         }

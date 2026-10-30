@@ -1,14 +1,18 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub(crate) fn insert(text: &mut String, cursor: &mut usize, value: &str) {
-    let value: String = value
+    let value = sanitize(value);
+    text.insert_str(*cursor, &value);
+    *cursor += value.len();
+}
+
+pub(crate) fn sanitize(value: &str) -> String {
+    value
         .replace("\r\n", "\n")
         .replace('\r', "\n")
         .chars()
         .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
-        .collect();
-    text.insert_str(*cursor, &value);
-    *cursor += value.len();
+        .collect()
 }
 
 pub(crate) fn multiline(text: &mut String, cursor: &mut usize, key: KeyEvent) {

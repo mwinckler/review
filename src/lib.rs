@@ -21,3 +21,4 @@ pub mod thread;
 pub mod tree;
 pub mod ui;
 pub mod vcs;
+mod vim;

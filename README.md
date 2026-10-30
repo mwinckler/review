@@ -172,7 +172,7 @@ through reloads, and cached conversations stay available if GitLab is unreachabl
 
 Press `R` in a GitLab thread or on its entry in `C`. Write the reply, then
 `Ctrl-s` saves it locally beneath the conversation. `R` reopens a pending reply
-for editing; `d`, then `y`, discards the pending reply. `Esc` discards unsaved
+for editing; `d`, then `y`, discards the pending reply. `Ctrl-q` discards unsaved
 composer edits. Replies to general, resolved, and historical conversations retain
 the original GitLab discussion identity.
 
@@ -437,11 +437,29 @@ range.
 Difftastic and unified renderers support visual selection in file and folder
 previews, including inline and side-by-side layouts.
 
-In the composer, type or paste multiline text. `Enter` adds a newline, arrows move
-the text cursor, and `Ctrl-s` submits the comment. `Tab` / `Shift-Tab` cycle between
+Comment and reply composers open in Vim Insert mode. Type or paste multiline
+text; `Enter` adds a newline and arrows move the text cursor. `Esc` or `Ctrl-[`
+switches to Normal mode, and the editor displays its current mode. `Ctrl-s` saves
+the comment locally. `Tab` / `Shift-Tab` cycle between
 the body and the inclusive start/end line fields for a new comment; `Ctrl-u` clears
-a line field. These fields also support renderers with custom output. `Esc`
+a line field. These fields also support renderers with custom output. `Ctrl-q`
 discards the draft. `Ctrl-p` toggles the rendered Markdown preview.
+
+In Normal mode:
+
+| Keys | Editing action |
+|---|---|
+| `h` / `j` / `k` / `l` | Move left / down / up / right |
+| `w` / `b` / `e` | Move by words; counts such as `3w` repeat movement |
+| `0` / `_` / `$`, `gg` / `G` | Line start / first nonblank / end; first / last line |
+| `i` / `a`, `I` / `A` | Insert before / after the cursor or at the start / end of a line |
+| `o` / `O` | Open a line below / above and enter Insert mode |
+| `x`, `dd`, `dw`, `diw`, `D` | Delete characters, lines, words, or through the end of a line |
+| `cw` / `ciw` | Change a word and enter Insert mode |
+| `v` / `V` | Select characters / lines; move to extend, then `y` to yank or `d` to delete |
+| `yy`, `p` / `P` | Yank a line; paste after / before the cursor |
+| `u` / `Ctrl-r` | Undo / redo |
+| `/`, `n` / `N` | Search within the draft; next / previous match |
 
 Press `C` to browse every comment in the session, including comments on hidden or
 viewed files. `j` / `k` select a comment, `Enter` jumps to its source, `e` edits its

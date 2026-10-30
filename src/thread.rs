@@ -155,7 +155,7 @@ impl App {
     pub(crate) fn reply_to_thread(&mut self) {
         let thread = self.thread.as_ref().expect("open thread");
         match ReplyDraft::new(&self.review, &thread.id) {
-            Ok(draft) => self.comment_dialog = Some(CommentDialog::Reply(draft)),
+            Ok(draft) => self.comment_dialog = Some(CommentDialog::Reply(Box::new(draft))),
             Err(error) => self.message = format!("Reply: {error:#}"),
         }
     }

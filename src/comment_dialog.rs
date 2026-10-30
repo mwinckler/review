@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::{cell::RefCell, collections::BTreeSet};
 
 use anyhow::{Context, Result, ensure};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -10,10 +10,10 @@ use crate::{
     gitlab_review::pending_replies,
     gitlab_worker::GitLabJob,
     hunks::SourceLine,
-    input,
     state::Review,
     store::now_millis,
     vcs::Repository,
+    vim::VimEditor,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,6 +73,7 @@ pub struct CommentDraft {
     pub field: DraftField,
     pub message: String,
     pub preview: bool,
+    pub(crate) editor: RefCell<VimEditor>,
     source: Option<String>,
 }
 
@@ -102,6 +103,7 @@ impl CommentDraft {
             field: DraftField::Body,
             message: String::new(),
             preview: false,
+            editor: RefCell::default(),
             source: Some(String::from_utf8(content)?),
         })
     }
@@ -117,6 +119,7 @@ impl CommentDraft {
             field: DraftField::Body,
             message: String::new(),
             preview: false,
+            editor: RefCell::default(),
             source: None,
         }
     }
@@ -160,12 +163,15 @@ impl CommentDraft {
 
     pub fn insert(&mut self, text: &str) {
         if self.field == DraftField::Body && !self.preview {
-            input::insert(&mut self.body, &mut self.cursor, text);
+            self.editor
+                .get_mut()
+                .paste(&mut self.body, &mut self.cursor, text);
         }
     }
 
     fn input(&mut self, key: KeyEvent) {
         if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) && self.source.is_some() {
+            self.editor.get_mut().reset_pending();
             self.field = match (self.field, key.code == KeyCode::Tab) {
                 (DraftField::Start, true) | (DraftField::Body, false) => DraftField::End,
                 (DraftField::End, true) | (DraftField::Start, false) => DraftField::Body,
@@ -191,7 +197,9 @@ impl CommentDraft {
             }
             return;
         }
-        input::multiline(&mut self.body, &mut self.cursor, key);
+        self.editor
+            .get_mut()
+            .input(&mut self.body, &mut self.cursor, key);
     }
 }
 
@@ -211,7 +219,7 @@ pub struct CommentList {
 pub enum CommentDialog {
     Compose(Box<CommentDraft>),
     Browse(CommentList),
-    Reply(ReplyDraft),
+    Reply(Box<ReplyDraft>),
 }
 
 pub struct ReplyDraft {
@@ -221,6 +229,7 @@ pub struct ReplyDraft {
     pub cursor: usize,
     pub preview: bool,
     pub message: String,
+    pub(crate) editor: RefCell<VimEditor>,
 }
 
 impl ReplyDraft {
@@ -241,12 +250,15 @@ impl ReplyDraft {
             body,
             preview: false,
             message: String::new(),
+            editor: RefCell::default(),
         })
     }
 
     pub fn insert(&mut self, value: &str) {
         if !self.preview {
-            input::insert(&mut self.body, &mut self.cursor, value);
+            self.editor
+                .get_mut()
+                .paste(&mut self.body, &mut self.cursor, value);
         }
     }
 
@@ -517,10 +529,16 @@ impl App {
         };
         match &mut dialog {
             CommentDialog::Compose(draft) => {
-                if key.code == KeyCode::Esc {
+                if key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL)
+                    || key.code == KeyCode::Esc && !draft.preview && draft.field != DraftField::Body
+                {
                     return;
                 }
-                if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                if key.code == KeyCode::Esc && draft.preview {
+                    draft.preview = false;
+                } else if key.code == KeyCode::Char('s')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                {
                     match draft.save(&mut self.review) {
                         Ok(index) => {
                             let id = &self.review.comments[index].id;
@@ -548,15 +566,20 @@ impl App {
                     && key.modifiers.contains(KeyModifiers::CONTROL)
                 {
                     draft.preview = !draft.preview;
+                    draft.editor.get_mut().reset_pending();
                 } else if !draft.preview {
                     draft.input(key);
                 }
             }
             CommentDialog::Reply(draft) => {
-                if key.code == KeyCode::Esc {
+                if key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     return;
                 }
-                if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                if key.code == KeyCode::Esc && draft.preview {
+                    draft.preview = false;
+                } else if key.code == KeyCode::Char('s')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                {
                     match draft.save(&mut self.review) {
                         Ok(()) => {
                             self.comments_changed = true;
@@ -573,8 +596,12 @@ impl App {
                     && key.modifiers.contains(KeyModifiers::CONTROL)
                 {
                     draft.preview = !draft.preview;
+                    draft.editor.get_mut().reset_pending();
                 } else if !draft.preview {
-                    input::multiline(&mut draft.body, &mut draft.cursor, key);
+                    draft
+                        .editor
+                        .get_mut()
+                        .input(&mut draft.body, &mut draft.cursor, key);
                 }
             }
             CommentDialog::Browse(list) => {
