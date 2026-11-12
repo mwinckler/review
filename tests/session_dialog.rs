@@ -29,6 +29,7 @@ fn review() -> Review {
             line_counts: None,
             file_line_counts: None,
             file_commit_ids: None,
+            revisions: None,
         },
         Vec::new(),
     )

@@ -432,30 +432,57 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     if panes.diff.width > 0 {
         let (title, metadata) = if let Some(index) = app.active {
             let change = &app.review.changes[index];
-            let (mut title, metadata) = change_heading(change);
-            if let Some(ids) = comparison
-                .file_commit_ids
-                .as_ref()
-                .and_then(|files| files.get(&change.path))
-                && !ids.is_empty()
-            {
-                title.push_str(&format!("[{}] ", ids.join(", ")));
+            let (title, metadata) = change_heading(change);
+            let mut title = Line::raw(title);
+            let ids = app.revision_ids();
+            if !ids.is_empty() {
+                title.spans.push(Span::raw("["));
+                for (index, id) in ids.iter().enumerate() {
+                    if index > 0 {
+                        title.spans.push(Span::raw(", "));
+                    }
+                    let style = match app.revisions {
+                        Some(selection) if selection.cursor == index => Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                        Some(selection) if selection.range().contains(&index) => Style::default()
+                            .fg(Color::Yellow)
+                            .bg(Color::Rgb(55, 50, 25)),
+                        _ => Style::default(),
+                    };
+                    title.spans.push(Span::styled(id.clone(), style));
+                }
+                title.spans.push(Span::raw("] "));
             }
             (title, metadata)
         } else if app.review.view.active.ends_with('/') {
             (
-                format!(" {} ", display_path(&app.review.view.active)),
+                Line::raw(format!(" {} ", display_path(&app.review.view.active))),
                 format!(" Files: {} ", app.preview_changes().count()),
             )
         } else {
-            (" Review ".into(), String::new())
+            (Line::raw(" Review "), String::new())
         };
         let block = Block::default()
             .borders(Borders::ALL)
             .title(title)
             .title_bottom(metadata)
             .border_style(border(app.focus == Focus::Diff));
-        let viewport = block.inner(panes.diff);
+        let inner = block.inner(panes.diff);
+        frame.render_widget(block, panes.diff);
+        let [filter, viewport] = Layout::vertical([
+            Constraint::Length(u16::from(app.revisions.is_some())),
+            Constraint::Min(0),
+        ])
+        .areas(inner);
+        if let Some(range) = app.revision_range_label() {
+            frame.render_widget(
+                Paragraph::new(format!("Showing only changes from {range}"))
+                    .style(Style::default().fg(Color::Yellow)),
+                filter,
+            );
+        }
         let height = viewport.height as usize;
         let position = app
             .review
@@ -485,10 +512,8 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 .collect::<Vec<_>>(),
         );
         frame.render_widget(
-            Paragraph::new(visible)
-                .scroll((0, position.horizontal))
-                .block(block),
-            panes.diff,
+            Paragraph::new(visible).scroll((0, position.horizontal)),
+            viewport,
         );
         for source in app.source_lines.iter().filter(|source| {
             source.row >= position.vertical && source.row < position.vertical + height
@@ -601,7 +626,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     crate::thread::draw(frame, app, panes.diff, panes.footer);
     if app.help {
         let width = frame.area().width.min(74);
-        let height = frame.area().height.min(32);
+        let height = frame.area().height.min(36);
         let area = Rect::new(
             frame.area().x + (frame.area().width - width) / 2,
             frame.area().y + (frame.area().height - height) / 2,
@@ -619,6 +644,8 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "Ctrl-d/u         Scroll the diff by half a page from either pane.\n",
             "Ctrl-f/b         Scroll the focused pane by a full page.\n",
             "Space            Toggle file viewed + next / mark folder\n",
+            "] / [            Select the next/previous file revision.\n",
+            "Shift-] / Shift-[ Extend the selected revision range.\n",
             "]f / [f          Next/previous file\n",
             "]u / [u          Next/previous unviewed file\n",
             "]h / [h          Select next/previous diff hunk\n",

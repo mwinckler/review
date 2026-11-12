@@ -12,7 +12,7 @@ use crate::{
     hunks::SourceLine,
     state::Review,
     store::now_millis,
-    vcs::Repository,
+    vcs::{Change, Comparison, Repository},
     vim::VimEditor,
 };
 
@@ -79,14 +79,22 @@ pub struct CommentDraft {
 
 impl CommentDraft {
     pub fn new(repo: &Repository, review: &Review, target: &LineTarget) -> Result<Self> {
-        let change = review
-            .changes
+        Self::from_preview(repo, &review.comparison, &review.changes, target)
+    }
+
+    pub fn from_preview(
+        repo: &Repository,
+        comparison: &Comparison,
+        changes: &[Change],
+        target: &LineTarget,
+    ) -> Result<Self> {
+        let change = changes
             .iter()
             .find(|change| change.path == target.path)
             .context("Selected file is no longer in the comparison")?;
-        let content = repo.content(&review.comparison, change, target.side == DiffSide::Old)?;
+        let content = repo.content(comparison, change, target.side == DiffSide::Old)?;
         let anchor = CommentAnchor::from_content(
-            &review.comparison,
+            comparison,
             change,
             target.side,
             target.start_line,

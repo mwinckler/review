@@ -42,7 +42,7 @@ impl Change {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Comparison {
     pub base_ref: String,
     pub head_ref: String,
@@ -64,6 +64,14 @@ pub struct Comparison {
     pub file_line_counts: Option<BTreeMap<String, LineCounts>>,
     #[serde(default)]
     pub file_commit_ids: Option<BTreeMap<String, Vec<String>>>,
+    #[serde(default)]
+    pub revisions: Option<BTreeMap<String, Revision>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Revision {
+    pub commit_id: String,
+    pub parents: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +107,8 @@ pub struct Repository {
 #[derive(Deserialize)]
 struct CommitFiles {
     id: String,
+    #[serde(flatten)]
+    revision: Revision,
     paths: Vec<String>,
 }
 
@@ -470,6 +480,7 @@ impl Repository {
             line_counts: None,
             file_line_counts: None,
             file_commit_ids: None,
+            revisions: None,
         })
     }
 
@@ -532,7 +543,7 @@ impl Repository {
     }
 
     pub fn fill_file_commit_ids(&self, comparison: &mut Comparison) -> Result<bool> {
-        if comparison.file_commit_ids.is_some() {
+        if comparison.file_commit_ids.is_some() && comparison.revisions.is_some() {
             return Ok(false);
         }
         let (base, head) = (&comparison.base_id, &comparison.head_id);
@@ -548,7 +559,7 @@ impl Repository {
                 "-r",
                 &format!("({base}..{head}) | ({head}..{base})"),
                 "-T",
-                r#"json({"id" => stringify(change_id.shortest(3)), "paths" => diff.files().map(|file| file.path())}) ++ "\n""#,
+                r#"json({"id" => stringify(change_id.shortest(3)), "commit_id" => commit_id, "parents" => parents.map(|parent| parent.commit_id()), "paths" => diff.files().map(|file| file.path())}) ++ "\n""#,
             ],
             false,
         ) {
@@ -564,7 +575,7 @@ impl Repository {
                     "--no-color",
                     "--no-show-signature",
                     "--no-notes",
-                    "--format=%h%x00",
+                    "--format=%h %H %P%x00",
                     "--abbrev=8",
                     "--raw",
                     "-z",
@@ -595,7 +606,35 @@ impl Repository {
             files.insert(change.path, ids);
         }
         comparison.file_commit_ids = Some(files);
+        comparison.revisions = Some(
+            commits
+                .into_iter()
+                .map(|commit| (commit.id, commit.revision))
+                .collect(),
+        );
         Ok(true)
+    }
+
+    pub fn revision_comparison(&self, first: &Revision, last: &Revision) -> Result<Comparison> {
+        let base_id = match first.parents.first() {
+            Some(parent) => parent.clone(),
+            None => match self.backend {
+                Backend::Jj => self.resolve("root()", false)?,
+                Backend::Git => {
+                    String::from_utf8(self.run(&["hash-object", "-t", "tree", "--stdin"], false)?)?
+                        .trim()
+                        .to_owned()
+                }
+            },
+        };
+        Ok(Comparison {
+            base_ref: base_id.clone(),
+            head_ref: last.commit_id.clone(),
+            base_id,
+            head_id: last.commit_id.clone(),
+            mode: ComparisonMode::Direct,
+            ..Comparison::default()
+        })
     }
 
     fn merge_base(&self, base: &str, head: &str) -> Result<String> {
@@ -1078,8 +1117,13 @@ fn parse_git_file_commits(output: &[u8]) -> Result<Vec<CommitFiles>> {
                 .paths
                 .push(path.to_owned());
         } else {
+            let mut ids = header.split_whitespace();
             commits.push(CommitFiles {
-                id: header.to_owned(),
+                id: ids.next().context("missing Git history ID")?.to_owned(),
+                revision: Revision {
+                    commit_id: ids.next().context("missing Git history commit")?.to_owned(),
+                    parents: ids.map(str::to_owned).collect(),
+                },
                 paths: Vec::new(),
             });
         }

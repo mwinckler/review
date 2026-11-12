@@ -60,6 +60,7 @@ fn review() -> Review {
                 .into(),
             ),
             file_commit_ids: None,
+            revisions: None,
         },
         vec![Change {
             path: "src/a.rs".into(),

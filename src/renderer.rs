@@ -25,7 +25,7 @@ use crate::{
     command,
     hunks::{self, Hunk, HunkFormat, SourceLine},
     ui::{change_heading, display_path},
-    vcs::{Change, Comparison, Repository},
+    vcs::{Change, Comparison, Repository, Revision},
 };
 
 const MAX_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
@@ -195,6 +195,7 @@ struct Job {
     path: String,
     changes: Vec<Change>,
     options: RenderOptions,
+    revisions: Option<(Revision, Revision)>,
 }
 
 fn text_size(text: &Text<'_>) -> usize {
@@ -216,6 +217,7 @@ struct Preview {
     text: Text<'static>,
     hunks: Vec<Hunk>,
     source_lines: Vec<SourceLine>,
+    revision_preview: Option<(Comparison, Vec<Change>)>,
 }
 
 fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Result<Preview> {
@@ -223,15 +225,36 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
     let started = Instant::now();
     let mut remaining = config.clone();
     let mut preview = Preview::default();
+    if let Some((first, last)) = &job.revisions {
+        let comparison = job.repo.revision_comparison(first, last)?;
+        let changes = job
+            .repo
+            .changes(&comparison)?
+            .into_iter()
+            .filter(|change| {
+                job.changes.iter().any(|original| {
+                    [&original.path, &original.old_path]
+                        .iter()
+                        .any(|path| **path == change.path || **path == change.old_path)
+                })
+            })
+            .collect();
+        preview.revision_preview = Some((comparison, changes));
+    }
+    let (comparison, changes) = preview
+        .revision_preview
+        .as_ref()
+        .map(|(comparison, changes)| (comparison, changes.as_slice()))
+        .unwrap_or((&job.comparison, &job.changes));
     let mut size = 0;
-    for change in &job.changes {
+    for change in changes {
         ensure!(
             generation.load(Ordering::Relaxed) == job.id,
             "render cancelled"
         );
         let (rendered, line_counts) = (|| -> Result<_> {
-            let old = job.repo.content(&job.comparison, change, true)?;
-            let new = job.repo.content(&job.comparison, change, false)?;
+            let old = job.repo.content(comparison, change, true)?;
+            let new = job.repo.content(comparison, change, false)?;
             remaining.timeout_ms = config
                 .timeout_ms
                 .saturating_sub(started.elapsed().as_millis() as u64);
@@ -259,11 +282,10 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
         let mut hunks = hunks::parse(&rendered, change, format);
         let mut source_lines = hunks::source_lines(&rendered, change, format, &hunks, line_counts);
         if !directory {
-            return Ok(Preview {
-                text: rendered,
-                hunks,
-                source_lines,
-            });
+            preview.text = rendered;
+            preview.hunks = hunks;
+            preview.source_lines = source_lines;
+            return Ok(preview);
         }
         let mut section = Text::default();
         if !preview.text.lines.is_empty() {
@@ -297,6 +319,9 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
         );
         preview.text.lines.extend(section.lines);
     }
+    if preview.text.lines.is_empty() && job.revisions.is_some() {
+        preview.text = Text::raw("No changes to this file in the selected revision range");
+    }
     Ok(preview)
 }
 
@@ -305,6 +330,7 @@ pub struct RenderResult {
     pub text: std::result::Result<Text<'static>, String>,
     pub hunks: Vec<Hunk>,
     pub source_lines: Vec<SourceLine>,
+    pub revision_preview: Option<(Comparison, Vec<Change>)>,
 }
 
 pub struct RenderWorker {
@@ -337,6 +363,7 @@ impl RenderWorker {
                     &serde_json::to_vec(&(
                         &job.path,
                         &job.changes,
+                        &job.revisions,
                         job.options.width,
                         job.options.inline,
                     ))
@@ -376,9 +403,14 @@ impl RenderWorker {
                         }
                     }
                 }
-                let (text, hunks, source_lines) = match result {
-                    Ok(preview) => (Ok(preview.text), preview.hunks, preview.source_lines),
-                    Err(error) => (Err(error), Vec::new(), Vec::new()),
+                let (text, hunks, source_lines, revision_preview) = match result {
+                    Ok(preview) => (
+                        Ok(preview.text),
+                        preview.hunks,
+                        preview.source_lines,
+                        preview.revision_preview,
+                    ),
+                    Err(error) => (Err(error), Vec::new(), Vec::new(), None),
                 };
                 if output
                     .send(RenderResult {
@@ -386,6 +418,7 @@ impl RenderWorker {
                         text,
                         hunks,
                         source_lines,
+                        revision_preview,
                     })
                     .is_err()
                 {
@@ -409,6 +442,18 @@ impl RenderWorker {
         changes: Vec<Change>,
         options: RenderOptions,
     ) -> u64 {
+        self.request_revisions(repo, comparison, path, changes, options, None)
+    }
+
+    pub fn request_revisions(
+        &self,
+        repo: &Repository,
+        comparison: &Comparison,
+        path: &str,
+        changes: Vec<Change>,
+        options: RenderOptions,
+        revisions: Option<(Revision, Revision)>,
+    ) -> u64 {
         let id = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         let job = Job {
             id,
@@ -417,6 +462,7 @@ impl RenderWorker {
             path: path.to_owned(),
             changes,
             options,
+            revisions,
         };
         let _ = self.sender.as_ref().expect("worker is running").send(job);
         id

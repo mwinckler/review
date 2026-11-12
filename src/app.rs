@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeSet, VecDeque},
     ops::Range,
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -12,7 +13,7 @@ use crate::{
     session_dialog::{SessionAction, SessionDialog},
     state::{Position, Review},
     tree::{self, Row},
-    vcs::Change,
+    vcs::{Change, Comparison, Revision},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Text;
@@ -26,6 +27,18 @@ pub enum Focus {
 enum HunkNavigation {
     Relative(bool),
     Number(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RevisionSelection {
+    pub anchor: usize,
+    pub cursor: usize,
+}
+
+impl RevisionSelection {
+    pub fn range(self) -> Range<usize> {
+        self.anchor.min(self.cursor)..self.anchor.max(self.cursor) + 1
+    }
 }
 
 pub struct Flash {
@@ -98,6 +111,9 @@ pub struct App {
     pub submission_action: Option<GitLabJob>,
     pub network_busy: bool,
     pub thread: Option<crate::thread::ThreadView>,
+    pub revisions: Option<RevisionSelection>,
+    pub revision_preview: Option<(Comparison, Vec<Change>)>,
+    revision_prefix: Option<Instant>,
     hunk_actions: VecDeque<HunkNavigation>,
     prefix: Option<(char, Option<usize>)>,
     search_original: String,
@@ -142,6 +158,9 @@ impl App {
             submission_action: None,
             network_busy: false,
             thread: None,
+            revisions: None,
+            revision_preview: None,
+            revision_prefix: None,
             hunk_actions: VecDeque::new(),
             prefix: None,
             search_original: String::new(),
@@ -163,31 +182,24 @@ impl App {
 
     fn select(&mut self, selection: usize) {
         self.selection = selection.min(self.rows.len().saturating_sub(1));
-        if let Some(row) = self.rows.get(self.selection) {
-            if self.review.view.active != row.path {
-                self.hunks.clear();
-                self.source_lines.clear();
-                self.line_selection = None;
-                self.thread = None;
-                self.hunk_selection = None;
-                self.editor_requested = false;
-                self.hunk_actions.clear();
-                self.prefix = None;
-            }
-            self.review.view.selected = row.path.clone();
-            self.active = row.file;
-            self.review.view.active = row.path.clone();
+        let selected = self
+            .rows
+            .get(self.selection)
+            .map(|row| (row.path.clone(), row.file));
+        if selected
+            .as_ref()
+            .is_none_or(|(path, _)| self.review.view.active != *path)
+        {
+            self.clear_revision_filter();
+            self.clear_preview();
+        }
+        if let Some((path, file)) = selected {
+            self.review.view.selected = path.clone();
+            self.active = file;
+            self.review.view.active = path;
         } else {
             self.active = None;
             self.review.view.active.clear();
-            self.hunks.clear();
-            self.source_lines.clear();
-            self.line_selection = None;
-            self.thread = None;
-            self.hunk_selection = None;
-            self.editor_requested = false;
-            self.hunk_actions.clear();
-            self.prefix = None;
         }
     }
 
@@ -204,6 +216,137 @@ impl App {
         self.review.changes.iter().filter(move |change| {
             change.path == *path || (path.ends_with('/') && change.path.starts_with(path))
         })
+    }
+
+    pub fn revision_ids(&self) -> &[String] {
+        self.active
+            .and_then(|index| {
+                self.review
+                    .comparison
+                    .file_commit_ids
+                    .as_ref()?
+                    .get(&self.review.changes[index].path)
+            })
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    pub fn revision_range_label(&self) -> Option<String> {
+        let selection = self.revisions?;
+        let ids = self.revision_ids();
+        let range = selection.range();
+        let first = ids.get(range.start)?;
+        let last = ids.get(range.end - 1)?;
+        Some(if first == last {
+            first.clone()
+        } else {
+            format!("{first}..{last}")
+        })
+    }
+
+    pub fn revision_range(&self) -> Option<(Revision, Revision)> {
+        let range = self.revisions?.range();
+        let ids = self.revision_ids();
+        let revisions = self.review.comparison.revisions.as_ref()?;
+        Some((
+            revisions.get(ids.get(range.start)?)?.clone(),
+            revisions.get(ids.get(range.end - 1)?)?.clone(),
+        ))
+    }
+
+    pub fn diff_comparison(&self) -> &Comparison {
+        self.revision_preview
+            .as_ref()
+            .map(|(comparison, _)| comparison)
+            .unwrap_or(&self.review.comparison)
+    }
+
+    pub fn diff_changes(&self) -> &[Change] {
+        match &self.revision_preview {
+            Some((_, changes)) => changes,
+            None if self.revisions.is_some() => &[],
+            None => &self.review.changes,
+        }
+    }
+
+    pub fn clear_revision_filter(&mut self) {
+        if self.revisions.take().is_some() {
+            self.reset_revision_preview();
+        }
+        self.prefix = None;
+        self.revision_prefix = None;
+    }
+
+    fn clear_preview(&mut self) {
+        self.revision_preview = None;
+        self.hunks.clear();
+        self.source_lines.clear();
+        self.line_selection = None;
+        self.hunk_selection = None;
+        self.thread = None;
+        self.editor_requested = false;
+        self.hunk_actions.clear();
+    }
+
+    fn reset_revision_preview(&mut self) {
+        self.clear_preview();
+        self.rendering = true;
+        *self.position() = Position::default();
+    }
+
+    fn jump_revision(&mut self, forward: bool, extend: bool) {
+        let len = self.revision_ids().len();
+        if len == 0 {
+            return;
+        }
+        let selection = match self.revisions {
+            Some(mut selection) => {
+                selection.cursor = if extend {
+                    selection
+                        .cursor
+                        .saturating_add_signed(if forward { 1 } else { -1 })
+                        .min(len - 1)
+                } else if forward {
+                    (selection.cursor + 1) % len
+                } else {
+                    (selection.cursor + len - 1) % len
+                };
+                if !extend {
+                    selection.anchor = selection.cursor;
+                }
+                selection
+            }
+            None => {
+                let index = if forward { 0 } else { len - 1 };
+                RevisionSelection {
+                    anchor: index,
+                    cursor: index,
+                }
+            }
+        };
+        if self.revisions != Some(selection) {
+            self.reset_revision_preview();
+            self.revisions = Some(selection);
+        }
+    }
+
+    pub fn finish_revision_prefix(&mut self, now: Instant) -> bool {
+        if self
+            .revision_prefix
+            .is_some_and(|started| now.duration_since(started) >= Duration::from_millis(250))
+        {
+            self.commit_revision_prefix();
+            return true;
+        }
+        false
+    }
+
+    fn commit_revision_prefix(&mut self) {
+        if self.revision_prefix.take().is_some()
+            && let Some((prefix, _)) = self.prefix.take()
+        {
+            self.jump_revision(prefix == ']', false);
+        }
     }
 
     pub fn selected_hunk(&self) -> Option<&Hunk> {
@@ -240,14 +383,14 @@ impl App {
                 return Some(hunk.location.clone());
             }
         }
-        self.active.map(|index| {
-            let change = &self.review.changes[index];
-            HunkLocation {
+        self.diff_changes()
+            .iter()
+            .find(|change| change.path == self.review.view.active)
+            .map(|change| HunkLocation {
                 path: change.path.clone(),
                 old_line: (!change.old.kind.is_empty()).then_some(1),
                 new_line: (!change.new.kind.is_empty()).then_some(1),
-            }
-        })
+            })
     }
 
     pub fn apply_hunk_navigation(&mut self, page: usize, lines: usize) -> bool {
@@ -401,6 +544,17 @@ impl App {
             self.handle_flash(key, page);
             return;
         }
+        if self.revision_prefix.is_some() {
+            let continuation = !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT)
+                && matches!(key.code, KeyCode::Char('0'..='9' | 'h' | 'f' | 'u' | 'c'));
+            if continuation || key.code == KeyCode::Esc {
+                self.revision_prefix = None;
+            } else {
+                self.commit_revision_prefix();
+            }
+        }
         if let Some((prefix, number)) = self.prefix.take().filter(|_| {
             !key.modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -442,7 +596,9 @@ impl App {
                 _ => {}
             }
         }
-        if self.handle_line_selection(key, page, diff_lines) {
+        if key.code == KeyCode::Esc && self.revisions.is_some() {
+            self.clear_revision_filter();
+        } else if self.handle_line_selection(key, page, diff_lines) {
             return;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -561,8 +717,17 @@ impl App {
             KeyCode::Home => {
                 self.move_to(0);
             }
+            KeyCode::Char('{' | '}') => {
+                self.jump_revision(key.code == KeyCode::Char('}'), true);
+            }
+            KeyCode::Char('[' | ']') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.jump_revision(key.code == KeyCode::Char(']'), true);
+            }
             KeyCode::Char(ch @ ('g' | '[' | ']')) => {
                 self.prefix = Some((ch, None));
+                if ch != 'g' && !self.revision_ids().is_empty() {
+                    self.revision_prefix = Some(Instant::now());
+                }
             }
             KeyCode::Char('h') | KeyCode::Left => {
                 if self.focus == Focus::Diff {
@@ -657,6 +822,7 @@ impl App {
                 self.review.view.fullscreen = false;
             }
             KeyCode::Esc => {
+                self.clear_revision_filter();
                 self.hunk_selection = None;
                 self.hunk_actions.clear();
                 self.editor_requested = false;

@@ -481,6 +481,7 @@ fn run(
         .is_none()
         .then(|| RefreshWorker::new(repo, &app.review.comparison));
     while !app.quit {
+        redraw |= app.finish_revision_prefix(Instant::now());
         let size = terminal.size()?;
         let panes = ui::panes(Rect::new(0, 0, size.width, size.height), app);
         let width = if panes.diff.width > 0 {
@@ -490,21 +491,26 @@ fn run(
         }
         .saturating_sub(2)
         .max(1);
+        let diff_page = panes
+            .diff
+            .height
+            .max(panes.tree.height)
+            .saturating_sub(2 + u16::from(app.revisions.is_some()))
+            .max(1) as usize;
         let page = if app.focus == Focus::Tree {
-            panes.tree.height
+            panes.tree.height.saturating_sub(2).max(1) as usize
         } else {
-            panes.diff.height
-        }
-        .saturating_sub(2)
-        .max(1) as usize;
+            diff_page
+        };
         if !app.review.view.active.is_empty() {
             let key = (
                 app.review.view.active.clone(),
                 width,
                 app.review.view.inline,
+                app.revision_range(),
             );
             if requested.as_ref() != Some(&key) {
-                request_id = worker.request(
+                request_id = worker.request_revisions(
                     repo,
                     &app.review.comparison,
                     &app.review.view.active,
@@ -513,11 +519,13 @@ fn run(
                         width,
                         inline: app.review.view.inline,
                     },
+                    key.3.clone(),
                 );
                 requested = Some(key);
                 app.rendering = true;
                 app.hunks.clear();
                 app.source_lines.clear();
+                app.revision_preview = None;
                 diff = Text::raw("Rendering…");
                 redraw = true;
             }
@@ -545,6 +553,7 @@ fn run(
                 app.rendering = false;
                 app.hunks = result.hunks;
                 app.source_lines = result.source_lines;
+                app.revision_preview = result.revision_preview;
                 diff = match result.text {
                     Ok(text) => text,
                     Err(error) => Text::raw(format!("Diff error\n\n{}", ui::display_path(&error))),
@@ -552,15 +561,15 @@ fn run(
                 app.position().vertical = app
                     .position()
                     .vertical
-                    .min(diff.lines.len().saturating_sub(page));
+                    .min(diff.lines.len().saturating_sub(diff_page));
                 redraw = true;
             }
         }
-        redraw |= app.apply_hunk_navigation(page, diff.lines.len());
+        redraw |= app.apply_hunk_navigation(diff_page, diff.lines.len());
         if app.thread.is_some() {
-            app.keep_thread_visible(page);
+            app.keep_thread_visible(diff_page);
         } else {
-            app.keep_line_selection_visible(page, diff.lines.len());
+            app.keep_line_selection_visible(diff_page, diff.lines.len());
         }
         for result in editor.results.try_iter() {
             app.message = match result {
@@ -684,7 +693,12 @@ fn run(
         if let Some(action) = app.comment_action.take() {
             match action {
                 CommentAction::Compose(target) => {
-                    match CommentDraft::new(repo, &app.review, &target) {
+                    match CommentDraft::from_preview(
+                        repo,
+                        app.diff_comparison(),
+                        app.diff_changes(),
+                        &target,
+                    ) {
                         Ok(draft) => {
                             app.comment_dialog = Some(CommentDialog::Compose(Box::new(draft)))
                         }
@@ -793,7 +807,9 @@ fn run(
         if app.editor_requested
             && !app.rendering
             && requested.as_ref().is_some_and(|key| {
-                key.0 == app.review.view.active && key.2 == app.review.view.inline
+                key.0 == app.review.view.active
+                    && key.2 == app.review.view.inline
+                    && key.3 == app.revision_range()
             })
         {
             app.editor_requested = false;
@@ -802,12 +818,11 @@ fn run(
                 .context("Select a file or mapped hunk to open in the editor")
                 .and_then(|source| {
                     let change = app
-                        .review
-                        .changes
+                        .diff_changes()
                         .iter()
                         .find(|change| change.path == source.path)
                         .context("Selected file is no longer in the comparison")?;
-                    editor.request(repo, &app.review.comparison, change, source)
+                    editor.request(repo, app.diff_comparison(), change, source)
                 });
             app.message = match result {
                 Ok(()) => "Opening editor…".into(),
@@ -838,6 +853,7 @@ fn run(
                     }
                 }
                 Ok(GitLabOutcome::Refreshed(invalidated)) => {
+                    app.clear_revision_filter();
                     app.message =
                         format!("MR snapshots refreshed · {invalidated} viewed marks reset");
                     request_id = worker.cancel();
@@ -872,6 +888,7 @@ fn run(
         for result in refreshed {
             match result.snapshot {
                 Ok((comparison, changes)) => {
+                    app.clear_revision_filter();
                     let previous_preview: Vec<_> = app.preview_changes().cloned().collect();
                     let invalidated = app.review.reconcile(comparison, changes);
                     app.rebuild();

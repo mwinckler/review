@@ -75,6 +75,7 @@ fn review() -> Review {
                 .into(),
             ),
             file_commit_ids: None,
+            revisions: None,
         },
         vec![
             change("README.md"),

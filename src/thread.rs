@@ -168,7 +168,10 @@ impl App {
             return;
         };
         let height = page
-            .saturating_add(4 + usize::from(self.review.gitlab.is_some()))
+            .saturating_add(
+                4 + usize::from(self.review.gitlab.is_some())
+                    + usize::from(self.revisions.is_some()),
+            )
             .min(u16::MAX as usize) as u16;
         let diff = ui::panes(Rect::new(0, 0, terminal_width, height), self).diff;
         let area = thread_area(diff, self);
@@ -261,7 +264,10 @@ impl App {
 }
 
 fn thread_area(diff: Rect, app: &App) -> Rect {
-    let viewport = Block::default().borders(Borders::ALL).inner(diff);
+    let mut viewport = Block::default().borders(Borders::ALL).inner(diff);
+    let banner = u16::from(app.revisions.is_some()).min(viewport.height);
+    viewport.y += banner;
+    viewport.height -= banner;
     let thread = app.thread.as_ref().expect("open thread");
     if thread.full {
         return diff;

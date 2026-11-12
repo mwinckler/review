@@ -87,6 +87,19 @@ unique jj change prefixes (at least three characters) when jj can read the
 repository, and short Git hashes otherwise. File history follows the pinned
 comparison when resuming or refreshing.
 
+With a file selected, press `]` / `[` to select its next/previous revision. The
+first `]` selects the oldest revision, and the first `[` selects the newest.
+Navigation wraps at either end. The active revision is highlighted in the diff
+pane's title, and the diff shows that revision's changes to the file.
+
+Press `Shift-]` / `Shift-[` (`}` / `{`) to extend the selection from its anchor.
+Reversing direction shrinks the range, and extension stops at either end of the
+file's revision list. Ranges include both endpoints and show the combined diff
+from the oldest selected revision's parent to the newest selected revision.
+The line `Showing only changes from <revision-range>` stays above the diff while
+scrolling. Press `Esc` or select another file to restore the full comparison.
+Bare brackets wait briefly for a possible file, hunk, or thread shortcut suffix.
+
 Reviews check the selected revisions in the background about once per second.
 Jujutsu `@` follows saved working-copy edits; Git comparisons follow commits as
 `HEAD` or branches advance. File trees, file and directory previews, header IDs and
@@ -340,6 +353,8 @@ Repository content and persistent editor snapshots are preserved.
 | `Ctrl-d/u` | Scroll the diff by half a page from either pane, keeping pane focus. |
 | `Ctrl-f/b`, `PageDown/Up` | Scroll the focused pane by a full page. |
 | `Space` | Toggle file viewed (advance when marked); mark all files in a folder viewed |
+| `]` / `[` | Select the next/previous revision that changed the file. |
+| `Shift-]` / `Shift-[` | Extend the selected revision range. |
 | `]f` / `[f` | Next/previous file, expanding its parents |
 | `]u` / `[u` | Next/previous unviewed file |
 | `]h` / `[h` | Select and highlight the next/previous diff hunk |
@@ -359,7 +374,7 @@ Repository content and persistent editor snapshots are preserved.
 | `u` | Toggle the unviewed-only filter |
 | `i` | Toggle inline and side-by-side rendering |
 | `z` | Toggle a full-width diff |
-| `Esc` | Clear file filters; cancel a search or Flash prompt |
+| `Esc` | Clear file and revision filters, or cancel a search or Flash prompt. |
 | `r` | Refresh the comparison |
 | `?` | Show help and custom key aliases |
 | `q`, `Ctrl-c` | Save and quit |
