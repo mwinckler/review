@@ -72,6 +72,8 @@ pub struct Comparison {
 pub struct Revision {
     pub commit_id: String,
     pub parents: Vec<String>,
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -511,40 +513,51 @@ impl Repository {
             (&comparison.head_id, &mut comparison.head_title),
         ] {
             if title.is_none() {
-                let message = match self.backend {
-                    Backend::Git => self.run(
-                        &[
-                            "show",
-                            "--no-patch",
-                            "--no-show-signature",
-                            "--format=%B",
-                            "--encoding=UTF-8",
-                            commit_id,
-                            "--",
-                        ],
-                        false,
-                    )?,
-                    Backend::Jj => self.run(
-                        &["log", "--no-graph", "-r", commit_id, "-T", "description"],
-                        false,
-                    )?,
-                };
-                *title = Some(
-                    String::from_utf8_lossy(&message)
-                        .lines()
-                        .next()
-                        .unwrap_or_default()
-                        .to_owned(),
-                );
+                *title = Some(self.commit_title(commit_id)?);
                 updated = true;
             }
         }
         Ok(updated)
     }
 
+    fn commit_title(&self, commit_id: &str) -> Result<String> {
+        let message = match self.backend {
+            Backend::Git => self.run(
+                &[
+                    "show",
+                    "--no-patch",
+                    "--no-show-signature",
+                    "--format=%B",
+                    "--encoding=UTF-8",
+                    commit_id,
+                    "--",
+                ],
+                false,
+            )?,
+            Backend::Jj => self.run(
+                &["log", "--no-graph", "-r", commit_id, "-T", "description"],
+                false,
+            )?,
+        };
+        Ok(String::from_utf8_lossy(&message)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned())
+    }
+
     pub fn fill_file_commit_ids(&self, comparison: &mut Comparison) -> Result<bool> {
-        if comparison.file_commit_ids.is_some() && comparison.revisions.is_some() {
-            return Ok(false);
+        if comparison.file_commit_ids.is_some()
+            && let Some(revisions) = &mut comparison.revisions
+        {
+            let mut updated = false;
+            for revision in revisions.values_mut() {
+                if revision.title.is_none() {
+                    revision.title = Some(self.commit_title(&revision.commit_id)?);
+                    updated = true;
+                }
+            }
+            return Ok(updated);
         }
         let (base, head) = (&comparison.base_id, &comparison.head_id);
         let jj = Self {
@@ -559,7 +572,7 @@ impl Repository {
                 "-r",
                 &format!("({base}..{head}) | ({head}..{base})"),
                 "-T",
-                r#"json({"id" => stringify(change_id.shortest(3)), "commit_id" => commit_id, "parents" => parents.map(|parent| parent.commit_id()), "paths" => diff.files().map(|file| file.path())}) ++ "\n""#,
+                r#"json({"id" => stringify(change_id.shortest(3)), "commit_id" => commit_id, "parents" => parents.map(|parent| parent.commit_id()), "title" => description.first_line(), "paths" => diff.files().map(|file| file.path())}) ++ "\n""#,
             ],
             false,
         ) {
@@ -575,7 +588,8 @@ impl Repository {
                     "--no-color",
                     "--no-show-signature",
                     "--no-notes",
-                    "--format=%h %H %P%x00",
+                    "--format=%h %H %P%x00%B%x00",
+                    "--encoding=UTF-8",
                     "--abbrev=8",
                     "--raw",
                     "-z",
@@ -1103,11 +1117,9 @@ fn parse_git_changes(output: &[u8]) -> Result<Vec<Change>> {
 }
 
 fn parse_git_file_commits(output: &[u8]) -> Result<Vec<CommitFiles>> {
-    let mut fields = output
-        .split(|byte| *byte == 0)
-        .filter(|field| !field.is_empty());
+    let mut fields = output.split(|byte| *byte == 0);
     let mut commits = Vec::<CommitFiles>::new();
-    while let Some(field) = fields.next() {
+    while let Some(field) = fields.find(|field| !field.is_empty()) {
         let header = std::str::from_utf8(field)?.trim_start_matches('\n');
         if header.starts_with(':') {
             let path = std::str::from_utf8(fields.next().context("missing Git history path")?)?;
@@ -1118,11 +1130,19 @@ fn parse_git_file_commits(output: &[u8]) -> Result<Vec<CommitFiles>> {
                 .push(path.to_owned());
         } else {
             let mut ids = header.split_whitespace();
+            let message = fields.next().context("missing Git history message")?;
             commits.push(CommitFiles {
                 id: ids.next().context("missing Git history ID")?.to_owned(),
                 revision: Revision {
                     commit_id: ids.next().context("missing Git history commit")?.to_owned(),
                     parents: ids.map(str::to_owned).collect(),
+                    title: Some(
+                        String::from_utf8_lossy(message)
+                            .lines()
+                            .next()
+                            .unwrap_or_default()
+                            .to_owned(),
+                    ),
                 },
                 paths: Vec::new(),
             });

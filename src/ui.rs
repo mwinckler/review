@@ -478,7 +478,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         .areas(inner);
         if let Some(range) = app.revision_range_label() {
             frame.render_widget(
-                Paragraph::new(format!("Showing only changes from {range}"))
+                Paragraph::new(format!("Only showing changes from {range}"))
                     .style(Style::default().fg(Color::Yellow)),
                 filter,
             );

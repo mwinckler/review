@@ -234,10 +234,28 @@ impl App {
         let range = selection.range();
         let first = ids.get(range.start)?;
         let last = ids.get(range.end - 1)?;
+        let label = |id: &str| {
+            let title = self
+                .review
+                .comparison
+                .revisions
+                .as_ref()
+                .and_then(|revisions| revisions.get(id))
+                .and_then(|revision| revision.title.as_deref())
+                .unwrap_or_default()
+                .lines()
+                .next()
+                .unwrap_or_default();
+            if title.is_empty() {
+                id.to_owned()
+            } else {
+                format!("{id} ({})", crate::ui::display_path(title))
+            }
+        };
         Some(if first == last {
-            first.clone()
+            label(first)
         } else {
-            format!("{first}..{last}")
+            format!("{}..{}", label(first), label(last))
         })
     }
 

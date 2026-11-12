@@ -96,8 +96,11 @@ Press `Shift-,` / `Shift-.` (`<` / `>`) to extend the selection from its anchor.
 Reversing direction shrinks the range, and extension stops at either end of the
 file's revision list. Ranges include both endpoints and show the combined diff
 from the oldest selected revision's parent to the newest selected revision.
-The line `Showing only changes from <revision-range>` stays above the diff while
-scrolling. Press `Esc` or select another file to restore the full comparison.
+The line `Only showing changes from <revision-range>` stays above the diff while
+scrolling. Each revision includes the first line of its commit message, such as
+`Only showing changes from oly (Frobnicated the foobazinator)`. Ranges show the
+message for each endpoint. Press `Esc` or select another file to restore the full
+comparison.
 
 Reviews check the selected revisions in the background about once per second.
 Jujutsu `@` follows saved working-copy edits; Git comparisons follow commits as
