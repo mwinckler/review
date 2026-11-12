@@ -752,13 +752,22 @@ impl App {
                         return;
                     }
                 } else if self.review.view.active.ends_with('/') {
-                    self.review.viewed.extend(
+                    if self
+                        .preview_changes()
+                        .all(|change| self.review.is_viewed(change))
+                    {
                         self.review
-                            .changes
-                            .iter()
-                            .filter(|change| change.path.starts_with(&self.review.view.active))
-                            .map(|change| (change.path.clone(), change.fingerprint())),
-                    );
+                            .viewed
+                            .retain(|path, _| !path.starts_with(&self.review.view.active));
+                    } else {
+                        self.review.viewed.extend(
+                            self.review
+                                .changes
+                                .iter()
+                                .filter(|change| change.path.starts_with(&self.review.view.active))
+                                .map(|change| (change.path.clone(), change.fingerprint())),
+                        );
+                    }
                 }
                 self.rebuild();
             }

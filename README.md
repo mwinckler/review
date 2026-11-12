@@ -356,7 +356,7 @@ Repository content and persistent editor snapshots are preserved.
 | `gg` / `G`, `Home` / `End` | First/last row or page |
 | `Ctrl-d/u` | Scroll the diff by half a page from either pane, keeping pane focus. |
 | `Ctrl-f/b`, `PageDown/Up` | Scroll the focused pane by a full page. |
-| `Space` | Toggle file viewed (advance when marked); mark all files in a folder viewed |
+| `Space` | Toggle viewed status for a file or folder; advance when marking a file. |
 | `,` / `.` | Select the previous/next revision that changed the file. |
 | `Shift-,` / `Shift-.` (`<` / `>`) | Extend the selected revision range. |
 | `]f` / `[f` | Next/previous file, expanding its parents |
@@ -393,10 +393,11 @@ absolute path using the terminal's OSC 52 clipboard support.
 Search and filtering are case-insensitive. Directory counts show progress across
 their changed files. Pressing `Space` on a folder marks all its changed files
 viewed, including nested files and files hidden by filters or collapsed folders.
+Pressing it on a fully viewed folder unmarks all its changed files.
 Highlighting a folder shows a combined diff of all its changed descendants,
 including collapsed and filtered-out files, with a heading for each file.
 Focus the right pane with `Ctrl-l` or `Tab` to scroll or search the combined diff.
-`Space` in a directory preview marks the directory's files viewed.
+`Space` in a directory preview toggles viewed status in the same way.
 Viewed files and fully viewed folders appear slightly dimmed in the tree.
 Narrow terminals display the focused pane at full width.
 When the rendered diff is taller than its pane, a right-edge scrollbar shows your
