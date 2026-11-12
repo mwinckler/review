@@ -469,10 +469,10 @@ impl App {
                     });
                 }
                 KeyCode::Char('d') => {
-                    self.move_by((page as isize / 2).max(1), page, diff_lines);
+                    self.scroll_diff((page as isize / 2).max(1), page, diff_lines);
                 }
                 KeyCode::Char('u') => {
-                    self.move_by(-(page as isize / 2).max(1), page, diff_lines);
+                    self.scroll_diff(-(page as isize / 2).max(1), page, diff_lines);
                 }
                 KeyCode::Char('f') => {
                     self.move_by(page as isize, page, diff_lines);
@@ -743,12 +743,16 @@ impl App {
         if self.focus == Focus::Tree {
             self.select(self.selection.saturating_add_signed(amount));
         } else {
-            self.position().vertical = self
-                .position()
-                .vertical
-                .saturating_add_signed(amount)
-                .min(lines.saturating_sub(page));
+            self.scroll_diff(amount, page, lines);
         }
+    }
+
+    fn scroll_diff(&mut self, amount: isize, page: usize, lines: usize) {
+        let position = self.position();
+        position.vertical = position
+            .vertical
+            .saturating_add_signed(amount)
+            .min(lines.saturating_sub(page));
     }
 
     fn collapse(&mut self) {

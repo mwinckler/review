@@ -331,7 +331,8 @@ Repository content and persistent editor snapshots are preserved.
 | `Tab`, `Ctrl-h` / `Ctrl-l` | Switch panes; focus the tree / diff |
 | `Ctrl-Left` / `Ctrl-Right` | Shrink/grow the tree by two columns |
 | `gg` / `G`, `Home` / `End` | First/last row or page |
-| `Ctrl-d/u`, `Ctrl-f/b`, `PageDown/Up` | Half/full-page scrolling |
+| `Ctrl-d/u` | Scroll the diff by half a page from either pane, keeping pane focus. |
+| `Ctrl-f/b`, `PageDown/Up` | Scroll the focused pane by a full page. |
 | `Space` | Toggle file viewed (advance when marked); mark all files in a folder viewed |
 | `]f` / `[f` | Next/previous file, expanding its parents |
 | `]u` / `[u` | Next/previous unviewed file |
