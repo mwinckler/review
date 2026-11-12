@@ -653,7 +653,12 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         Paragraph::new(footer).style(Style::default().fg(Color::Cyan)),
         panes.footer,
     );
-    crate::thread::draw(frame, app, panes.diff, panes.footer);
+    let thread_pane = if app.review.view.comments_visible {
+        panes.comments
+    } else {
+        panes.diff
+    };
+    crate::thread::draw(frame, app, thread_pane, panes.footer);
     if app.help {
         let width = frame.area().width.min(74);
         let height = frame.area().height.min(36);

@@ -32,9 +32,7 @@ impl ThreadView {
 
 impl App {
     pub fn thread_is_modal(&self) -> bool {
-        self.thread
-            .as_ref()
-            .is_some_and(|thread| thread.full || !self.review.view.comments_visible)
+        self.thread.is_some() && !self.review.view.comments_visible
     }
 
     pub(crate) fn open_thread(&mut self, id: ThreadId, full: bool) {
@@ -64,7 +62,7 @@ impl App {
                 extending: false,
             });
         }
-        if self.review.view.comments_visible && !full && target.is_some() {
+        if self.review.view.comments_visible {
             self.set_focus(Focus::Comments);
         } else {
             self.focus = Focus::Diff;
@@ -142,7 +140,9 @@ impl App {
                 }
             })
             .unwrap_or(if forward { 0 } else { ids.len() - 1 });
-        self.open_thread(ids[index].clone(), false);
+        let full = self.review.view.comments_visible
+            && self.thread.as_ref().is_some_and(|thread| thread.full);
+        self.open_thread(ids[index].clone(), full);
     }
 
     pub fn keep_thread_visible(&mut self, page: usize, lines: usize) {
@@ -150,8 +150,7 @@ impl App {
             && self
                 .thread
                 .as_ref()
-                .and_then(|thread| thread.last_source_row(self))
-                .is_none()
+                .is_none_or(|thread| !thread.full && thread.last_source_row(self).is_none())
         {
             let position = self.position().vertical;
             let id = crate::comments_pane::aligned_threads(self)
@@ -202,8 +201,13 @@ impl App {
                     + usize::from(self.revisions.is_some()),
             )
             .min(u16::MAX as usize) as u16;
-        let diff = ui::panes(Rect::new(0, 0, terminal_width, height), self).diff;
-        let area = thread_area(diff, self);
+        let panes = ui::panes(Rect::new(0, 0, terminal_width, height), self);
+        let pane = if self.review.view.comments_visible {
+            panes.comments
+        } else {
+            panes.diff
+        };
+        let area = thread_area(pane, self);
         let inner = Block::default().borders(Borders::ALL).inner(area);
         let paragraph = Paragraph::new(ui::comment_text(entry, &self.review, inner.width))
             .wrap(Wrap { trim: false });
@@ -240,6 +244,10 @@ impl App {
                     self.thread = None;
                 }
             }
+            (KeyCode::Enter | KeyCode::Char(' '), false) if self.review.view.comments_visible => {
+                thread.full = false;
+                thread.scroll = 0;
+            }
             (KeyCode::Char('C'), false) => {
                 let selection = self
                     .review
@@ -268,6 +276,11 @@ impl App {
             }
             (KeyCode::Tab | KeyCode::Char('n'), false) => self.jump_thread(true),
             (KeyCode::BackTab | KeyCode::Char('N'), false) => self.jump_thread(false),
+            (KeyCode::Char('j' | 'k') | KeyCode::Up | KeyCode::Down, false)
+                if self.review.view.comments_visible =>
+            {
+                self.jump_thread(matches!(key.code, KeyCode::Char('j') | KeyCode::Down));
+            }
             (KeyCode::Char('j') | KeyCode::Down, false) => {
                 thread.scroll = thread.scroll.saturating_add(1).min(max_scroll)
             }
@@ -302,14 +315,14 @@ impl App {
     }
 }
 
-fn thread_area(diff: Rect, app: &App) -> Rect {
-    let mut viewport = Block::default().borders(Borders::ALL).inner(diff);
+fn thread_area(pane: Rect, app: &App) -> Rect {
+    let mut viewport = Block::default().borders(Borders::ALL).inner(pane);
     let banner = u16::from(app.revisions.is_some()).min(viewport.height);
     viewport.y += banner;
     viewport.height -= banner;
     let thread = app.thread.as_ref().expect("open thread");
     if thread.full {
-        return diff;
+        return pane;
     }
     let position = app
         .review
@@ -323,21 +336,23 @@ fn thread_area(diff: Rect, app: &App) -> Rect {
         .and_then(|row| row.checked_sub(position))
         .filter(|row| *row < viewport.height as usize)
     else {
-        return diff;
+        return pane;
     };
     let y = viewport.y + offset as u16 + 1;
     Rect::new(viewport.x, y, viewport.width, viewport.bottom() - y)
 }
 
-pub(crate) fn draw(frame: &mut Frame, app: &App, diff: Rect, footer: Rect) {
-    if !app.thread_is_modal() {
+pub(crate) fn draw(frame: &mut Frame, app: &App, pane: Rect, footer: Rect) {
+    let Some(thread) = &app.thread else {
+        return;
+    };
+    if (app.review.view.comments_visible && !thread.full) || pane.is_empty() {
         return;
     }
-    let thread = app.thread.as_ref().expect("open thread");
     let Some(entry) = thread.id.entry(&app.review) else {
         return;
     };
-    let area = thread_area(diff, app);
+    let area = thread_area(pane, app);
     frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -345,7 +360,13 @@ pub(crate) fn draw(frame: &mut Frame, app: &App, diff: Rect, footer: Rect) {
             " Thread · {} ",
             ui::comment_heading(entry, &app.review)
         ))
-        .border_style(Style::default().fg(Color::Magenta));
+        .border_style(Style::default().fg(
+            if !app.review.view.comments_visible || app.focus == Focus::Comments {
+                Color::Magenta
+            } else {
+                Color::DarkGray
+            },
+        ));
     let inner = block.inner(area);
     let paragraph = Paragraph::new(ui::comment_text(entry, &app.review, inner.width))
         .wrap(Wrap { trim: false });
@@ -356,12 +377,17 @@ pub(crate) fn draw(frame: &mut Frame, app: &App, diff: Rect, footer: Rect) {
             .block(block),
         area,
     );
+    if app.review.view.comments_visible && app.focus != Focus::Comments {
+        return;
+    }
     let keys = if app.network_busy {
         "Waiting for GitLab… · saved feedback and submission checkpoints retained".to_owned()
     } else if thread.confirming_delete {
         "Delete pending reply? y delete · n / Esc cancel".into()
     } else if !app.message.is_empty() {
         ui::display_path(&app.message)
+    } else if app.review.view.comments_visible {
+        "Use j/k for threads, PgUp/PgDn to read, or Enter/Esc to collapse.".into()
     } else if matches!(entry, CommentEntry::GitLab(_)) {
         "R reply · f expand · j/k read · n/N threads · d discard reply · r reload · P publish · o/Esc close".into()
     } else {

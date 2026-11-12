@@ -482,11 +482,7 @@ impl App {
         self.focus = focus;
         self.review.view.fullscreen = false;
         if self.thread_is_modal() {
-            if self.review.view.comments_visible {
-                self.thread.as_mut().expect("open thread").full = false;
-            } else {
-                self.thread = None;
-            }
+            self.thread = None;
         }
     }
 
@@ -678,7 +674,7 @@ impl App {
                 _ => {}
             }
         }
-        if self.focus == Focus::Comments && self.handle_comments_key(key) {
+        if self.focus == Focus::Comments && self.handle_comments_key(key, page, terminal_width) {
             return;
         }
         if key.code == KeyCode::Esc && self.revisions.is_some() {

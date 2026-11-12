@@ -59,7 +59,16 @@ pub(crate) fn aligned_threads(app: &App) -> Vec<(usize, CommentEntry<'_>)> {
 }
 
 impl App {
-    pub(crate) fn handle_comments_key(&mut self, key: KeyEvent) -> bool {
+    pub(crate) fn handle_comments_key(
+        &mut self,
+        key: KeyEvent,
+        page: usize,
+        terminal_width: u16,
+    ) -> bool {
+        if self.thread.as_ref().is_some_and(|thread| thread.full) {
+            self.handle_thread_key(key, page, terminal_width);
+            return true;
+        }
         if key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -81,7 +90,6 @@ impl App {
                 if let Some(thread) = &mut self.thread {
                     thread.full = true;
                     thread.scroll = 0;
-                    self.focus = Focus::Diff;
                 }
             }
             KeyCode::Char('R') if self.thread.is_some() => self.reply_to_thread(),

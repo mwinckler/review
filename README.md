@@ -414,7 +414,9 @@ Resolved threads have a checkmark and start collapsed.
 
 Focus the comments pane with `Ctrl-l` or `Ctrl-j` from the diff. Use `j` / `k` to
 select the next or previous thread in source order; the diff follows the selection.
-Press `Enter` or `o` to read the complete thread, and `Esc` to return to the pane.
+Press `Enter` or `o` to expand the complete thread within the comments pane.
+Use `PageUp` / `PageDown` or `Ctrl-u` / `Ctrl-d` to scroll the expanded thread;
+`j` / `k` continue selecting threads. Press `Enter` or `Esc` to collapse it.
 Press `R` to reply to the selected GitLab thread. Pane visibility, focus, and width
 are saved with the review. Narrow terminals prioritize the focused pane.
 
