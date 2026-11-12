@@ -481,7 +481,6 @@ fn run(
         .is_none()
         .then(|| RefreshWorker::new(repo, &app.review.comparison));
     while !app.quit {
-        redraw |= app.finish_revision_prefix(Instant::now());
         let size = terminal.size()?;
         let panes = ui::panes(Rect::new(0, 0, size.width, size.height), app);
         let width = if panes.diff.width > 0 {

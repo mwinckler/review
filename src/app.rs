@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeSet, VecDeque},
     ops::Range,
-    time::{Duration, Instant},
 };
 
 use crate::{
@@ -113,7 +112,6 @@ pub struct App {
     pub thread: Option<crate::thread::ThreadView>,
     pub revisions: Option<RevisionSelection>,
     pub revision_preview: Option<(Comparison, Vec<Change>)>,
-    revision_prefix: Option<Instant>,
     hunk_actions: VecDeque<HunkNavigation>,
     prefix: Option<(char, Option<usize>)>,
     search_original: String,
@@ -160,7 +158,6 @@ impl App {
             thread: None,
             revisions: None,
             revision_preview: None,
-            revision_prefix: None,
             hunk_actions: VecDeque::new(),
             prefix: None,
             search_original: String::new(),
@@ -274,7 +271,6 @@ impl App {
             self.reset_revision_preview();
         }
         self.prefix = None;
-        self.revision_prefix = None;
     }
 
     fn clear_preview(&mut self) {
@@ -327,25 +323,6 @@ impl App {
         if self.revisions != Some(selection) {
             self.reset_revision_preview();
             self.revisions = Some(selection);
-        }
-    }
-
-    pub fn finish_revision_prefix(&mut self, now: Instant) -> bool {
-        if self
-            .revision_prefix
-            .is_some_and(|started| now.duration_since(started) >= Duration::from_millis(250))
-        {
-            self.commit_revision_prefix();
-            return true;
-        }
-        false
-    }
-
-    fn commit_revision_prefix(&mut self) {
-        if self.revision_prefix.take().is_some()
-            && let Some((prefix, _)) = self.prefix.take()
-        {
-            self.jump_revision(prefix == ']', false);
         }
     }
 
@@ -544,17 +521,6 @@ impl App {
             self.handle_flash(key, page);
             return;
         }
-        if self.revision_prefix.is_some() {
-            let continuation = !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT)
-                && matches!(key.code, KeyCode::Char('0'..='9' | 'h' | 'f' | 'u' | 'c'));
-            if continuation || key.code == KeyCode::Esc {
-                self.revision_prefix = None;
-            } else {
-                self.commit_revision_prefix();
-            }
-        }
         if let Some((prefix, number)) = self.prefix.take().filter(|_| {
             !key.modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -717,17 +683,17 @@ impl App {
             KeyCode::Home => {
                 self.move_to(0);
             }
-            KeyCode::Char('{' | '}') => {
-                self.jump_revision(key.code == KeyCode::Char('}'), true);
+            KeyCode::Char('<' | '>') => {
+                self.jump_revision(key.code == KeyCode::Char('>'), true);
             }
-            KeyCode::Char('[' | ']') if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.jump_revision(key.code == KeyCode::Char(']'), true);
+            KeyCode::Char(',' | '.') => {
+                self.jump_revision(
+                    key.code == KeyCode::Char('.'),
+                    key.modifiers.contains(KeyModifiers::SHIFT),
+                );
             }
             KeyCode::Char(ch @ ('g' | '[' | ']')) => {
                 self.prefix = Some((ch, None));
-                if ch != 'g' && !self.revision_ids().is_empty() {
-                    self.revision_prefix = Some(Instant::now());
-                }
             }
             KeyCode::Char('h') | KeyCode::Left => {
                 if self.focus == Focus::Diff {
