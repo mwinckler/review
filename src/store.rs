@@ -376,6 +376,17 @@ impl SessionStore {
 
     pub fn resolve(&self, prefix: &str) -> Result<String> {
         validate_id(prefix)?;
+        self.find(prefix)?.with_context(|| {
+            format!(
+                "No saved review matches session ID {prefix:?}. Use review --list to see saved sessions"
+            )
+        })
+    }
+
+    pub fn find(&self, prefix: &str) -> Result<Option<String>> {
+        if validate_id(prefix).is_err() {
+            return Ok(None);
+        }
         let mut matches = Vec::new();
         for entry in fs::read_dir(&self.directory)? {
             let path = entry?.path();
@@ -386,17 +397,15 @@ impl SessionStore {
                 && id.starts_with(prefix)
             {
                 if id == prefix {
-                    return Ok(id.to_owned());
+                    return Ok(Some(id.to_owned()));
                 }
                 matches.push(id.to_owned());
             }
         }
         matches.sort();
         match matches.as_slice() {
-            [id] => Ok(id.clone()),
-            [] => bail!(
-                "No saved review matches session ID {prefix:?}. Use review --list to see saved sessions"
-            ),
+            [id] => Ok(Some(id.clone())),
+            [] => Ok(None),
             _ => bail!(
                 "Ambiguous session ID prefix {prefix:?}: {}. Use a longer prefix from review --list",
                 matches.join(", ")

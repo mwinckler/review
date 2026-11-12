@@ -51,12 +51,14 @@ impl Drop for PasteMode {
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
-    /// Compare BASE..HEAD directly; REV means REV..@
+    /// Resume a saved review by ID/prefix, or compare revisions.
     ///
+    /// Saved IDs and unique prefixes take precedence over revision expressions.
+    /// BASE..HEAD compares snapshots directly; REV means REV..@.
     /// Endpoints accept the selected backend's single-revision expressions.
     /// Omitted endpoints and @ select HEAD (Git) or the working copy (Jujutsu).
     /// Git also accepts BASE...HEAD for a merge-base comparison.
-    #[arg(value_name = "REVSET", conflicts_with_all = ["base", "head", "resume", "list", "forget_selection"])]
+    #[arg(value_name = "REVSET|ID", conflicts_with_all = ["base", "head", "resume", "list", "forget_selection"])]
     comparison: Option<String>,
     /// Repository directory (defaults to the current directory)
     #[arg(short = 'C', long, default_value = ".", global = true)]
@@ -294,8 +296,8 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
-    let resume_id = last_id.or(match cli.resume.as_deref() {
-        Some("latest") => Some(
+    let resume_id = last_id.or(match (cli.resume.as_deref(), cli.comparison.as_deref()) {
+        (Some("latest"), _) => Some(
             store
                 .list()?
                 .first()
@@ -303,8 +305,9 @@ fn main() -> Result<()> {
                 .id
                 .clone(),
         ),
-        Some(id) => Some(store.resolve(id)?),
-        None => None,
+        (Some(id), _) => Some(store.resolve(id)?),
+        (None, Some(id)) => store.find(id)?,
+        (None, None) => None,
     });
     ensure!(
         io::stdin().is_terminal() && io::stdout().is_terminal(),

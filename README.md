@@ -50,8 +50,13 @@ review --base 'trunk()' --head @
 review -C ../project --backend git --base master
 ```
 
-Positional `BASE..HEAD` compares the two snapshots directly. Either omitted
-endpoint defaults to `@`, and a lone `REV` means `REV..@`. `@` selects Git's
+A saved review ID or unique prefix, such as `review r3`, resumes that session for
+the current repository/backend. Saved-session matches take precedence over revision
+names; use `review r3..@` to compare a revision with the same name. Ambiguous session
+prefixes list the matching IDs.
+
+Otherwise, positional `BASE..HEAD` compares the two snapshots directly. Either
+omitted endpoint defaults to `@`, and a lone `REV` means `REV..@`. `@` selects Git's
 current `HEAD` or Jujutsu's working-copy revision. Each endpoint accepts the
 selected backend's revision syntax and resolves to one revision, including branch
 names, commit IDs, jj change IDs, and expressions such as `heads(master::feature)`.
@@ -223,6 +228,7 @@ session writer, keeping saved submission checkpoints consistent.
 review last                  # Open the most recently opened review
 review --resume              # Resume the most recently saved session
 review --list                # List saved sessions for this repository/backend
+review r3                    # Resume a particular saved review.
 review --resume r3           # Resume a particular session
 review --rename r3 "API review" # Give a saved session a display name
 review --base master         # Start a fresh review
