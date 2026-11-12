@@ -88,7 +88,7 @@ struct Cli {
     #[arg(long, conflicts_with_all = ["base", "head", "resume", "list"])]
     forget_all: bool,
     /// Permanently forget closed reviews last opened more than a week ago
-    #[arg(long, conflicts_with_all = ["base", "head", "resume", "list"])]
+    #[arg(long, visible_alias = "prune", conflicts_with_all = ["base", "head", "resume", "list"])]
     cleanup: bool,
     /// Confirm forgetting sessions without prompting
     #[arg(short = 'y', long, requires = "forget_selection")]

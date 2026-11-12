@@ -318,6 +318,8 @@ The CLI asks for confirmation; `-y` / `--yes` confirms explicitly for automation
 All requested IDs and session locks are checked before deletion. Open sessions
 are protected, and `--forget-all` selects closed sessions.
 
+`--prune` is an alias for `--cleanup`.
+
 `--cleanup` selects this repository/backend's closed sessions whose last-opened
 time is strictly more than seven days ago. Older sessions use their last saved
 time. Cleanup asks for confirmation and rechecks the selected sessions' age and
