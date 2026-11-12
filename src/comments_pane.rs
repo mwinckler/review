@@ -65,8 +65,9 @@ impl App {
         page: usize,
         terminal_width: u16,
     ) -> bool {
-        if self.thread.as_ref().is_some_and(|thread| thread.full) {
-            self.handle_thread_key(key, page, terminal_width);
+        if self.thread.as_ref().is_some_and(|thread| thread.full)
+            && self.handle_thread_key(key, page, terminal_width)
+        {
             return true;
         }
         if key
@@ -93,6 +94,10 @@ impl App {
                 }
             }
             KeyCode::Char('R') if self.thread.is_some() => self.reply_to_thread(),
+            KeyCode::Char('e') if self.thread.is_some() => {
+                let id = self.thread.as_ref().expect("selected thread").id.clone();
+                self.edit_comment(&id);
+            }
             KeyCode::Char('r') if self.review.gitlab.is_some() => {
                 self.submission_action = Some(GitLabJob::Discussions);
             }
@@ -139,7 +144,7 @@ fn resolved(entry: CommentEntry<'_>) -> bool {
     }
 }
 
-fn summary(
+pub(crate) fn summary(
     entry: CommentEntry<'_>,
     app: &App,
     width: u16,
@@ -206,7 +211,13 @@ fn summary(
         text.push_str(&format!(" · {created}"));
     }
     text.push_str(" · ");
-    let preview = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    let preview = body
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     text.push_str(&fit(
         &ui::display_path(&preview),
         (width as usize).saturating_sub(Span::raw(&text).width()),

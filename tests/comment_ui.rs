@@ -229,7 +229,7 @@ fn line_selection_keeps_pane_shortcuts_and_editor_locations_and_jumps_dirty_the_
     };
     let mut draft = CommentDraft::new(&repo, &app.review, &target).unwrap();
     draft.body = "Jump".into();
-    app.comment_dialog = Some(CommentDialog::Compose(Box::new(draft)));
+    app.compose_comment(draft);
     save(&mut app);
     app.dirty = false;
     key(&mut app, KeyCode::Enter);
@@ -248,8 +248,9 @@ fn pasted_text_is_multiline_and_literal_and_browser_control_scrolls_are_safe() {
     let mut draft = CommentDraft::new(&repo, &app.review, &target).unwrap();
     draft.insert("q\r\nS\rC\u{0}\u{1b}");
     assert_eq!(draft.body, "q\nS\nC");
-    app.comment_dialog = Some(CommentDialog::Compose(Box::new(draft)));
+    app.compose_comment(draft);
     save(&mut app);
+    key(&mut app, KeyCode::Char('C'));
     app.handle_key(
         KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
         10,
@@ -260,7 +261,7 @@ fn pasted_text_is_multiline_and_literal_and_browser_control_scrolls_are_safe() {
         panic!("browser");
     };
     assert!(list.confirming.is_none());
-    assert!(list.scroll > 0);
+    assert_eq!(list.selection, 0);
 }
 
 #[test]
@@ -308,7 +309,7 @@ fn composer_validates_ranges_edits_unicode_multiline_text_and_saves_only_explici
     };
     let draft = CommentDraft::new(&repo, &app.review, &target).unwrap();
     assert_eq!(draft.anchor.excerpt, "    first();\n    second();");
-    app.comment_dialog = Some(CommentDialog::Compose(Box::new(draft)));
+    app.compose_comment(draft);
     for ch in "qλj".chars() {
         key(&mut app, KeyCode::Char(ch));
     }
@@ -327,7 +328,8 @@ fn composer_validates_ranges_edits_unicode_multiline_text_and_saves_only_explici
     assert_eq!(app.review.comments[0].body, "qéj\nS? ]h");
     assert_eq!(app.review.comments[0].anchor.start_line, 2);
     assert!(app.comments_changed);
-    assert!(matches!(app.comment_dialog, Some(CommentDialog::Browse(_))));
+    assert!(app.comment_dialog.is_none());
+    assert!(app.thread.as_ref().unwrap().full);
     key(&mut app, KeyCode::Char('e'));
     let Some(CommentDialog::Compose(draft)) = &mut app.comment_dialog else {
         panic!("edit draft");
@@ -343,9 +345,7 @@ fn composer_validates_ranges_edits_unicode_multiline_text_and_saves_only_explici
     let Some(CommentAction::Compose(target)) = app.comment_action.take() else {
         panic!("compose requested");
     };
-    app.comment_dialog = Some(CommentDialog::Compose(Box::new(
-        CommentDraft::new(&repo, &app.review, &target).unwrap(),
-    )));
+    app.compose_comment(CommentDraft::new(&repo, &app.review, &target).unwrap());
     save(&mut app);
     assert!(matches!(
         app.comment_dialog,
@@ -381,11 +381,12 @@ fn comment_browser_confirms_source_writes_and_deletions_and_keeps_outdated_text_
         },
     )
     .unwrap();
-    app.comment_dialog = Some(CommentDialog::Compose(Box::new(draft)));
+    app.compose_comment(draft);
     for ch in "Explain range".chars() {
         key(&mut app, KeyCode::Char(ch));
     }
     save(&mut app);
+    key(&mut app, KeyCode::Char('C'));
     key(&mut app, KeyCode::Char('t'));
     assert!(app.comment_action.is_none());
     key(&mut app, KeyCode::Esc);
@@ -404,7 +405,8 @@ fn comment_browser_confirms_source_writes_and_deletions_and_keeps_outdated_text_
     app.rebuild();
     key(&mut app, KeyCode::Char('C'));
     key(&mut app, KeyCode::Enter);
-    assert!(app.message.contains("outdated"));
+    assert_eq!(app.focus, Focus::Comments);
+    assert!(app.thread.as_ref().unwrap().full);
     let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
     terminal
         .draw(|frame| ui::draw(frame, &app, &Text::default()))
@@ -419,6 +421,7 @@ fn comment_browser_confirms_source_writes_and_deletions_and_keeps_outdated_text_
     assert!(display.contains("outdated"));
     assert!(display.contains("Explain range"));
     assert!(display.contains("first();"));
+    key(&mut app, KeyCode::Char('C'));
     key(&mut app, KeyCode::Char('d'));
     key(&mut app, KeyCode::Char('n'));
     assert_eq!(app.review.comments.len(), 1);
@@ -445,7 +448,7 @@ fn range_highlights_and_comment_markers_are_visible_and_small_terminals_render()
     let target = app.line_selection.as_ref().unwrap().target();
     let mut draft = CommentDraft::new(&repo, &app.review, &target).unwrap();
     draft.body = "Marker".into();
-    app.comment_dialog = Some(CommentDialog::Compose(Box::new(draft)));
+    app.compose_comment(draft);
     save(&mut app);
     key(&mut app, KeyCode::Esc);
     terminal.draw(|frame| ui::draw(frame, &app, &text)).unwrap();

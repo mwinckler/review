@@ -11,13 +11,13 @@ use ratatui::{
 };
 
 use crate::{
-    app::App,
+    app::{App, Focus},
     gitlab_review::{SubmissionPreview, acknowledge_retry, pending_comments, pending_replies},
     gitlab_worker::GitLabJob,
     input, markdown,
     state::Review,
     tree,
-    ui::{display_path, max_scroll, session_dialog_area},
+    ui::{display_path, max_scroll, panes},
 };
 
 pub struct SubmissionDialog {
@@ -59,6 +59,18 @@ impl SubmissionDialog {
 }
 
 impl App {
+    pub(crate) fn open_submission(&mut self) {
+        if self.resume_comment_draft() {
+            return;
+        }
+        if self.review.gitlab.is_none() {
+            self.message = "Open a GitLab MR with review gitlab to submit a review.".into();
+            return;
+        }
+        self.focus_comments();
+        self.submission_dialog = Some(SubmissionDialog::new(&self.review));
+    }
+
     pub(crate) fn handle_submission_dialog(
         &mut self,
         key: crossterm::event::KeyEvent,
@@ -132,12 +144,19 @@ impl App {
 }
 
 pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionDialog) {
-    let area = session_dialog_area(frame.area());
+    let area = panes(frame.area(), app).comments;
+    if area.is_empty() {
+        return;
+    }
     frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Submit GitLab review ")
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(if app.focus == Focus::Comments {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        }));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let comments: Vec<_> = pending_comments(&app.review)
@@ -180,13 +199,47 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
             )
         }))
         .collect();
+    let (prompt, keys) = if app.network_busy {
+        (
+            "GitLab operation in progress; submission checkpoints are saved.".to_owned(),
+            "Waiting for GitLab…".to_owned(),
+        )
+    } else if dialog.reset_confirmation {
+        ("An earlier write may already be visible. Confirm only after checking the MR on GitLab; retrying can duplicate feedback.".to_owned(), "y acknowledge retry · n / Esc cancel".to_owned())
+    } else if let Some(preview) = &dialog.preview {
+        (
+            format!(
+                "Publish {} comments/replies and a summary? Includes {} existing drafts from outside this session. ALL your pending MR drafts will be published.",
+                preview.comment_ids.len(),
+                preview.external_drafts
+            ),
+            "y publish all pending drafts · n / Esc edit".to_owned(),
+        )
+    } else {
+        let retry = if app
+            .review
+            .gitlab
+            .as_ref()
+            .is_some_and(|gitlab| gitlab.publication.uncertain())
+        {
+            " · X acknowledge retry"
+        } else {
+            ""
+        };
+        (
+            dialog.message.clone(),
+            format!("Ctrl-s preview · Tab summary/comments · PgUp/PgDn read{retry} · Esc close"),
+        )
+    };
+    let prompt = Paragraph::new(display_path(&prompt)).wrap(Wrap { trim: false });
+    let keys = Paragraph::new(keys).wrap(Wrap { trim: false });
     let [identity, entries, detail, summary, message, controls] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(comments.len().clamp(1, 3) as u16),
         Constraint::Min(0),
         Constraint::Length(5),
-        Constraint::Length(2),
-        Constraint::Length(1),
+        Constraint::Length(prompt.line_count(inner.width).max(1).min(u16::MAX as usize) as u16),
+        Constraint::Length(keys.line_count(inner.width).min(u16::MAX as usize) as u16),
     ])
     .areas(inner);
     if let Some(gitlab) = &app.review.gitlab {
@@ -238,7 +291,11 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
         .as_ref()
         .map(|preview| preview.summary.clone())
         .unwrap_or_else(|| dialog.summary.clone());
-    if dialog.preview.is_none() && dialog.summary_focused && !dialog.reset_confirmation {
+    if app.focus == Focus::Comments
+        && dialog.preview.is_none()
+        && dialog.summary_focused
+        && !dialog.reset_confirmation
+    {
         text.insert(dialog.cursor, '▏');
     }
     let text = if dialog.preview.is_some() || !dialog.summary_focused {
@@ -266,56 +323,18 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
                 Block::default()
                     .borders(Borders::ALL)
                     .title(" Summary · Markdown ")
-                    .border_style(Style::default().fg(if dialog.summary_focused {
-                        Color::Cyan
-                    } else {
-                        Color::DarkGray
-                    })),
+                    .border_style(Style::default().fg(
+                        if app.focus == Focus::Comments && dialog.summary_focused {
+                            Color::Cyan
+                        } else {
+                            Color::DarkGray
+                        },
+                    )),
             ),
         summary,
     );
-    let (prompt, keys) = if app.network_busy {
-        (
-            "GitLab operation in progress; submission checkpoints are saved.".to_owned(),
-            "Waiting for GitLab…".to_owned(),
-        )
-    } else if dialog.reset_confirmation {
-        ("An earlier write may already be visible. Confirm only after checking the MR on GitLab; retrying can duplicate feedback.".to_owned(), "y acknowledge retry · n / Esc cancel".to_owned())
-    } else if let Some(preview) = &dialog.preview {
-        (
-            format!(
-                "Publish {} comments/replies and a summary? Includes {} existing drafts from outside this session. ALL your pending MR drafts will be published.",
-                preview.comment_ids.len(),
-                preview.external_drafts
-            ),
-            "y publish all pending drafts · n / Esc edit".to_owned(),
-        )
-    } else {
-        let retry = if app
-            .review
-            .gitlab
-            .as_ref()
-            .is_some_and(|gitlab| gitlab.publication.uncertain())
-        {
-            " · X acknowledge retry"
-        } else {
-            ""
-        };
-        (
-            dialog.message.clone(),
-            format!("Ctrl-s preview · Tab summary/comments · PgUp/PgDn read{retry} · Esc close"),
-        )
-    };
-    frame.render_widget(
-        Paragraph::new(display_path(&prompt))
-            .wrap(Wrap { trim: false })
-            .style(Style::default().fg(Color::Yellow)),
-        message,
-    );
-    frame.render_widget(
-        Paragraph::new(keys).style(Style::default().fg(Color::Cyan)),
-        controls,
-    );
+    frame.render_widget(prompt.style(Style::default().fg(Color::Yellow)), message);
+    frame.render_widget(keys.style(Style::default().fg(Color::Cyan)), controls);
 }
 
 pub enum Pick {

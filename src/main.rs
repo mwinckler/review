@@ -33,11 +33,15 @@ use review::{
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-struct PasteMode;
+struct InputModes;
 
-impl Drop for PasteMode {
+impl Drop for InputModes {
     fn drop(&mut self) {
-        let _ = crossterm::execute!(io::stdout(), event::DisableBracketedPaste);
+        let _ = crossterm::execute!(
+            io::stdout(),
+            event::PopKeyboardEnhancementFlags,
+            event::DisableBracketedPaste
+        );
     }
 }
 
@@ -374,8 +378,14 @@ fn main() -> Result<()> {
     let editor = EditorWorker::new(config.editor.clone(), store.directory.join("snapshots"));
     let mut gitlab_worker = GitLabWorker::default();
     let mut result = ratatui::run(|terminal| {
-        crossterm::execute!(io::stdout(), event::EnableBracketedPaste)?;
-        let _paste = PasteMode;
+        crossterm::execute!(
+            io::stdout(),
+            event::EnableBracketedPaste,
+            event::PushKeyboardEnhancementFlags(
+                event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            )
+        )?;
+        let _input_modes = InputModes;
         run(
             terminal,
             &repo,
@@ -510,6 +520,9 @@ fn run(
                 app.revision_range(),
             );
             if requested.as_ref() != Some(&key) {
+                let same_preview = requested.as_ref().is_some_and(|previous| {
+                    previous.0 == key.0 && previous.2 == key.2 && previous.3 == key.3
+                });
                 request_id = worker.request_revisions(
                     repo,
                     &app.review.comparison,
@@ -524,8 +537,10 @@ fn run(
                 requested = Some(key);
                 app.rendering = true;
                 app.hunks.clear();
-                app.source_lines.clear();
-                app.revision_preview = None;
+                if !same_preview {
+                    app.source_lines.clear();
+                    app.revision_preview = None;
+                }
                 diff = Text::raw("Rendering…");
                 redraw = true;
             }
@@ -566,7 +581,7 @@ fn run(
             }
         }
         redraw |= app.apply_hunk_navigation(diff_page, diff.lines.len());
-        if app.thread_is_modal() || app.focus == Focus::Comments {
+        if app.focus == Focus::Comments {
             app.keep_thread_visible(diff_page, diff.lines.len());
         } else {
             app.keep_line_selection_visible(diff_page, diff.lines.len());
@@ -604,9 +619,8 @@ fn run(
                     let keys = if app.searching
                         || app.flash.is_some()
                         || app.session_dialog.is_some()
-                        || app.comment_dialog.is_some()
-                        || app.submission_dialog.is_some()
-                        || app.thread_is_modal()
+                        || app.comments_overview_open()
+                        || app.comment_editor_active()
                         || app.help
                         || (key.code == KeyCode::Char('c')
                             && key.modifiers.contains(KeyModifiers::CONTROL))
@@ -618,9 +632,7 @@ fn run(
                     for key in keys {
                         let search = app.focus == Focus::Diff
                             && app.session_dialog.is_none()
-                            && app.comment_dialog.is_none()
-                            && app.submission_dialog.is_none()
-                            && !app.thread_is_modal()
+                            && !app.comments_overview_open()
                             && !app.searching
                             && !app.help
                             && !key.modifiers.contains(KeyModifiers::CONTROL)
@@ -628,25 +640,22 @@ fn run(
                         let search_enter = app.focus == Focus::Diff
                             && app.searching
                             && app.session_dialog.is_none()
-                            && app.comment_dialog.is_none()
-                            && app.submission_dialog.is_none()
-                            && !app.thread_is_modal()
+                            && !app.comments_overview_open()
                             && key.code == KeyCode::Enter;
-                        let input_page = if app.session_dialog.is_some()
-                            || app.comment_dialog.is_some()
-                            || app.submission_dialog.is_some()
-                        {
-                            ui::session_dialog_area(Rect::new(0, 0, size.width, size.height))
-                                .height
-                                .saturating_sub(5)
-                                .max(1) as usize
-                        } else {
-                            page
-                        };
+                        let input_page =
+                            if app.session_dialog.is_some() || app.comments_overview_open() {
+                                ui::session_dialog_area(Rect::new(0, 0, size.width, size.height))
+                                    .height
+                                    .saturating_sub(5)
+                                    .max(1) as usize
+                            } else {
+                                page
+                            };
                         app.handle_key(key, input_page, diff.lines.len(), size.width);
                         force_save |= key.code == KeyCode::Char(' ')
                             && app.session_dialog.is_none()
-                            && app.comment_dialog.is_none();
+                            && !app.comment_editor_active()
+                            && !app.comments_overview_open();
                         if search || search_enter {
                             app.search_diff(&diff, key.code != KeyCode::Char('N'));
                         }
@@ -660,13 +669,19 @@ fn run(
                     if let Some(dialog) = &mut app.session_dialog {
                         dialog.paste(&text);
                         redraw = true;
-                    } else if let Some(CommentDialog::Compose(draft)) = &mut app.comment_dialog {
+                    } else if app.focus == Focus::Comments
+                        && let Some(CommentDialog::Compose(draft)) = &mut app.comment_dialog
+                    {
                         draft.insert(&text);
                         redraw = true;
-                    } else if let Some(CommentDialog::Reply(draft)) = &mut app.comment_dialog {
+                    } else if app.focus == Focus::Comments
+                        && let Some(CommentDialog::Reply(draft)) = &mut app.comment_dialog
+                    {
                         draft.insert(&text);
                         redraw = true;
-                    } else if let Some(dialog) = &mut app.submission_dialog {
+                    } else if app.focus == Focus::Comments
+                        && let Some(dialog) = &mut app.submission_dialog
+                    {
                         dialog.insert(&text);
                         redraw = true;
                     }
@@ -699,9 +714,7 @@ fn run(
                         app.diff_changes(),
                         &target,
                     ) {
-                        Ok(draft) => {
-                            app.comment_dialog = Some(CommentDialog::Compose(Box::new(draft)))
-                        }
+                        Ok(draft) => app.compose_comment(draft),
                         Err(error) => app.message = format!("Comment: {error:#}"),
                     }
                 }
@@ -849,7 +862,6 @@ fn run(
                     app.message = "GitLab comments reloaded · C browse comments".into();
                     if let Some(CommentDialog::Browse(list)) = &mut app.comment_dialog {
                         list.selection = 0;
-                        list.scroll = 0;
                     }
                 }
                 Ok(GitLabOutcome::Refreshed(invalidated)) => {

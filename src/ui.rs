@@ -539,7 +539,9 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             viewport,
         );
         for source in app.source_lines.iter().filter(|source| {
-            source.row >= position.vertical && source.row < position.vertical + height
+            !app.rendering
+                && source.row >= position.vertical
+                && source.row < position.vertical + height
         }) {
             let y = viewport.y + (source.row - position.vertical) as u16;
             if let Some(selection) = &app.line_selection
@@ -611,6 +613,10 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 flash.matches.len()
             )
         }
+    } else if app.focus == Focus::Comments && app.submission_dialog.is_some() {
+        "Use Ctrl-s to preview the review or Esc to close it.".into()
+    } else if app.comment_editor_active() {
+        "Use Ctrl-h/j/k/l to change panes, Ctrl-s to save, or Ctrl-q to discard.".into()
     } else if app.focus == Focus::Comments {
         if app.message.is_empty() {
             "Use j/k to select a thread, Enter to read it, or t to hide this pane.".into()
@@ -653,12 +659,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         Paragraph::new(footer).style(Style::default().fg(Color::Cyan)),
         panes.footer,
     );
-    let thread_pane = if app.review.view.comments_visible {
-        panes.comments
-    } else {
-        panes.diff
-    };
-    crate::thread::draw(frame, app, thread_pane, panes.footer);
+    crate::thread::draw(frame, app, panes.comments, panes.footer);
     if app.help {
         let width = frame.area().width.min(74);
         let height = frame.area().height.min(36);
@@ -829,7 +830,11 @@ pub(crate) fn comment_text(entry: CommentEntry<'_>, review: &Review, width: u16)
     match entry {
         CommentEntry::Local(comment) => {
             text.push(Line::styled(
-                "Original source",
+                if comment.anchor.is_outdated(&review.changes) {
+                    "This source is outdated."
+                } else {
+                    "Original source"
+                },
                 Style::default().fg(Color::DarkGray),
             ));
             text.extend(
@@ -940,6 +945,10 @@ fn draw_markdown_editor(
         ))
         .border_style(border(focused));
     let inner = block.inner(area);
+    if inner.is_empty() {
+        frame.render_widget(block, area);
+        return;
+    }
     if preview {
         frame.render_widget(
             Paragraph::new(markdown::render(body, inner.width))
@@ -965,20 +974,30 @@ fn draw_markdown_editor(
 }
 
 fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
-    let area = session_dialog_area(frame.area());
+    let area = if dialog.is_editor() {
+        panes(frame.area(), app).comments
+    } else {
+        session_dialog_area(frame.area())
+    };
+    if area.is_empty() {
+        return;
+    }
     frame.render_widget(Clear, area);
     let title = match dialog {
         CommentDialog::Compose(draft) if draft.id.is_some() => " Edit line comment ".to_owned(),
         CommentDialog::Compose(_) => " New line comment ".to_owned(),
         CommentDialog::Browse(_) => {
-            format!(" Comments · {} ", app.review.comment_entries().count())
+            format!(
+                " Comment threads · {} ",
+                app.review.comment_entries().count()
+            )
         }
         CommentDialog::Reply(_) => " Reply to GitLab thread ".into(),
     };
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(border(!dialog.is_editor() || app.focus == Focus::Comments));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     match dialog {
@@ -992,7 +1011,7 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
                 Constraint::Length(source.lines().count().saturating_add(2).min(6) as u16),
                 Constraint::Min(0),
                 Constraint::Length(1),
-                Constraint::Length(1),
+                Constraint::Length(3),
             ])
             .areas(inner);
             frame.render_widget(
@@ -1004,7 +1023,7 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
                 path,
             );
             let field_style = |field| {
-                if draft.field == field {
+                if app.focus == Focus::Comments && draft.field == field {
                     Style::default().fg(Color::Black).bg(Color::Yellow)
                 } else {
                     Style::default().fg(Color::Cyan)
@@ -1037,7 +1056,7 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
                 (&draft.body, draft.cursor),
                 &draft.editor,
                 draft.preview,
-                draft.field == DraftField::Body,
+                app.focus == Focus::Comments && draft.field == DraftField::Body,
                 " Comment · Markdown ",
             );
             frame.render_widget(
@@ -1047,8 +1066,9 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
             );
             frame.render_widget(
                 Paragraph::new(
-                    "Esc normal · i insert · Ctrl-s save · Ctrl-p preview · Tab fields · Ctrl-q discard",
+                    "Ctrl-s saves; Ctrl-q discards.\nCtrl-p previews; Tab changes fields.",
                 )
+                .wrap(Wrap { trim: false })
                 .style(Style::default().fg(Color::Cyan)),
                 controls,
             );
@@ -1058,7 +1078,7 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
                 Constraint::Percentage(45),
                 Constraint::Min(3),
                 Constraint::Length(1),
-                Constraint::Length(1),
+                Constraint::Length(2),
             ])
             .areas(inner);
             if let Some(gitlab) = &app.review.gitlab
@@ -1086,7 +1106,7 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
                 (&draft.body, draft.cursor),
                 &draft.editor,
                 draft.preview,
-                true,
+                app.focus == Focus::Comments,
                 " Reply · Markdown ",
             );
             frame.render_widget(
@@ -1095,30 +1115,37 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
                 message,
             );
             frame.render_widget(
-                Paragraph::new(
-                    "Esc normal · i insert · Ctrl-s save · Ctrl-p preview · Ctrl-q discard",
-                )
-                .style(Style::default().fg(Color::Cyan)),
+                Paragraph::new("Ctrl-s saves; Ctrl-q discards.\nCtrl-p previews the reply.")
+                    .wrap(Wrap { trim: false })
+                    .style(Style::default().fg(Color::Cyan)),
                 controls,
             );
         }
         CommentDialog::Browse(list) => {
             let comments: Vec<_> = app.review.comment_entries().collect();
             let selection = list.selection.min(comments.len().saturating_sub(1));
-            let [entries, detail, message, controls] = Layout::vertical([
-                Constraint::Length(comments.len().clamp(1, 5) as u16),
+            let [entries, message, controls] = Layout::vertical([
                 Constraint::Min(0),
                 Constraint::Length(1),
-                Constraint::Length(1),
+                Constraint::Length(2),
             ])
             .areas(inner);
-            let visible = tree::visible_range(comments.len(), selection, entries.height as usize);
+            let visible = tree::visible_range(
+                comments.len(),
+                selection,
+                (entries.height as usize / 2).max(1),
+            );
             let offset = visible.start;
             let items: Vec<_> = comments
                 .iter()
                 .skip(offset)
                 .take(visible.len())
-                .map(|entry| ListItem::new(comment_heading(*entry, &app.review)))
+                .map(|entry| {
+                    ListItem::new(vec![
+                        Line::raw(comment_heading(*entry, &app.review)),
+                        crate::comments_pane::summary(*entry, app, entries.width, true, 1),
+                    ])
+                })
                 .collect();
             let mut state =
                 ListState::default().with_selected(Some(selection.saturating_sub(offset)));
@@ -1127,18 +1154,12 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
                 entries,
                 &mut state,
             );
-            if let Some(entry) = comments.get(selection) {
-                let text = comment_text(*entry, &app.review, detail.width.saturating_sub(2));
-                let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
-                let block = Block::default().borders(Borders::ALL);
-                let scroll = list.scroll.min(max_scroll(&paragraph, block.inner(detail)));
-                frame.render_widget(paragraph.scroll((scroll as u16, 0)).block(block), detail);
-            } else {
+            if comments.is_empty() {
                 frame.render_widget(
                     Paragraph::new(
                         "No comments yet. Use c to comment on a line or v to select a range.",
                     ),
-                    detail,
+                    entries,
                 );
             }
             let prompt = match list.confirming {
@@ -1160,26 +1181,18 @@ fn draw_comment_dialog(frame: &mut Frame, app: &App, dialog: &CommentDialog) {
                 .and_then(|entry| entry.local(&app.review))
             {
                 if app.review.comment_submitted(&comment.id) {
-                    " · t TODO"
+                    "Press t to write a source TODO."
                 } else {
-                    " · e edit · d delete · t TODO"
+                    "Press e to edit, d to delete, or t to write a source TODO."
                 }
-            } else {
-                ""
-            };
-            let reload = if app.review.gitlab.is_some() {
-                " · r reload"
-            } else {
-                ""
-            };
-            let reply = if matches!(comments.get(selection), Some(CommentEntry::GitLab(_))) {
-                " · R reply"
+            } else if matches!(comments.get(selection), Some(CommentEntry::GitLab(_))) {
+                "Press R to reply or r to reload threads."
             } else {
                 ""
             };
             frame.render_widget(
                 Paragraph::new(format!(
-                    "j/k select · o thread · f expand{reply}{actions} · Enter jump · PgUp/PgDn read{reload} · Esc close"
+                    "Use j/k to select a thread and Enter to open it in the comments pane.\n{actions}"
                 ))
                 .style(Style::default().fg(Color::Cyan)),
                 controls,

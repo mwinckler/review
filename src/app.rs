@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    comment_dialog::{CommentAction, CommentDialog, CommentList, LineSelection},
+    comment_dialog::{CommentAction, CommentDialog, LineSelection},
     comments::DiffSide,
     gitlab_ui::SubmissionDialog,
     gitlab_worker::GitLabJob,
@@ -481,9 +481,8 @@ impl App {
     pub(crate) fn set_focus(&mut self, focus: Focus) {
         self.focus = focus;
         self.review.view.fullscreen = false;
-        if self.thread_is_modal() {
-            self.thread = None;
-        }
+        self.review.view.diff_focused = focus == Focus::Diff;
+        self.review.view.comments_focused = focus == Focus::Comments;
     }
 
     fn handle_pane_key(&mut self, key: KeyEvent, terminal_width: u16) -> bool {
@@ -575,12 +574,8 @@ impl App {
             self.session_action = dialog.handle_key(key, page);
             return;
         }
-        if self.comment_dialog.is_some() {
+        if self.comments_overview_open() {
             self.handle_comment_dialog(key, page);
-            return;
-        }
-        if self.submission_dialog.is_some() {
-            self.handle_submission_dialog(key, page);
             return;
         }
         self.dirty = true;
@@ -626,11 +621,17 @@ impl App {
             self.handle_flash(key, page);
             return;
         }
-        if self.handle_pane_key(key, terminal_width) {
+        if (!self.comment_editor_active() || key.modifiers.contains(KeyModifiers::CONTROL))
+            && self.handle_pane_key(key, terminal_width)
+        {
             return;
         }
-        if self.thread_is_modal() {
-            self.handle_thread_key(key, page, terminal_width);
+        if self.comment_editor_active() {
+            if self.submission_dialog.is_some() {
+                self.handle_submission_dialog(key, page);
+            } else {
+                self.handle_comment_dialog(key, page);
+            }
             return;
         }
         if let Some((prefix, number)) = self.prefix.take().filter(|_| {
@@ -722,17 +723,13 @@ impl App {
             }
             KeyCode::Char('v') => self.start_line_selection(true, page, diff_lines),
             KeyCode::Char('C') => {
-                self.comment_dialog = Some(CommentDialog::Browse(CommentList::default()));
+                self.open_comments_overview();
             }
             KeyCode::Char('S') => {
                 self.session_action = Some(SessionAction::Open);
             }
             KeyCode::Char('P') => {
-                if self.review.gitlab.is_some() {
-                    self.submission_dialog = Some(SubmissionDialog::new(&self.review));
-                } else {
-                    self.message = "Open a GitLab MR with review gitlab to submit a review".into();
-                }
+                self.open_submission();
             }
             KeyCode::Char('e') => {
                 self.editor_requested = true;

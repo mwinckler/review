@@ -220,7 +220,6 @@ pub enum CommentConfirmation {
 #[derive(Default)]
 pub struct CommentList {
     pub selection: usize,
-    pub scroll: usize,
     pub confirming: Option<CommentConfirmation>,
 }
 
@@ -228,6 +227,12 @@ pub enum CommentDialog {
     Compose(Box<CommentDraft>),
     Browse(CommentList),
     Reply(Box<ReplyDraft>),
+}
+
+impl CommentDialog {
+    pub(crate) fn is_editor(&self) -> bool {
+        matches!(self, Self::Compose(_) | Self::Reply(_))
+    }
 }
 
 pub struct ReplyDraft {
@@ -305,6 +310,83 @@ impl ReplyDraft {
 }
 
 impl App {
+    fn comment_draft_open(&self) -> bool {
+        self.comment_dialog
+            .as_ref()
+            .is_some_and(CommentDialog::is_editor)
+            || self.submission_dialog.is_some()
+    }
+
+    pub fn comment_editor_active(&self) -> bool {
+        self.focus == Focus::Comments && self.comment_draft_open()
+    }
+
+    pub fn comments_overview_open(&self) -> bool {
+        matches!(self.comment_dialog, Some(CommentDialog::Browse(_)))
+    }
+
+    pub(crate) fn focus_comments(&mut self) {
+        self.review.view.comments_visible = true;
+        self.set_focus(Focus::Comments);
+        self.dirty = true;
+    }
+
+    pub(crate) fn resume_comment_draft(&mut self) -> bool {
+        if self.comment_draft_open() {
+            self.focus_comments();
+            self.message = "Finish or discard the current draft before switching comments.".into();
+            return true;
+        }
+        false
+    }
+
+    pub fn compose_comment(&mut self, draft: CommentDraft) {
+        if self.resume_comment_draft() {
+            return;
+        }
+        self.focus_comments();
+        self.comment_dialog = Some(CommentDialog::Compose(Box::new(draft)));
+    }
+
+    pub(crate) fn open_comments_overview(&mut self) {
+        if self.resume_comment_draft() {
+            return;
+        }
+        let selection = self
+            .thread
+            .as_ref()
+            .and_then(|thread| {
+                self.review
+                    .comment_entries()
+                    .position(|entry| entry.id() == thread.id)
+            })
+            .unwrap_or(0);
+        self.comment_dialog = Some(CommentDialog::Browse(CommentList {
+            selection,
+            ..Default::default()
+        }));
+    }
+
+    pub(crate) fn edit_comment(&mut self, id: &ThreadId) {
+        if self.resume_comment_draft() {
+            return;
+        }
+        let Some(comment) = id
+            .entry(&self.review)
+            .and_then(|entry| entry.local(&self.review))
+        else {
+            self.message = "Select an unpublished local comment to edit.".into();
+            return;
+        };
+        if self.review.comment_submitted(&comment.id) {
+            self.message = "This comment has a GitLab submission receipt; add a new comment for further feedback.".into();
+            return;
+        }
+        let draft = CommentDraft::edit(comment);
+        self.open_thread(id.clone(), true);
+        self.compose_comment(draft);
+    }
+
     pub(crate) fn comment_target(&self) -> Option<LineTarget> {
         if let Some(selection) = &self.line_selection {
             return Some(selection.target());
@@ -549,23 +631,11 @@ impl App {
                 {
                     match draft.save(&mut self.review) {
                         Ok(index) => {
-                            let id = &self.review.comments[index].id;
-                            let selection = self
-                                .review
-                                .comment_entries()
-                                .position(|entry| {
-                                    entry
-                                        .local(&self.review)
-                                        .is_some_and(|comment| &comment.id == id)
-                                })
-                                .expect("saved comment is visible");
+                            let id = ThreadId::Local(self.review.comments[index].id.clone());
                             self.dirty = true;
                             self.comments_changed = true;
-                            self.message = "Comment saved locally".into();
-                            self.comment_dialog = Some(CommentDialog::Browse(CommentList {
-                                selection,
-                                ..Default::default()
-                            }));
+                            self.open_thread(id, true);
+                            self.message = "Comment saved locally.".into();
                             return;
                         }
                         Err(error) => draft.message = format!("{error:#}"),
@@ -593,6 +663,7 @@ impl App {
                             self.comments_changed = true;
                             self.dirty = true;
                             if let Some(thread) = &mut self.thread {
+                                thread.full = true;
                                 thread.scroll = usize::MAX;
                             }
                             self.message = "Reply saved locally · P preview and publish".into();
@@ -647,13 +718,13 @@ impl App {
                     if key.modifiers.contains(KeyModifiers::CONTROL) {
                         match key.code {
                             KeyCode::Char('d' | 'f') => {
-                                list.scroll = list
-                                    .scroll
+                                list.selection = list
+                                    .selection
                                     .saturating_add((page / 2).max(1))
-                                    .min(u16::MAX as usize)
+                                    .min(count.saturating_sub(1));
                             }
                             KeyCode::Char('u' | 'b') => {
-                                list.scroll = list.scroll.saturating_sub((page / 2).max(1))
+                                list.selection = list.selection.saturating_sub((page / 2).max(1));
                             }
                             _ => {}
                         }
@@ -661,10 +732,10 @@ impl App {
                         return;
                     }
                     match key.code {
-                        KeyCode::Char('o' | 'f' | 'R') => {
+                        KeyCode::Enter | KeyCode::Char('o' | 'f' | 'R') => {
                             if let Some(entry) = selected {
                                 let id = entry.id();
-                                self.open_thread(id, key.code == KeyCode::Char('f'));
+                                self.open_thread(id, true);
                                 if key.code == KeyCode::Char('R') {
                                     self.reply_to_thread();
                                 }
@@ -676,25 +747,25 @@ impl App {
                         }
                         KeyCode::Char('j') | KeyCode::Down => {
                             list.selection = (list.selection + 1).min(count.saturating_sub(1));
-                            list.scroll = 0;
                         }
                         KeyCode::Char('k') | KeyCode::Up => {
                             list.selection = list.selection.saturating_sub(1);
-                            list.scroll = 0;
                         }
                         KeyCode::Home | KeyCode::Char('g') => {
                             list.selection = 0;
-                            list.scroll = 0;
                         }
                         KeyCode::End | KeyCode::Char('G') => {
                             list.selection = count.saturating_sub(1);
-                            list.scroll = 0;
                         }
                         KeyCode::PageDown => {
-                            list.scroll =
-                                list.scroll.saturating_add(page / 2).min(u16::MAX as usize)
+                            list.selection = list
+                                .selection
+                                .saturating_add((page / 2).max(1))
+                                .min(count.saturating_sub(1));
                         }
-                        KeyCode::PageUp => list.scroll = list.scroll.saturating_sub(page / 2),
+                        KeyCode::PageUp => {
+                            list.selection = list.selection.saturating_sub((page / 2).max(1))
+                        }
                         KeyCode::Char('d') | KeyCode::Delete if local.is_some() => {
                             if self
                                 .review
@@ -711,50 +782,17 @@ impl App {
                             list.confirming = Some(CommentConfirmation::Todo)
                         }
                         KeyCode::Char('e') => {
-                            if let Some(comment) = &local {
-                                if self.review.comment_submitted(&comment.id) {
-                                    self.message = "This comment has a GitLab submission receipt; add a new comment for further feedback".into();
+                            if let Some(entry) = selected {
+                                let id = entry.id();
+                                self.edit_comment(&id);
+                                if self.comment_dialog.is_none() {
                                     self.comment_dialog = Some(dialog);
-                                    return;
                                 }
-                                self.comment_dialog = Some(CommentDialog::Compose(Box::new(
-                                    CommentDraft::edit(comment),
-                                )));
                                 return;
                             }
                         }
                         KeyCode::Char('r') if self.review.gitlab.is_some() => {
                             self.submission_action = Some(GitLabJob::Discussions);
-                        }
-                        KeyCode::Enter => {
-                            if let Some(target) =
-                                selected.and_then(|entry| entry.target(&self.review))
-                            {
-                                self.review.view.selected = target.path.clone();
-                                self.review.view.filter.clear();
-                                self.review.view.unviewed_only = false;
-                                self.review
-                                    .view
-                                    .collapsed
-                                    .retain(|parent| !target.path.starts_with(parent));
-                                self.rebuild();
-                                self.line_selection = Some(LineSelection {
-                                    path: target.path,
-                                    side: target.side,
-                                    anchor: target.start_line,
-                                    cursor: target.end_line,
-                                    extending: target.start_line != target.end_line,
-                                });
-                                self.focus = Focus::Diff;
-                                self.dirty = true;
-                                return;
-                            }
-                            if selected.is_some_and(|entry| match entry {
-                                CommentEntry::Local(_) => true,
-                                CommentEntry::GitLab(discussion) => discussion.position().is_some(),
-                            }) {
-                                self.message = "Comment is outdated or outside the reviewed diff; its original discussion is shown here".into();
-                            }
                         }
                         _ => {}
                     }
