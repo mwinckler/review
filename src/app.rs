@@ -15,12 +15,13 @@ use crate::{
     vcs::{Change, Comparison, Revision},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::text::Text;
+use ratatui::{layout::Rect, text::Text};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Focus {
     Tree,
     Diff,
+    Comments,
 }
 
 enum HunkNavigation {
@@ -119,7 +120,9 @@ pub struct App {
 
 impl App {
     pub fn new(review: Review) -> Self {
-        let focus = if review.view.fullscreen || review.view.diff_focused {
+        let focus = if review.view.comments_visible && review.view.comments_focused {
+            Focus::Comments
+        } else if review.view.fullscreen || review.view.diff_focused {
             Focus::Diff
         } else {
             Focus::Tree
@@ -469,6 +472,98 @@ impl App {
             self.line_selection = None;
         }
         self.review.view.diff_focused = self.focus == Focus::Diff;
+        self.review.view.comments_focused = self.focus == Focus::Comments;
+        if self.focus == Focus::Comments {
+            self.keep_thread_visible(page, diff_lines);
+        }
+    }
+
+    pub(crate) fn set_focus(&mut self, focus: Focus) {
+        self.focus = focus;
+        self.review.view.fullscreen = false;
+        if self.thread_is_modal() {
+            if self.review.view.comments_visible {
+                self.thread.as_mut().expect("open thread").full = false;
+            } else {
+                self.thread = None;
+            }
+        }
+    }
+
+    fn handle_pane_key(&mut self, key: KeyEvent, terminal_width: u16) -> bool {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        match (key.code, control) {
+            (KeyCode::Backspace, _) | (KeyCode::Char('h' | 'k'), true) => {
+                self.set_focus(if self.focus == Focus::Comments {
+                    Focus::Diff
+                } else {
+                    Focus::Tree
+                });
+            }
+            (KeyCode::Char('j' | 'l'), true) => {
+                self.set_focus(if self.focus == Focus::Tree {
+                    Focus::Diff
+                } else if self.review.view.comments_visible {
+                    Focus::Comments
+                } else {
+                    Focus::Diff
+                });
+            }
+            (KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down, true) => {
+                if terminal_width >= 55 && !self.review.view.fullscreen {
+                    let amount = if matches!(key.code, KeyCode::Right | KeyCode::Down) {
+                        2
+                    } else {
+                        -2
+                    };
+                    let panes = crate::ui::panes(Rect::new(0, 0, terminal_width, 20), self);
+                    if panes.comments.width > 0 {
+                        if self.focus == Focus::Tree {
+                            self.review.view.tree_width = Some(
+                                panes
+                                    .tree
+                                    .width
+                                    .saturating_add_signed(amount)
+                                    .clamp(24, terminal_width - panes.comments.width - 24),
+                            );
+                        } else {
+                            let amount = if self.focus == Focus::Diff {
+                                -amount
+                            } else {
+                                amount
+                            };
+                            self.review.view.comments_width = Some(
+                                panes
+                                    .comments
+                                    .width
+                                    .saturating_add_signed(amount)
+                                    .clamp(24, terminal_width - panes.tree.width - 24),
+                            );
+                        }
+                    } else {
+                        self.review.view.tree_width = Some(
+                            panes
+                                .tree
+                                .width
+                                .saturating_add_signed(amount)
+                                .clamp(24, terminal_width - 24),
+                        );
+                    }
+                }
+            }
+            (KeyCode::Char('t'), false) if !key.modifiers.contains(KeyModifiers::ALT) => {
+                self.review.view.comments_visible = !self.review.view.comments_visible;
+                self.review.view.fullscreen = false;
+                if self.focus == Focus::Comments || self.thread.is_some() {
+                    self.set_focus(Focus::Diff);
+                }
+            }
+            _ => {
+                return false;
+            }
+        }
+        self.prefix = None;
+        true
     }
 
     fn handle_input(&mut self, key: KeyEvent, page: usize, diff_lines: usize, terminal_width: u16) {
@@ -490,10 +585,6 @@ impl App {
         }
         if self.submission_dialog.is_some() {
             self.handle_submission_dialog(key, page);
-            return;
-        }
-        if self.thread.is_some() {
-            self.handle_thread_key(key, page, terminal_width);
             return;
         }
         self.dirty = true;
@@ -539,6 +630,13 @@ impl App {
             self.handle_flash(key, page);
             return;
         }
+        if self.handle_pane_key(key, terminal_width) {
+            return;
+        }
+        if self.thread_is_modal() {
+            self.handle_thread_key(key, page, terminal_width);
+            return;
+        }
         if let Some((prefix, number)) = self.prefix.take().filter(|_| {
             !key.modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -580,33 +678,21 @@ impl App {
                 _ => {}
             }
         }
+        if self.focus == Focus::Comments && self.handle_comments_key(key) {
+            return;
+        }
         if key.code == KeyCode::Esc && self.revisions.is_some() {
             self.clear_revision_filter();
-        } else if self.handle_line_selection(key, page, diff_lines) {
+        } else if self.focus == Focus::Diff && self.handle_line_selection(key, page, diff_lines) {
             return;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Char('h') => {
-                    self.focus = Focus::Tree;
-                    self.review.view.fullscreen = false;
-                }
-                KeyCode::Char('l') => {
-                    self.focus = Focus::Diff;
-                }
                 KeyCode::Char('n') => {
                     self.select(self.selection.saturating_add(1));
                 }
                 KeyCode::Char('p') => {
                     self.select(self.selection.saturating_sub(1));
-                }
-                KeyCode::Left | KeyCode::Right if terminal_width >= 55 => {
-                    let width = self.review.view.tree_width(terminal_width);
-                    self.review.view.tree_width = Some(if key.code == KeyCode::Left {
-                        width.saturating_sub(2).max(24)
-                    } else {
-                        width.saturating_add(2).min(terminal_width - 24)
-                    });
                 }
                 KeyCode::Char('d') => {
                     self.scroll_diff((page as isize / 2).max(1), page, diff_lines);
@@ -658,10 +744,6 @@ impl App {
             KeyCode::Char('Y') => {
                 self.copy_path_requested = true;
             }
-            KeyCode::Backspace => {
-                self.focus = Focus::Tree;
-                self.review.view.fullscreen = false;
-            }
             KeyCode::Char('q') => {
                 self.quit = true;
             }
@@ -669,14 +751,18 @@ impl App {
                 self.help = true;
             }
             KeyCode::Tab | KeyCode::BackTab => {
-                self.focus = if self.focus == Focus::Tree {
+                let focus = if self.review.view.comments_visible {
+                    match (self.focus, key.code == KeyCode::Tab) {
+                        (Focus::Tree, true) | (Focus::Comments, false) => Focus::Diff,
+                        (Focus::Diff, true) | (Focus::Tree, false) => Focus::Comments,
+                        _ => Focus::Tree,
+                    }
+                } else if self.focus == Focus::Tree {
                     Focus::Diff
                 } else {
                     Focus::Tree
                 };
-                if self.focus == Focus::Tree {
-                    self.review.view.fullscreen = false;
-                }
+                self.set_focus(focus);
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.move_by(1, page, diff_lines);

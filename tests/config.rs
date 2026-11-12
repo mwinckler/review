@@ -65,12 +65,16 @@ fn pane_focus_aliases_use_direct_control_shortcuts() {
     fs::write(&path, "[keybindings]\nH = 'focus_tree'\nL = 'focus_diff'\n").unwrap();
     let config = Config::load(&path, true).unwrap();
     for ch in ['h', 'l'] {
+        let mut expected = vec![KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL); 2];
+        if ch == 'l' {
+            expected.push(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        }
         assert_eq!(
             config.translate(KeyEvent::new(
                 KeyCode::Char(ch.to_ascii_uppercase()),
                 KeyModifiers::SHIFT
             )),
-            [KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL)]
+            expected
         );
     }
 }
@@ -110,6 +114,8 @@ fn comment_actions_can_be_aliased() {
     assert_eq!(
         config.translate(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE)),
         [
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
             KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
         ]

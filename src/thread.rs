@@ -1,4 +1,4 @@
-//! Source-aligned conversation overlays, independent of renderer row coordinates.
+//! This module manages source-aligned conversations and their expanded reader.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -26,20 +26,17 @@ pub struct ThreadView {
 
 impl ThreadView {
     fn last_source_row(&self, app: &App) -> Option<usize> {
-        let target = self.id.entry(&app.review)?.target(&app.review)?;
-        app.source_lines
-            .iter()
-            .rfind(|source| {
-                source.location.path == target.path
-                    && source
-                        .number(target.side)
-                        .is_some_and(|line| (target.start_line..=target.end_line).contains(&line))
-            })
-            .map(|source| source.row)
+        crate::comments_pane::source_row(self.id.entry(&app.review)?, app)
     }
 }
 
 impl App {
+    pub fn thread_is_modal(&self) -> bool {
+        self.thread
+            .as_ref()
+            .is_some_and(|thread| thread.full || !self.review.view.comments_visible)
+    }
+
     pub(crate) fn open_thread(&mut self, id: ThreadId, full: bool) {
         let Some(entry) = id.entry(&self.review) else {
             return;
@@ -67,7 +64,11 @@ impl App {
                 extending: false,
             });
         }
-        self.focus = Focus::Diff;
+        if self.review.view.comments_visible && !full && target.is_some() {
+            self.set_focus(Focus::Comments);
+        } else {
+            self.focus = Focus::Diff;
+        }
         self.thread = Some(ThreadView {
             id,
             scroll: 0,
@@ -106,18 +107,24 @@ impl App {
     }
 
     pub(crate) fn jump_thread(&mut self, forward: bool) {
-        let ids: Vec<_> = self
-            .review
-            .comment_entries()
-            .filter(|entry| {
-                entry.path(&self.review).is_some_and(|path| {
-                    path == self.review.view.active
-                        || (self.review.view.active.ends_with('/')
-                            && path.starts_with(&self.review.view.active))
+        let ids: Vec<_> = if self.review.view.comments_visible {
+            crate::comments_pane::aligned_threads(self)
+                .into_iter()
+                .map(|(_, entry)| entry.id())
+                .collect()
+        } else {
+            self.review
+                .comment_entries()
+                .filter(|entry| {
+                    entry.path(&self.review).is_some_and(|path| {
+                        path == self.review.view.active
+                            || (self.review.view.active.ends_with('/')
+                                && path.starts_with(&self.review.view.active))
+                    })
                 })
-            })
-            .map(CommentEntry::id)
-            .collect();
+                .map(CommentEntry::id)
+                .collect()
+        };
         if ids.is_empty() {
             self.message = "No threads in this preview · C all comments".into();
             return;
@@ -138,16 +145,38 @@ impl App {
         self.open_thread(ids[index].clone(), false);
     }
 
-    pub fn keep_thread_visible(&mut self, page: usize) {
+    pub fn keep_thread_visible(&mut self, page: usize, lines: usize) {
+        if self.focus == Focus::Comments
+            && self
+                .thread
+                .as_ref()
+                .and_then(|thread| thread.last_source_row(self))
+                .is_none()
+        {
+            let position = self.position().vertical;
+            let id = crate::comments_pane::aligned_threads(self)
+                .into_iter()
+                .min_by_key(|(row, _)| row.abs_diff(position))
+                .map(|(_, entry)| entry.id());
+            if let Some(id) = id {
+                self.open_thread(id, false);
+            }
+        }
         if let Some(row) = self
             .thread
             .as_ref()
             .and_then(|thread| thread.last_source_row(self))
         {
-            let space = page.saturating_sub(8).max(1);
+            let space = if self.thread_is_modal() {
+                page.saturating_sub(8).max(1)
+            } else {
+                page.max(1)
+            };
             let position = self.position();
             if row < position.vertical || row >= position.vertical + space {
-                position.vertical = row.saturating_sub((page / 4).min(space - 1));
+                position.vertical = row
+                    .saturating_sub((page / 4).min(space - 1))
+                    .min(lines.saturating_sub(page));
             }
         }
     }
@@ -203,7 +232,14 @@ impl App {
         }
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match (key.code, control) {
-            (KeyCode::Esc | KeyCode::Char('q' | 'o'), false) => self.thread = None,
+            (KeyCode::Esc | KeyCode::Char('q' | 'o'), false) => {
+                if self.review.view.comments_visible {
+                    thread.full = false;
+                    self.set_focus(Focus::Comments);
+                } else {
+                    self.thread = None;
+                }
+            }
             (KeyCode::Char('C'), false) => {
                 let selection = self
                     .review
@@ -219,6 +255,9 @@ impl App {
             (KeyCode::Char('f'), false) => {
                 thread.full = !thread.full;
                 thread.scroll = 0;
+                if self.review.view.comments_visible && !thread.full {
+                    self.set_focus(Focus::Comments);
+                }
             }
             (KeyCode::Char('R'), false) => self.reply_to_thread(),
             (KeyCode::Char('r'), false) => {
@@ -291,9 +330,10 @@ fn thread_area(diff: Rect, app: &App) -> Rect {
 }
 
 pub(crate) fn draw(frame: &mut Frame, app: &App, diff: Rect, footer: Rect) {
-    let Some(thread) = &app.thread else {
+    if !app.thread_is_modal() {
         return;
-    };
+    }
+    let thread = app.thread.as_ref().expect("open thread");
     let Some(entry) = thread.id.entry(&app.review) else {
         return;
     };

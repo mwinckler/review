@@ -20,6 +20,8 @@ pub struct ViewState {
     pub selected: String,
     pub active: String,
     pub diff_focused: bool,
+    pub comments_visible: bool,
+    pub comments_focused: bool,
     pub collapsed: BTreeSet<String>,
     pub positions: BTreeMap<String, Position>,
     pub filter: String,
@@ -27,12 +29,19 @@ pub struct ViewState {
     pub inline: bool,
     pub fullscreen: bool,
     pub tree_width: Option<u16>,
+    pub comments_width: Option<u16>,
 }
 
 impl ViewState {
     pub fn tree_width(&self, terminal_width: u16) -> u16 {
         self.tree_width
             .unwrap_or((terminal_width / 3).clamp(24, 42))
+            .clamp(24, terminal_width.saturating_sub(24).max(24))
+    }
+
+    pub fn comments_width(&self, terminal_width: u16) -> u16 {
+        self.comments_width
+            .unwrap_or((terminal_width / 3).clamp(24, 48))
             .clamp(24, terminal_width.saturating_sub(24).max(24))
     }
 }

@@ -28,6 +28,7 @@ pub struct Panes {
     header: Rect,
     pub tree: Rect,
     pub diff: Rect,
+    pub comments: Rect,
     footer: Rect,
 }
 
@@ -39,24 +40,46 @@ pub fn panes(area: Rect, app: &App) -> Panes {
         Constraint::Length(1),
     ])
     .areas(area);
-    let (tree, diff) =
-        if app.review.view.fullscreen || (area.width < 55 && app.focus == Focus::Diff) {
-            (Rect::default(), body)
-        } else if area.width < 55 {
-            (body, Rect::default())
+    let (tree, diff, comments) = if app.review.view.fullscreen {
+        (Rect::default(), body, Rect::default())
+    } else if area.width < 55 {
+        match app.focus {
+            Focus::Tree => (body, Rect::default(), Rect::default()),
+            Focus::Diff => (Rect::default(), body, Rect::default()),
+            Focus::Comments => (Rect::default(), Rect::default(), body),
+        }
+    } else if app.review.view.comments_visible && (area.width >= 80 || app.focus != Focus::Tree) {
+        let tree_width = if area.width >= 80 {
+            app.review.view.tree_width(area.width).min(area.width - 48)
         } else {
-            let [tree, diff] = Layout::horizontal([
-                Constraint::Length(app.review.view.tree_width(area.width)),
-                Constraint::Min(1),
-            ])
-            .areas(body);
-            (tree, diff)
+            0
         };
+        let comments_width = app
+            .review
+            .view
+            .comments_width(area.width)
+            .min(area.width - tree_width - 24);
+        let [tree, diff, comments] = Layout::horizontal([
+            Constraint::Length(tree_width),
+            Constraint::Min(0),
+            Constraint::Length(comments_width),
+        ])
+        .areas(body);
+        (tree, diff, comments)
+    } else {
+        let [tree, diff] = Layout::horizontal([
+            Constraint::Length(app.review.view.tree_width(area.width)),
+            Constraint::Min(1),
+        ])
+        .areas(body);
+        (tree, diff, Rect::default())
+    };
     Panes {
         mr_header,
         header,
         tree,
         diff,
+        comments,
         footer,
     }
 }
@@ -577,6 +600,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             );
         }
     }
+    crate::comments_pane::draw(frame, app, panes.comments);
     let footer = if let Some(flash) = &app.flash {
         if flash.query.is_empty() {
             "Flash: type a filename fragment · Esc cancel".into()
@@ -586,6 +610,12 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 display_path(&flash.query),
                 flash.matches.len()
             )
+        }
+    } else if app.focus == Focus::Comments {
+        if app.message.is_empty() {
+            "Use j/k to select a thread, Enter to read it, or t to hide this pane.".into()
+        } else {
+            display_path(&app.message)
         }
     } else if let Some(selection) = &app.line_selection {
         let target = selection.target();
@@ -617,7 +647,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             display_path(&app.review.view.filter)
         )
     } else {
-        "Space viewed · Enter line · o thread · c comment · C comments · ? help".into()
+        "Press Space to mark viewed, t for threads, c to comment, or ? for help.".into()
     };
     frame.render_widget(
         Paragraph::new(footer).style(Style::default().fg(Color::Cyan)),
@@ -635,11 +665,11 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         );
         frame.render_widget(Clear, area);
         let mut text = String::from(concat!(
-            "j/k, arrows      Move in tree / scroll diff / move highlighted line\n",
-            "Ctrl-n/p         Next/previous tree row from either pane\n",
+            "j/k, arrows      Move, scroll, or select a comment thread.\n",
+            "Ctrl-n/p         Select the next/previous tree row from any pane.\n",
             "h/l              Collapse/expand / horizontal scroll / old/new side\n",
-            "Tab, Ctrl-h/l    Focus tree/diff\n",
-            "Ctrl-Left/Right  Resize tree\n",
+            "Tab, Ctrl-h/j/k/l Move between panes.\n",
+            "Ctrl-arrows      Resize the active split.\n",
             "gg / G           First/last row or page\n",
             "Ctrl-d/u         Scroll the diff by half a page from either pane.\n",
             "Ctrl-f/b         Scroll the focused pane by a full page.\n",
@@ -654,6 +684,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "Y                Copy selected file/folder's full path\n",
             "Enter            Highlight a source line in the diff\n",
             "c / v / C        Comment / select line range / comments\n",
+            "t                Toggle the source-aligned comments pane.\n",
             "o / ]c / [c      Expand thread / next/previous thread\n",
             "P                Preview and submit a GitLab review\n",
             "/                Filter filenames / search diff\n",

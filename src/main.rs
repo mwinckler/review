@@ -494,6 +494,7 @@ fn run(
             .diff
             .height
             .max(panes.tree.height)
+            .max(panes.comments.height)
             .saturating_sub(2 + u16::from(app.revisions.is_some()))
             .max(1) as usize;
         let page = if app.focus == Focus::Tree {
@@ -565,8 +566,8 @@ fn run(
             }
         }
         redraw |= app.apply_hunk_navigation(diff_page, diff.lines.len());
-        if app.thread.is_some() {
-            app.keep_thread_visible(diff_page);
+        if app.thread_is_modal() || app.focus == Focus::Comments {
+            app.keep_thread_visible(diff_page, diff.lines.len());
         } else {
             app.keep_line_selection_visible(diff_page, diff.lines.len());
         }
@@ -605,7 +606,7 @@ fn run(
                         || app.session_dialog.is_some()
                         || app.comment_dialog.is_some()
                         || app.submission_dialog.is_some()
-                        || app.thread.is_some()
+                        || app.thread_is_modal()
                         || app.help
                         || (key.code == KeyCode::Char('c')
                             && key.modifiers.contains(KeyModifiers::CONTROL))
@@ -619,7 +620,7 @@ fn run(
                             && app.session_dialog.is_none()
                             && app.comment_dialog.is_none()
                             && app.submission_dialog.is_none()
-                            && app.thread.is_none()
+                            && !app.thread_is_modal()
                             && !app.searching
                             && !app.help
                             && !key.modifiers.contains(KeyModifiers::CONTROL)
@@ -629,7 +630,7 @@ fn run(
                             && app.session_dialog.is_none()
                             && app.comment_dialog.is_none()
                             && app.submission_dialog.is_none()
-                            && app.thread.is_none()
+                            && !app.thread_is_modal()
                             && key.code == KeyCode::Enter;
                         let input_page = if app.session_dialog.is_some()
                             || app.comment_dialog.is_some()

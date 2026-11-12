@@ -347,12 +347,13 @@ Repository content and persistent editor snapshots are preserved.
 
 | Keys | Action |
 |---|---|
-| `j` / `k`, arrows | Move in the tree, scroll the diff, or move a highlighted line |
+| `j` / `k`, arrows | Move in the tree, scroll the diff, move a highlighted line, or select a comment thread. |
 | `Ctrl-n` / `Ctrl-p` | Next/previous visible tree row, keeping pane focus and layout |
 | `h` / `l` | Collapse/expand directories, scroll horizontally, or choose old/new side |
-| `Enter` | Toggle a directory, focus a file's diff, or highlight one line in the diff |
-| `Tab`, `Ctrl-h` / `Ctrl-l` | Switch panes; focus the tree / diff |
-| `Ctrl-Left` / `Ctrl-Right` | Shrink/grow the tree by two columns |
+| `Enter` | Toggle a directory, focus a file's diff, highlight a source line, or read a comment thread. |
+| `Tab` / `BackTab` | Cycle forward/backward through visible panes. |
+| `Ctrl-h` / `Ctrl-k`, `Ctrl-l` / `Ctrl-j` | Focus the previous or next pane. |
+| `Ctrl-Left` / `Ctrl-Up`, `Ctrl-Right` / `Ctrl-Down` | Shrink or grow the active split by two columns. |
 | `gg` / `G`, `Home` / `End` | First/last row or page |
 | `Ctrl-d/u` | Scroll the diff by half a page from either pane, keeping pane focus. |
 | `Ctrl-f/b`, `PageDown/Up` | Scroll the focused pane by a full page. |
@@ -370,6 +371,7 @@ Repository content and persistent editor snapshots are preserved.
 | `]c` / `[c` | Open the next/previous thread in the current preview |
 | `v` | Start a range at the highlighted line; `j` / `k` extend, `v` returns to one line |
 | `C` | Browse comments; `o` opens a thread, `R` replies, `Enter` jumps to source |
+| `t` | Show or hide the source-aligned comments pane. |
 | `P` | Preview and submit comments as a GitLab review |
 | `/` | Filter filenames in the tree; search text in the diff |
 | `s` | Flash jump to a visible tree entry from either pane |
@@ -402,6 +404,19 @@ Viewed files and fully viewed folders appear slightly dimmed in the tree.
 Narrow terminals display the focused pane at full width.
 When the rendered diff is taller than its pane, a right-edge scrollbar shows your
 position and how much of the diff is visible.
+
+The comments pane starts hidden. Press `t` to show it to the right of the diff.
+Threads align with their source lines and follow diff scrolling and re-rendering.
+Threads that would overlap collapse into one-line summaries showing the commenter,
+timestamp, reply count, and opening words as space allows. Threads on the same
+line share a summary that shows the thread count and the selected thread's details.
+Resolved threads have a checkmark and start collapsed.
+
+Focus the comments pane with `Ctrl-l` or `Ctrl-j` from the diff. Use `j` / `k` to
+select the next or previous thread in source order; the diff follows the selection.
+Press `Enter` or `o` to read the complete thread, and `Esc` to return to the pane.
+Press `R` to reply to the selected GitLab thread. Pane visibility, focus, and width
+are saved with the review. Narrow terminals prioritize the focused pane.
 
 ### Hunk selection and LazyVim
 
@@ -541,7 +556,7 @@ command = ["xdg-terminal-exec", "--", "nvim", "+{line}", "{read_only}", "--", "{
 J = "next_file"
 K = "previous_file"
 V = "toggle_viewed"
-"Ctrl-j" = "next_unviewed"
+"Alt-j" = "next_unviewed"
 ```
 
 Renderers receive temporary files containing the reviewed snapshots. Arguments
@@ -577,7 +592,7 @@ Actions: `up`, `down`, `left`, `right`, `focus_tree`, `focus_diff`, `first`, `la
 `page_down`, `page_up`, `half_page_down`, `half_page_up`, `next_file`,
 `previous_file`, `next_unviewed`, `previous_unviewed`, `next_hunk`, `previous_hunk`,
 `open_editor`, `copy_path`, `add_comment`, `select_line`, `select_lines`,
-`manage_comments`, `submit_review`, `toggle_viewed`,
+`manage_comments`, `toggle_comments`, `submit_review`, `toggle_viewed`,
 `toggle_unviewed`, `toggle_inline`, `toggle_fullscreen`, `search`, `flash`,
 `manage_sessions`,
 `next_match`, `previous_match`, `refresh`, `clear_filters`, `help`, `quit`.

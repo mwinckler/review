@@ -2,6 +2,7 @@ pub mod app;
 mod command;
 pub mod comment_dialog;
 pub mod comments;
+mod comments_pane;
 pub mod config;
 pub mod editor;
 pub mod gitlab;
