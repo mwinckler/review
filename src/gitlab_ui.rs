@@ -12,7 +12,7 @@ use ratatui::{
 
 use crate::{
     app::{App, Focus},
-    gitlab::{MergeRequest, ReviewStatus},
+    gitlab::{OpenMergeRequest, ReviewStatus},
     gitlab_review::{
         ReviewDecision, SubmissionPreview, acknowledge_retry, pending_comments, pending_replies,
     },
@@ -419,17 +419,19 @@ pub fn pick(title: &str, labels: Vec<String>) -> Result<Pick> {
         .map(|label| PickerEntry {
             label,
             section: None,
+            dimmed: false,
         })
         .collect();
     pick_entries(title, &entries)
 }
 
-pub fn pick_merge_request(requests: &[(MergeRequest, ReviewStatus)]) -> Result<Pick> {
+pub fn pick_merge_request(requests: &[OpenMergeRequest]) -> Result<Pick> {
     let entries: Vec<_> = requests
         .iter()
-        .map(|(mr, status)| PickerEntry {
-            label: mr.label(),
-            section: Some(*status),
+        .map(|mr| PickerEntry {
+            label: mr.request.label(),
+            section: Some(mr.status),
+            dimmed: mr.approved_by_me,
         })
         .collect();
     pick_entries("Open merge requests", &entries)
@@ -438,6 +440,7 @@ pub fn pick_merge_request(requests: &[(MergeRequest, ReviewStatus)]) -> Result<P
 struct PickerEntry {
     label: String,
     section: Option<ReviewStatus>,
+    dimmed: bool,
 }
 
 enum PickerRow {
@@ -531,7 +534,11 @@ fn pick_entries(title: &str, entries: &[PickerEntry]) -> Result<Pick> {
                     PickerRow::Section(status) => {
                         ListItem::new(Line::from(section_heading(status)))
                     }
-                    PickerRow::Entry(index) => ListItem::new(display_path(&entries[index].label)),
+                    PickerRow::Entry(index) => {
+                        let entry = &entries[index];
+                        let item = ListItem::new(display_path(&entry.label));
+                        if entry.dimmed { item.dark_gray() } else { item }
+                    }
                 });
                 frame.render_stateful_widget(
                     List::new(items)

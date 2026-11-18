@@ -139,7 +139,7 @@ and **Reviewed**. A review in progress stays **Unreviewed** until someone submit
 a review. An active change request takes precedence over an approval. Submitted
 reviews without a current approval or change request appear under **Reviewed**.
 Each section shows the most recently updated MRs first, with titles, authors,
-draft status, and source/target branches.
+draft status, and source/target branches. MRs you've approved are dimmed.
 Use `j` / `k` or arrows to move, `Enter` to select, `/` to search, `r` to reload,
 and `Esc` to cancel. All result pages are included. Multiple repository remotes
 offer a selector; `--remote` chooses one directly. MR URLs select a matching

@@ -458,7 +458,7 @@ fn start_gitlab(repo: &Repository, args: &GitLabArgs) -> Result<Option<Review>> 
             );
             let requests = gitlab.open_merge_requests()?;
             match gitlab_ui::pick_merge_request(&requests)? {
-                Pick::Selected(index) => break requests[index].0.iid,
+                Pick::Selected(index) => break requests[index].request.iid,
                 Pick::Reload => continue,
                 Pick::Cancel => return Ok(None),
             }

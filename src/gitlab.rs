@@ -213,6 +213,12 @@ pub enum ReviewStatus {
     Reviewed,
 }
 
+pub struct OpenMergeRequest {
+    pub request: MergeRequest,
+    pub status: ReviewStatus,
+    pub approved_by_me: bool,
+}
+
 #[derive(Deserialize)]
 pub(crate) struct ApprovalState {
     user_has_approved: Option<bool>,
@@ -335,56 +341,65 @@ impl GitLab {
         Ok(items)
     }
 
-    pub fn open_merge_requests(&self) -> Result<Vec<(MergeRequest, ReviewStatus)>> {
-        let requests: Vec<MergeRequest> = self.list(&format!(
-            "{}/merge_requests?state=opened&scope=all&order_by=updated_at&sort=desc&per_page=100",
-            self.project.endpoint()
-        ))?;
-        let mut statuses = Vec::with_capacity(requests.len());
+    pub fn open_merge_requests(&self) -> Result<Vec<OpenMergeRequest>> {
+        let mut requests = self
+            .list::<MergeRequest>(&format!(
+                "{}/merge_requests?state=opened&scope=all&order_by=updated_at&sort=desc&per_page=100",
+                self.project.endpoint()
+            ))?
+            .into_iter();
+        let mut open = Vec::with_capacity(requests.len());
         // Bound concurrent glab processes while retaining the server's update order.
-        for batch in requests.chunks(8) {
+        while requests.len() > 0 {
             thread::scope(|scope| -> Result<()> {
-                let workers: Vec<_> = batch
-                    .iter()
+                let workers: Vec<_> = requests
+                    .by_ref()
+                    .take(8)
                     .map(|mr| {
-                        scope.spawn(|| {
-                            self.review_status(mr).with_context(|| {
-                                format!("Loading review status for MR !{}", mr.iid)
-                            })
+                        scope.spawn(move || {
+                            let iid = mr.iid;
+                            self.open_merge_request(mr)
+                                .with_context(|| format!("Loading review status for MR !{iid}"))
                         })
                     })
                     .collect();
                 for worker in workers {
-                    statuses.push(worker.join().expect("GitLab status worker")?);
+                    open.push(worker.join().expect("GitLab status worker")?);
                 }
                 Ok(())
             })?;
         }
-        Ok(requests.into_iter().zip(statuses).collect())
+        Ok(open)
     }
 
-    fn review_status(&self, mr: &MergeRequest) -> Result<ReviewStatus> {
-        let endpoint = mr.endpoint();
+    fn open_merge_request(&self, request: MergeRequest) -> Result<OpenMergeRequest> {
+        let endpoint = request.endpoint();
         let reviewers = self.reviewers(&endpoint)?;
-        if reviewers
+        let approvals = self.approval_state(&endpoint)?;
+        let approved_by_me = approvals.user_has_approved == Some(true);
+        let status = if reviewers
             .iter()
             .any(|reviewer| reviewer.state == "requested_changes")
         {
-            return Ok(ReviewStatus::ChangesRequested);
-        }
-        // `approved` can be true with no actual approvals when none are required.
-        if !self.approval_state(&endpoint)?.approved_by.is_empty() {
-            return Ok(ReviewStatus::Approved);
-        }
-        if reviewers.iter().any(|reviewer| {
+            ReviewStatus::ChangesRequested
+        } else if approved_by_me || !approvals.approved_by.is_empty() {
+            // The aggregate `approved` field can be true when no approvals are required.
+            ReviewStatus::Approved
+        } else if reviewers.iter().any(|reviewer| {
             matches!(
                 reviewer.state.as_str(),
                 "reviewed" | "unapproved" | "approved"
             )
         }) {
-            return Ok(ReviewStatus::Reviewed);
-        }
-        Ok(ReviewStatus::Unreviewed)
+            ReviewStatus::Reviewed
+        } else {
+            ReviewStatus::Unreviewed
+        };
+        Ok(OpenMergeRequest {
+            request,
+            status,
+            approved_by_me,
+        })
     }
 
     pub(crate) fn approval_state(&self, endpoint: &str) -> Result<ApprovalState> {
