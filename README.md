@@ -134,10 +134,10 @@ review -C ../project gitlab --remote upstream
 review gitlab --hostname gitlab.example.com # Override an SSH hostname alias
 ```
 
-The picker groups open MRs into **Unreviewed**, **Approved**, **Changes requested**,
-and **Reviewed**. A review in progress stays **Unreviewed** until someone submits
-a review. An active change request takes precedence over an approval. Submitted
-reviews without a current approval or change request appear under **Reviewed**.
+The picker groups open MRs into **Unreviewed**, **Approved**, and **Changes requested**.
+Only approvals and change requests count as review decisions, so comment-only
+reviews appear under **Unreviewed**. An active change request takes precedence over
+an approval.
 Each section shows the most recently updated MRs first, with titles, authors,
 draft status, and source/target branches. MRs you've approved are dimmed.
 Use `j` / `k` or arrows to move, `Enter` to select, `/` to search, `r` to reload,

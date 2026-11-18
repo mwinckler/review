@@ -453,7 +453,6 @@ fn section_heading(status: ReviewStatus) -> Span<'static> {
         ReviewStatus::Unreviewed => (" Unreviewed ", Color::Magenta),
         ReviewStatus::Approved => (" Approved ", Color::Green),
         ReviewStatus::ChangesRequested => (" Changes requested ", Color::Red),
-        ReviewStatus::Reviewed => (" Reviewed ", Color::Cyan),
     };
     Span::raw(label).black().bg(color).bold()
 }

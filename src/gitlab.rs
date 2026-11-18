@@ -210,7 +210,6 @@ pub enum ReviewStatus {
     Unreviewed,
     Approved,
     ChangesRequested,
-    Reviewed,
 }
 
 pub struct OpenMergeRequest {
@@ -385,13 +384,6 @@ impl GitLab {
         } else if approved_by_me || !approvals.approved_by.is_empty() {
             // The aggregate `approved` field can be true when no approvals are required.
             ReviewStatus::Approved
-        } else if reviewers.iter().any(|reviewer| {
-            matches!(
-                reviewer.state.as_str(),
-                "reviewed" | "unapproved" | "approved"
-            )
-        }) {
-            ReviewStatus::Reviewed
         } else {
             ReviewStatus::Unreviewed
         };
