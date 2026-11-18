@@ -22,30 +22,29 @@ pub(crate) fn apply(repo: &Repository, restore: &Restore) -> Result<()> {
     ensure_clean_index(repo, head, &paths)?;
     restore.check_missing_paths(repo)?;
 
-    // Use a private index so Git can enforce its index/worktree consistency
-    // checks, and apply binary patches and checkout filters, without staging.
+    // Start with the reviewed head in a private index so Git knows which
+    // paths to remove and can check the working tree without staging changes.
     let scratch = tempfile::tempdir()?;
     let index = scratch.path().join("index");
     run(
         temporary_index(repo, &index).args(["read-tree", head]),
         None,
     )?;
-    let patch = if let Some(partial) = restore.partial(repo)? {
+    let source = if let Some(partial) = restore.partial(repo)? {
+        // Materialize the selected lines as a source tree for Git to restore.
         set_partial_entry(repo, &index, &change.path, head.len(), partial)?;
-        let patch = diff(repo, Some(&index), &["--cached", head], &paths)?;
+        let tree = run(temporary_index(repo, &index).arg("write-tree"), None)?;
         run(
             temporary_index(repo, &index).args(["read-tree", head]),
             None,
         )?;
-        patch
+        std::str::from_utf8(&tree)?.trim().to_owned()
     } else {
-        diff(repo, None, &[head, &restore.comparison().base_id], &paths)?
+        restore.comparison().base_id.clone()
     };
-    ensure!(
-        !patch.is_empty(),
-        "The selected paths already match the restore source."
-    );
 
+    ensure_current_head(repo, head)?;
+    ensure_clean_index(repo, head, &paths)?;
     if !change.new.kind.is_empty() {
         run(
             temporary_index(repo, &index).args(["add", "--refresh", "--", &change.path]),
@@ -62,17 +61,13 @@ pub(crate) fn apply(repo: &Repository, restore: &Restore) -> Result<()> {
             "The selected file has local changes in the working tree.",
         )?;
     }
+    restore.check_missing_paths(repo)?;
 
-    ensure_current_head(repo, head)?;
-    ensure_clean_index(repo, head, &paths)?;
     run(
-        temporary_index(repo, &index).args([
-            "apply",
-            "--index",
-            "--no-ignore-whitespace",
-            "--whitespace=nowarn",
-        ]),
-        Some(&patch),
+        temporary_index(repo, &index)
+            .args(["restore", "--worktree", "--source", &source, "--"])
+            .args(paths),
+        None,
     )?;
     Ok(())
 }
@@ -121,38 +116,6 @@ fn set_partial_entry(
         Some(entry.as_bytes()),
     )?;
     Ok(())
-}
-
-fn diff(
-    repo: &Repository,
-    index: Option<&Path>,
-    revisions: &[&str],
-    paths: &[&str],
-) -> Result<Vec<u8>> {
-    let mut command = match index {
-        Some(index) => temporary_index(repo, index),
-        None => git(repo),
-    };
-    run(
-        command
-            .args([
-                "diff",
-                "--binary",
-                "--full-index",
-                "--no-renames",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--no-relative",
-                "--color=never",
-                "--unified=3",
-                "--src-prefix=a/",
-                "--dst-prefix=b/",
-            ])
-            .args(revisions)
-            .arg("--")
-            .args(paths),
-        None,
-    )
 }
 
 fn git(repo: &Repository) -> Command {

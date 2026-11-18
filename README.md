@@ -480,14 +480,15 @@ lines, and an old-side selection brings back deleted lines. When a changed
 block has the same number of lines on both sides, restore pairs them in order
 and replaces only the selected lines. Unselected edits stay in place.
 
-With Git, the reviewed head must match the checked-out `HEAD`. Restore writes
-unstaged changes to the working tree and keeps the committed diff visible. Review
-refuses to overwrite staged or unstaged changes on the selected paths. Use
-`git status` to inspect the result.
+With Git, the reviewed head must match the checked-out `HEAD`. Review uses
+`git restore` to write unstaged changes to the working tree and keeps the
+committed diff visible. Review refuses to overwrite staged or unstaged changes
+on the selected paths. Use `git status` to inspect the result.
 
 With Jujutsu, use `@` as the head, such as `review '@-..@'` to restore from the
-working copy's parent. The review reloads after the restore. If the working copy
-changed since the displayed snapshot, review the updated diff and confirm again.
+working copy's parent. Review runs `jj restore` and reloads the comparison. If
+the working copy changed since the displayed snapshot, review the updated diff
+and confirm again.
 To undo a restore, find its operation ID with `jj op log` and run
 `jj op revert <operation-id>`.
 
