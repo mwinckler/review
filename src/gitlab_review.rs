@@ -9,7 +9,7 @@ use sha1::{Digest, Sha1};
 
 use crate::{
     comments::{Comment, DiffSide},
-    gitlab::{DiffRefs, GitLab, GitLabReview, User},
+    gitlab::{DiffRefs, GitLab, User},
     gitlab_comments::{Discussion, DiscussionReply},
     state::Review,
     store::{SavedSession, SessionLock, now_millis},
@@ -141,35 +141,6 @@ pub enum SubmissionCheck {
     Published(String),
 }
 
-#[derive(Deserialize)]
-struct ApprovalState {
-    user_has_approved: Option<bool>,
-    user_can_approve: Option<bool>,
-    #[serde(default)]
-    approved_by: Vec<Approver>,
-}
-
-impl ApprovalState {
-    fn approved(&self, user_id: u64) -> bool {
-        self.user_has_approved.unwrap_or_else(|| {
-            self.approved_by
-                .iter()
-                .any(|entry| entry.user.id == user_id)
-        })
-    }
-}
-
-#[derive(Deserialize)]
-struct Approver {
-    user: User,
-}
-
-#[derive(Deserialize)]
-struct Reviewer {
-    user: User,
-    state: String,
-}
-
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 struct DraftNote {
     id: u64,
@@ -279,7 +250,7 @@ impl GitLab {
             context.publication.user_id.is_none_or(|id| id == user.id),
             "This submission belongs to another GitLab account; authenticate as that account or start a new review session"
         );
-        let endpoint = mr_endpoint(context);
+        let endpoint = context.merge_request.endpoint();
         if context.publication.pending_decision() {
             return self.check_published_feedback(saved, lock, user.id, false);
         }
@@ -492,7 +463,7 @@ impl GitLab {
             )?);
         }
         let context = saved.review.gitlab.as_ref().expect("MR session");
-        let endpoint = mr_endpoint(context);
+        let endpoint = context.merge_request.endpoint();
         let mut attempt = context
             .publication
             .attempt
@@ -728,11 +699,6 @@ impl GitLab {
         ))
     }
 
-    fn approval_state(&self, endpoint: &str) -> Result<ApprovalState> {
-        self.get(&format!("{endpoint}/approvals"))
-            .context("Checking GitLab approval status")
-    }
-
     fn publication_message(check: SubmissionCheck) -> Result<String> {
         match check {
             SubmissionCheck::Published(message) => Ok(message),
@@ -756,8 +722,8 @@ impl GitLab {
             .as_ref()
             .filter(|attempt| attempt.feedback_published)
             .context("The review's published feedback checkpoint is missing")?;
-        let endpoint = mr_endpoint(context);
         let reviewed = &context.merge_request;
+        let endpoint = reviewed.endpoint();
         let refs = reviewed.refs()?.clone();
         let latest = self
             .merge_request(reviewed.iid)
@@ -765,8 +731,8 @@ impl GitLab {
         let message = if !latest.same_version(reviewed)? {
             "Feedback published. The MR changed during submission; check the decision on GitLab."
         } else if attempt.decision == ReviewDecision::RequestChanges {
-            let reviewers: Vec<Reviewer> = self
-                .list(&format!("{endpoint}/reviewers?per_page=100"))
+            let reviewers = self
+                .reviewers(&endpoint)
                 .context("Feedback published. Ctrl-s rechecks the requested changes")?;
             if reviewers.iter().any(|reviewer| {
                 reviewer.user.id == user_id && reviewer.state == "requested_changes"
@@ -829,13 +795,6 @@ impl GitLab {
         lock.save(saved)?;
         Ok(SubmissionCheck::Published(message.into()))
     }
-}
-
-fn mr_endpoint(context: &GitLabReview) -> String {
-    format!(
-        "projects/{}/merge_requests/{}",
-        context.merge_request.target_project_id, context.merge_request.iid
-    )
 }
 
 fn reconcile(

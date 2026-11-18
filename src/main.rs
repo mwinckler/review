@@ -439,7 +439,7 @@ fn start_gitlab(repo: &Repository, args: &GitLabArgs) -> Result<Option<Review>> 
                 .iter()
                 .map(|(name, project)| format!("{name} · {}/{}", project.host, project.path))
                 .collect();
-            match gitlab_ui::pick("GitLab repository", &labels)? {
+            match gitlab_ui::pick("GitLab repository", labels)? {
                 Pick::Selected(index) => break index,
                 Pick::Reload => continue,
                 Pick::Cancel => return Ok(None),
@@ -457,9 +457,8 @@ fn start_gitlab(repo: &Repository, args: &GitLabArgs) -> Result<Option<Review>> 
                 project.host, project.path
             );
             let requests = gitlab.open_merge_requests()?;
-            let labels: Vec<_> = requests.iter().map(|mr| mr.label()).collect();
-            match gitlab_ui::pick("Open merge requests", &labels)? {
-                Pick::Selected(index) => break requests[index].iid,
+            match gitlab_ui::pick_merge_request(&requests)? {
+                Pick::Selected(index) => break requests[index].0.iid,
                 Pick::Reload => continue,
                 Pick::Cancel => return Ok(None),
             }

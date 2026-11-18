@@ -133,6 +133,13 @@ pub struct MergeRequest {
 }
 
 impl MergeRequest {
+    pub(crate) fn endpoint(&self) -> String {
+        format!(
+            "projects/{}/merge_requests/{}",
+            self.target_project_id, self.iid
+        )
+    }
+
     pub(crate) fn same_version(&self, other: &Self) -> Result<bool> {
         Ok(self.iid == other.iid
             && self.target_project_id == other.target_project_id
@@ -196,6 +203,43 @@ pub struct PreparedReview {
     pub gitlab: GitLabReview,
     pub comparison: Comparison,
     pub changes: Vec<Change>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ReviewStatus {
+    Unreviewed,
+    Approved,
+    ChangesRequested,
+    Reviewed,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ApprovalState {
+    user_has_approved: Option<bool>,
+    pub(crate) user_can_approve: Option<bool>,
+    #[serde(default)]
+    approved_by: Vec<Approver>,
+}
+
+impl ApprovalState {
+    pub(crate) fn approved(&self, user_id: u64) -> bool {
+        self.user_has_approved.unwrap_or_else(|| {
+            self.approved_by
+                .iter()
+                .any(|entry| entry.user.id == user_id)
+        })
+    }
+}
+
+#[derive(Deserialize)]
+struct Approver {
+    user: User,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct Reviewer {
+    pub(crate) user: User,
+    pub(crate) state: String,
 }
 
 #[derive(Deserialize)]
@@ -291,11 +335,66 @@ impl GitLab {
         Ok(items)
     }
 
-    pub fn open_merge_requests(&self) -> Result<Vec<MergeRequest>> {
-        self.list(&format!(
+    pub fn open_merge_requests(&self) -> Result<Vec<(MergeRequest, ReviewStatus)>> {
+        let requests: Vec<MergeRequest> = self.list(&format!(
             "{}/merge_requests?state=opened&scope=all&order_by=updated_at&sort=desc&per_page=100",
             self.project.endpoint()
-        ))
+        ))?;
+        let mut statuses = Vec::with_capacity(requests.len());
+        // Bound concurrent glab processes while retaining the server's update order.
+        for batch in requests.chunks(8) {
+            thread::scope(|scope| -> Result<()> {
+                let workers: Vec<_> = batch
+                    .iter()
+                    .map(|mr| {
+                        scope.spawn(|| {
+                            self.review_status(mr).with_context(|| {
+                                format!("Loading review status for MR !{}", mr.iid)
+                            })
+                        })
+                    })
+                    .collect();
+                for worker in workers {
+                    statuses.push(worker.join().expect("GitLab status worker")?);
+                }
+                Ok(())
+            })?;
+        }
+        Ok(requests.into_iter().zip(statuses).collect())
+    }
+
+    fn review_status(&self, mr: &MergeRequest) -> Result<ReviewStatus> {
+        let endpoint = mr.endpoint();
+        let reviewers = self.reviewers(&endpoint)?;
+        if reviewers
+            .iter()
+            .any(|reviewer| reviewer.state == "requested_changes")
+        {
+            return Ok(ReviewStatus::ChangesRequested);
+        }
+        // `approved` can be true with no actual approvals when none are required.
+        if !self.approval_state(&endpoint)?.approved_by.is_empty() {
+            return Ok(ReviewStatus::Approved);
+        }
+        if reviewers.iter().any(|reviewer| {
+            matches!(
+                reviewer.state.as_str(),
+                "reviewed" | "unapproved" | "approved"
+            )
+        }) {
+            return Ok(ReviewStatus::Reviewed);
+        }
+        Ok(ReviewStatus::Unreviewed)
+    }
+
+    pub(crate) fn approval_state(&self, endpoint: &str) -> Result<ApprovalState> {
+        self.get(&format!("{endpoint}/approvals"))
+            .context("Checking GitLab approval status")
+    }
+
+    pub(crate) fn reviewers(&self, endpoint: &str) -> Result<Vec<Reviewer>> {
+        self.list(&format!("{endpoint}/reviewers?per_page=100"))
+            .context("Checking GitLab reviewer status")
     }
 
     pub fn merge_request(&self, iid: u64) -> Result<MergeRequest> {
@@ -315,8 +414,8 @@ impl GitLab {
 
     pub(crate) fn load_discussions(&self, context: &mut GitLabReview) -> Result<()> {
         context.discussions = self.list(&format!(
-            "projects/{}/merge_requests/{}/discussions?per_page=100",
-            context.merge_request.target_project_id, context.merge_request.iid
+            "{}/discussions?per_page=100",
+            context.merge_request.endpoint()
         ))?;
         Ok(())
     }

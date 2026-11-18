@@ -5,13 +5,14 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout},
-    style::{Color, Style},
-    text::{Line, Text},
+    style::{Color, Style, Stylize},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 use crate::{
     app::{App, Focus},
+    gitlab::{MergeRequest, ReviewStatus},
     gitlab_review::{
         ReviewDecision, SubmissionPreview, acknowledge_retry, pending_comments, pending_replies,
     },
@@ -412,19 +413,82 @@ pub enum Pick {
     Cancel,
 }
 
+pub fn pick(title: &str, labels: Vec<String>) -> Result<Pick> {
+    let entries: Vec<_> = labels
+        .into_iter()
+        .map(|label| PickerEntry {
+            label,
+            section: None,
+        })
+        .collect();
+    pick_entries(title, &entries)
+}
+
+pub fn pick_merge_request(requests: &[(MergeRequest, ReviewStatus)]) -> Result<Pick> {
+    let entries: Vec<_> = requests
+        .iter()
+        .map(|(mr, status)| PickerEntry {
+            label: mr.label(),
+            section: Some(*status),
+        })
+        .collect();
+    pick_entries("Open merge requests", &entries)
+}
+
+struct PickerEntry {
+    label: String,
+    section: Option<ReviewStatus>,
+}
+
+enum PickerRow {
+    Section(ReviewStatus),
+    Entry(usize),
+}
+
+fn section_heading(status: ReviewStatus) -> Span<'static> {
+    let (label, color) = match status {
+        ReviewStatus::Unreviewed => (" Unreviewed ", Color::Magenta),
+        ReviewStatus::Approved => (" Approved ", Color::Green),
+        ReviewStatus::ChangesRequested => (" Changes requested ", Color::Red),
+        ReviewStatus::Reviewed => (" Reviewed ", Color::Cyan),
+    };
+    Span::raw(label).black().bg(color).bold()
+}
+
+fn picker_controls() -> Line<'static> {
+    let mut spans = Vec::new();
+    for (key, action) in [
+        ("j/k", " move"),
+        ("Enter", " select"),
+        ("/", " search"),
+        ("r", " reload"),
+        ("Esc", " cancel"),
+    ] {
+        if !spans.is_empty() {
+            spans.push(Span::raw(" · ").dark_gray());
+        }
+        spans.push(Span::raw(key).magenta());
+        spans.push(Span::raw(action).dark_gray());
+    }
+    Line::from(spans)
+}
+
 /// Startup pickers restore the terminal before transport commands or authentication run.
-pub fn pick(title: &str, labels: &[String]) -> Result<Pick> {
+fn pick_entries(title: &str, entries: &[PickerEntry]) -> Result<Pick> {
+    let mut order: Vec<_> = (0..entries.len()).collect();
+    order.sort_by_key(|&index| entries[index].section);
     ratatui::run(|terminal| {
         let mut query = String::new();
         let mut searching = false;
         let mut selection = 0;
         loop {
-            let rows: Vec<_> = labels
+            let filter = query.to_lowercase();
+            let matches: Vec<_> = order
                 .iter()
-                .enumerate()
-                .filter(|(_, label)| label.to_lowercase().contains(&query.to_lowercase()))
+                .copied()
+                .filter(|&index| entries[index].label.to_lowercase().contains(&filter))
                 .collect();
-            selection = selection.min(rows.len().saturating_sub(1));
+            selection = selection.min(matches.len().saturating_sub(1));
             let mut page = 1;
             terminal.draw(|frame| {
                 let [list, search, controls] = Layout::vertical([
@@ -433,41 +497,58 @@ pub fn pick(title: &str, labels: &[String]) -> Result<Pick> {
                     Constraint::Length(1),
                 ])
                 .areas(frame.area());
-                let block = Block::default().borders(Borders::ALL).title(format!(
-                    " {} · {} ",
-                    display_path(title),
-                    rows.len()
-                ));
+                // Match jjui's built-in status title, shortcuts, and picker selection.
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(Line::from(vec![
+                        Span::raw(format!(" {} ", display_path(title)))
+                            .black()
+                            .on_magenta()
+                            .bold(),
+                        Span::raw(format!(" · {} ", matches.len())).dark_gray(),
+                    ]));
                 page = block.inner(list).height.max(1) as usize;
-                let visible = tree::visible_range(rows.len(), selection, page);
-                let items: Vec<_> = rows
-                    .iter()
-                    .skip(visible.start)
-                    .take(visible.len())
-                    .map(|(_, label)| ListItem::new(display_path(label)))
-                    .collect();
-                let mut state = ListState::default()
-                    .with_selected(Some(selection.saturating_sub(visible.start)));
+                let mut rows = Vec::new();
+                let mut section = None;
+                let mut selected_row = None;
+                for (position, &index) in matches.iter().enumerate() {
+                    let entry = &entries[index];
+                    if let Some(status) = entry.section
+                        && section != Some(status)
+                    {
+                        section = Some(status);
+                        rows.push(PickerRow::Section(status));
+                    }
+                    if position == selection {
+                        selected_row = Some(rows.len());
+                    }
+                    rows.push(PickerRow::Entry(index));
+                }
+                let visible = tree::visible_range(rows.len(), selected_row.unwrap_or(0), page);
+                let mut state =
+                    ListState::default().with_selected(selected_row.map(|row| row - visible.start));
+                let items = rows[visible].iter().map(|row| match *row {
+                    PickerRow::Section(status) => {
+                        ListItem::new(Line::from(section_heading(status)))
+                    }
+                    PickerRow::Entry(index) => ListItem::new(display_path(&entries[index].label)),
+                });
                 frame.render_stateful_widget(
                     List::new(items)
                         .block(block)
-                        .highlight_style(Style::default().bg(Color::Rgb(35, 45, 60))),
+                        .highlight_style(Style::default().cyan().on_dark_gray().bold()),
                     list,
                     &mut state,
                 );
                 frame.render_widget(
-                    Paragraph::new(format!(
-                        "/{}{}",
-                        display_path(&query),
-                        if searching { "▏" } else { "" }
-                    )),
+                    Paragraph::new(Line::from(vec![
+                        Span::raw("/").magenta(),
+                        Span::raw(display_path(&query)),
+                        Span::raw(if searching { "▏" } else { "" }).cyan(),
+                    ])),
                     search,
                 );
-                frame.render_widget(
-                    Paragraph::new("j/k move · Enter select · / search · r reload · Esc cancel")
-                        .style(Style::default().fg(Color::Cyan)),
-                    controls,
-                );
+                frame.render_widget(Paragraph::new(picker_controls()), controls);
             })?;
             if !event::poll(Duration::from_millis(100))? {
                 continue;
@@ -506,23 +587,23 @@ pub fn pick(title: &str, labels: &[String]) -> Result<Pick> {
             }
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
-                    selection = (selection + 1).min(rows.len().saturating_sub(1))
+                    selection = (selection + 1).min(matches.len().saturating_sub(1))
                 }
                 KeyCode::Char('k') | KeyCode::Up => selection = selection.saturating_sub(1),
                 KeyCode::PageDown => {
                     selection = selection
                         .saturating_add(page)
-                        .min(rows.len().saturating_sub(1))
+                        .min(matches.len().saturating_sub(1))
                 }
                 KeyCode::PageUp => selection = selection.saturating_sub(page),
                 KeyCode::Home | KeyCode::Char('g') => selection = 0,
-                KeyCode::End | KeyCode::Char('G') => selection = rows.len().saturating_sub(1),
+                KeyCode::End | KeyCode::Char('G') => selection = matches.len().saturating_sub(1),
                 KeyCode::Char('/') => searching = true,
                 KeyCode::Char('r') => return Ok(Pick::Reload),
                 KeyCode::Esc | KeyCode::Char('q') => return Ok(Pick::Cancel),
                 KeyCode::Enter => {
-                    if let Some((index, _)) = rows.get(selection) {
-                        return Ok(Pick::Selected(*index));
+                    if let Some(&index) = matches.get(selection) {
+                        return Ok(Pick::Selected(index));
                     }
                 }
                 _ => {}
