@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     restore::Restore,
-    vcs::{Change, Comparison, Repository},
+    vcs::{Backend, Change, Comparison, Repository},
 };
 
 enum Request {
@@ -76,7 +76,9 @@ impl RefreshWorker {
                 let restore =
                     restore.map(|action| action.apply(&repo).map_err(|error| format!("{error:#}")));
                 let polled = (|| -> anyhow::Result<_> {
-                    let comparison = if manual || matches!(restore, Some(Ok(()))) {
+                    let comparison = if manual
+                        || (repo.backend == Backend::Jj && matches!(restore, Some(Ok(()))))
+                    {
                         Some(repo.refresh(&observed)?)
                     } else {
                         repo.refresh_if_changed(&observed)?

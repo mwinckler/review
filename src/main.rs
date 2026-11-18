@@ -364,6 +364,7 @@ fn main() -> Result<()> {
     }
     let lock = Arc::new(lock);
     let mut app = App::new(saved.review.clone());
+    app.backend = repo.backend;
     app.session_label = saved.label();
     app.message = format!("Session {} · ? help", app.session_label);
     if resuming && app.review.gitlab.is_some() {
@@ -696,7 +697,7 @@ fn run(
         if let Some(action) = RestoreState::take_confirmed(&mut app.restore) {
             match refresher
                 .as_ref()
-                .context("Restore requires a local Jujutsu review.")
+                .context("Restore requires a local review.")
                 .and_then(|refresher| refresher.restore(action))
             {
                 Ok(()) => {
@@ -973,6 +974,10 @@ fn run(
             app.message = match result {
                 Ok(()) => match refresh_error {
                     Some(error) => format!("Restored changes, but the refresh failed: {error}"),
+                    None if repo.backend == Backend::Git => {
+                        "Restored changes in the working tree. The committed diff stays visible."
+                            .into()
+                    }
                     None => "Restored changes from the review base.".into(),
                 },
                 Err(error) => format!("Restore: {error}"),

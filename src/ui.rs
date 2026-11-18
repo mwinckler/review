@@ -608,7 +608,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         app.restore,
         Some(RestoreState::Apply(_) | RestoreState::Applying)
     ) {
-        "Restoring changes with jj…".into()
+        "Restoring changes…".into()
     } else if let Some(flash) = &app.flash {
         if flash.query.is_empty() {
             "Flash: type a filename fragment · Esc cancel".into()
@@ -694,7 +694,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "]Nh / [Nh        Select hunk number N (1-based)\n",
             "e                Open selected hunk/file in editor\n",
             "Y                Copy selected file/folder's full path\n",
-            "D                Restore the selected file or lines with jj.\n",
+            "D                Restore the selected file or lines.\n",
             "Enter            Highlight a source line in the diff\n",
             "c / v / C        Comment / select line range / comments\n",
             "t                Toggle the source-aligned comments pane.\n",
@@ -756,8 +756,16 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             keys,
         );
         frame.render_widget(
-            Paragraph::new(format!("{} from the review base into @?", restore.label()))
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(format!(
+                "{} from the review base into {}?",
+                restore.label(),
+                if app.backend == crate::vcs::Backend::Git {
+                    "the working tree"
+                } else {
+                    "@"
+                }
+            ))
+            .wrap(Wrap { trim: false }),
             body,
         );
     }

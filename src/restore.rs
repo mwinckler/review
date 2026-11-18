@@ -40,10 +40,15 @@ pub struct Restore {
 }
 
 impl Restore {
-    pub(crate) fn new(review: &Review, lines: Option<LineTarget>) -> Result<Self> {
+    pub(crate) fn new(
+        review: &Review,
+        backend: Backend,
+        lines: Option<LineTarget>,
+    ) -> Result<Self> {
+        ensure!(review.gitlab.is_none(), "Restore requires a local review.");
         ensure!(
-            review.gitlab.is_none() && review.comparison.head_ref == "@",
-            "Restore requires a local Jujutsu review with @ as the head."
+            backend != Backend::Jj || review.comparison.head_ref == "@",
+            "Jujutsu restore requires a review with @ as the head."
         );
         let path = lines
             .as_ref()
@@ -61,11 +66,16 @@ impl Restore {
                 "Line restore requires a regular text file."
             );
         }
-        let whole_rename = lines.is_none() && change.status == "R";
-        for path in [Some(path), whole_rename.then_some(change.old_path.as_str())]
-            .into_iter()
-            .flatten()
-        {
+        let restore = Self {
+            comparison: Comparison {
+                base_id: review.comparison.base_id.clone(),
+                head_id: review.comparison.head_id.clone(),
+                ..Comparison::default()
+            },
+            change: change.clone(),
+            lines,
+        };
+        for path in restore.paths() {
             ensure!(
                 !path.is_empty()
                     && Path::new(path)
@@ -83,18 +93,10 @@ impl Restore {
                                     || Path::new(path).starts_with(other))
                         })
                 }),
-                "Restore paths that switch between files and directories with jj."
+                "Restore paths that switch between files and directories outside Review."
             );
         }
-        Ok(Self {
-            comparison: Comparison {
-                base_id: review.comparison.base_id.clone(),
-                head_id: review.comparison.head_id.clone(),
-                ..Comparison::default()
-            },
-            change: change.clone(),
-            lines,
-        })
+        Ok(restore)
     }
 
     pub fn label(&self) -> String {
@@ -125,30 +127,68 @@ impl Restore {
     }
 
     pub(crate) fn apply(self, repo: &Repository) -> Result<()> {
-        ensure!(repo.backend == Backend::Jj, "Restore requires Jujutsu.");
-        let Self {
-            comparison,
-            change,
-            lines,
-        } = self;
-        validate_commit_id(&comparison.head_id)?;
-        validate_commit_id(&comparison.base_id)?;
+        validate_commit_id(&self.comparison.head_id)?;
+        validate_commit_id(&self.comparison.base_id)?;
+        match repo.backend {
+            Backend::Git => crate::git_restore::apply(repo, &self),
+            Backend::Jj => self.apply_jj(repo),
+        }
+    }
+
+    pub(crate) fn comparison(&self) -> &Comparison {
+        &self.comparison
+    }
+
+    pub(crate) fn change(&self) -> &Change {
+        &self.change
+    }
+
+    pub(crate) fn paths(&self) -> impl Iterator<Item = &str> {
+        let old_path = (self.lines.is_none() && self.change.status == "R")
+            .then_some(self.change.old_path.as_str());
+        std::iter::once(self.change.path.as_str()).chain(old_path)
+    }
+
+    pub(crate) fn check_missing_paths(&self, repo: &Repository) -> Result<()> {
+        let destination_exists = !self.change.new.kind.is_empty();
+        for path in self.paths().skip(usize::from(destination_exists)) {
+            ensure_path_absent(repo, path)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn partial(&self, repo: &Repository) -> Result<Option<PartialRestore>> {
+        let Some(lines) = &self.lines else {
+            return Ok(None);
+        };
+        let change = &self.change;
+        let old = repo.content(&self.comparison, change, true)?;
+        let new = repo.content(&self.comparison, change, false)?;
+        let restored = restore_lines(change, lines, &old, &new)?;
+        let content = (!restored.is_empty() || !change.old.kind.is_empty()).then_some(restored);
+        let executable = if change.new.kind.is_empty() {
+            change.old.executable
+        } else {
+            change.new.executable
+        };
+        Ok(Some(PartialRestore {
+            content,
+            executable,
+        }))
+    }
+
+    fn apply_jj(self, repo: &Repository) -> Result<()> {
+        let comparison = &self.comparison;
+        let change = &self.change;
         ensure!(
             repo.resolve("@", true)? == comparison.head_id,
             "Working copy changed. Refresh and select the changes again."
         );
-        if change.new.kind.is_empty() {
-            ensure_path_absent(repo, &change.path)?;
-        }
-        let fileset = exact_fileset(&change.path)?;
+        self.check_missing_paths(repo)?;
         let mut command = repo.command(true);
-        let whole_rename = lines.is_none() && change.status == "R";
         let content;
-        if let Some(lines) = lines {
-            let old = repo.content(&comparison, &change, true)?;
-            let new = repo.content(&comparison, &change, false)?;
-            let restored = restore_lines(&change, &lines, &old, &new)?;
-            if !restored.is_empty() || !change.old.kind.is_empty() {
+        if let Some(partial) = self.partial(repo)? {
+            if let Some(restored) = partial.content {
                 let mut file = tempfile::NamedTempFile::new()?;
                 file.write_all(&restored)?;
                 command.env("REVIEW_RESTORE_CONTENT", file.path());
@@ -157,11 +197,6 @@ impl Restore {
                 command.env_remove("REVIEW_RESTORE_CONTENT");
                 content = None;
             }
-            let executable = if change.new.kind.is_empty() {
-                change.old.executable
-            } else {
-                change.new.executable
-            };
             // The editor writes only into jj's temporary right-hand tree. jj then
             // records the partial restore and updates the working copy itself.
             let script = r#"
@@ -182,15 +217,12 @@ fi
                 .env("REVIEW_RESTORE_PATH", &change.path)
                 .env(
                     "REVIEW_RESTORE_MODE",
-                    if executable { "a+x" } else { "a-x" },
+                    if partial.executable { "a+x" } else { "a-x" },
                 )
                 .args(["restore", "--interactive"]);
         } else {
             command.arg("restore");
             content = None;
-            if whole_rename {
-                ensure_path_absent(repo, &change.old_path)?;
-            }
         }
         // The intersection is checked by jj *after* it snapshots the working
         // copy, so a new snapshot cannot become the restore destination.
@@ -201,11 +233,12 @@ fi
             &format!("@ & {}", comparison.head_id),
             "--restore-descendants",
             "--",
-            &fileset,
         ]);
-        if whole_rename {
-            command.arg(exact_fileset(&change.old_path)?);
-        }
+        command.args(
+            self.paths()
+                .map(exact_fileset)
+                .collect::<Result<Vec<_>>>()?,
+        );
         let output = command::output(&mut command, None)?;
         drop(content);
         if !output.status.success() {
@@ -222,6 +255,11 @@ fi
         );
         Ok(())
     }
+}
+
+pub(crate) struct PartialRestore {
+    pub content: Option<Vec<u8>>,
+    pub executable: bool,
 }
 
 fn ensure_path_absent(repo: &Repository, path: &str) -> Result<()> {

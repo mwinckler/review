@@ -13,7 +13,7 @@ use crate::{
     session_dialog::{SessionAction, SessionDialog},
     state::{Position, Review},
     tree::{self, Row},
-    vcs::{Change, Comparison, Revision},
+    vcs::{Backend, Change, Comparison, Revision},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{layout::Rect, text::Text};
@@ -82,6 +82,7 @@ impl Flash {
 
 pub struct App {
     pub review: Review,
+    pub backend: Backend,
     pub session_label: String,
     pub focus: Focus,
     pub active: Option<usize>,
@@ -131,6 +132,7 @@ impl App {
         };
         let mut app = Self {
             review,
+            backend: Backend::Git,
             session_label: String::new(),
             focus,
             active: None,
@@ -938,7 +940,7 @@ impl App {
             self.message = "Wait for the diff to finish rendering.".into();
             return;
         }
-        match Restore::new(&self.review, lines) {
+        match Restore::new(&self.review, self.backend, lines) {
             Ok(restore) => {
                 self.restore = Some(RestoreState::Confirm(restore));
             }

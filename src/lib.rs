@@ -5,6 +5,7 @@ pub mod comments;
 mod comments_pane;
 pub mod config;
 pub mod editor;
+mod git_restore;
 pub mod gitlab;
 pub mod gitlab_comments;
 pub mod gitlab_review;

@@ -365,7 +365,7 @@ Repository content and persistent editor snapshots are preserved.
 | `]Nh` / `[Nh` | Select hunk number `N` (1-based) |
 | `e` | Open the selected file or hunk in the editor, or edit a local comment in the comments pane. |
 | `Y` | Copy the selected file or directory's absolute path to the clipboard |
-| `D` | Restore the selected file or highlighted lines with Jujutsu. |
+| `D` | Restore the selected file or highlighted lines from the review base. |
 | `c` | Compose a comment on the selected diff lines in the comments pane. |
 | `o` | Read or collapse a thread in the comments pane. |
 | `]c` / `[c` | Open the next/previous thread in the current preview |
@@ -455,10 +455,8 @@ locations. For wrapper scripts, set `[renderer] hunk_format = "difftastic"` or
 
 ### Restore files or lines
 
-In a local Jujutsu review with `@` as the head, select a changed file and press
-`D` to restore it from the review base. For example, `review '@-..@'` compares
-against the working copy's parent, while `review 'master..@'` restores from
-`master`. Press `y` to confirm, or `n` / `Esc` to cancel.
+In a local review, select a changed file and press `D` to restore it from the
+review base. Press `y` to confirm, or `n` / `Esc` to cancel.
 
 To restore part of a text file, focus the diff and press `Enter` to highlight a
 line. Use `v` and `j` / `k` to extend a range, and `h` / `l` to choose the old or
@@ -467,9 +465,16 @@ lines, and an old-side selection brings back deleted lines. When a changed
 block has the same number of lines on both sides, restore pairs them in order
 and replaces only the selected lines. Unselected edits stay in place.
 
-The review reloads after the restore. If the working copy changed since the
-displayed snapshot, review the updated diff and confirm again. To undo a restore,
-find its operation ID with `jj op log` and run `jj op revert <operation-id>`.
+With Git, the reviewed head must match the checked-out `HEAD`. Restore writes
+unstaged changes to the working tree and keeps the committed diff visible. Review
+refuses to overwrite staged or unstaged changes on the selected paths. Use
+`git status` to inspect the result.
+
+With Jujutsu, use `@` as the head, such as `review '@-..@'` to restore from the
+working copy's parent. The review reloads after the restore. If the working copy
+changed since the displayed snapshot, review the updated diff and confirm again.
+To undo a restore, find its operation ID with `jj op log` and run
+`jj op revert <operation-id>`.
 
 ### Flash navigation
 
