@@ -365,6 +365,7 @@ fn main() -> Result<()> {
     let lock = Arc::new(lock);
     let mut app = App::new(saved.review.clone());
     app.backend = repo.backend;
+    app.default_diff_context = config.renderer.default_context();
     app.session_label = saved.label();
     app.message = format!("Session {} · ? help", app.session_label);
     if resuming && app.review.gitlab.is_some() {
@@ -514,26 +515,29 @@ fn run(
             diff_page
         };
         if !app.review.view.active.is_empty() {
+            let options = RenderOptions {
+                width,
+                inline: app.review.view.inline,
+                context: app.review.view.diff_context,
+            };
             let key = (
                 app.review.view.active.clone(),
-                width,
-                app.review.view.inline,
+                options,
                 app.revision_range(),
             );
             if requested.as_ref() != Some(&key) {
                 let same_preview = requested.as_ref().is_some_and(|previous| {
-                    previous.0 == key.0 && previous.2 == key.2 && previous.3 == key.3
+                    previous.0 == key.0
+                        && previous.1.inline == options.inline
+                        && previous.2 == key.2
                 });
                 request_id = worker.request_revisions(
                     repo,
                     &app.review.comparison,
                     &app.review.view.active,
                     app.preview_changes().cloned().collect(),
-                    RenderOptions {
-                        width,
-                        inline: app.review.view.inline,
-                    },
-                    key.3.clone(),
+                    options,
+                    key.2.clone(),
                 );
                 requested = Some(key);
                 app.rendering = true;
@@ -845,8 +849,9 @@ fn run(
             && !app.rendering
             && requested.as_ref().is_some_and(|key| {
                 key.0 == app.review.view.active
-                    && key.2 == app.review.view.inline
-                    && key.3 == app.revision_range()
+                    && key.1.inline == app.review.view.inline
+                    && key.1.context == app.review.view.diff_context
+                    && key.2 == app.revision_range()
             })
         {
             app.editor_requested = false;

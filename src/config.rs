@@ -160,6 +160,8 @@ fn action_keys(action: &str) -> Option<&'static [&'static str]> {
         "toggle_viewed" => &["Space"],
         "toggle_unviewed" => &["u"],
         "toggle_inline" => &["i"],
+        "increase_diff_context" => &["+"],
+        "decrease_diff_context" => &["-"],
         "toggle_fullscreen" => &["z"],
         "search" => &["/"],
         "flash" => &["s"],

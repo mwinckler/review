@@ -96,6 +96,7 @@ pub struct App {
     pub diff_search: String,
     pub dirty: bool,
     pub bindings_help: String,
+    pub default_diff_context: Option<u32>,
     pub flash: Option<Flash>,
     pub hunks: Vec<Hunk>,
     pub hunk_selection: Option<HunkLocation>,
@@ -146,6 +147,7 @@ impl App {
             diff_search: String::new(),
             dirty: false,
             bindings_help: String::new(),
+            default_diff_context: None,
             flash: None,
             hunks: Vec::new(),
             hunk_selection: None,
@@ -876,6 +878,23 @@ impl App {
             }
             KeyCode::Char('i') => {
                 self.review.view.inline = !self.review.view.inline;
+            }
+            KeyCode::Char('+' | '-') if !key.modifiers.contains(KeyModifiers::ALT) => {
+                if let Some(default) = self.default_diff_context {
+                    let current = self.review.view.diff_context.unwrap_or(default);
+                    let lines = if key.code == KeyCode::Char('+') {
+                        current.saturating_add(1)
+                    } else {
+                        current.saturating_sub(1)
+                    };
+                    if lines != current {
+                        self.review.view.diff_context = Some(lines);
+                    }
+                    self.message = format!("Diff context: {lines}");
+                } else {
+                    self.message =
+                        "Set {context} in renderer.command to adjust diff context.".into();
+                }
             }
             KeyCode::Char('z') => {
                 self.review.view.fullscreen = !self.review.view.fullscreen;

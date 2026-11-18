@@ -12,6 +12,7 @@ use tempfile::TempDir;
 const OPTIONS: RenderOptions = RenderOptions {
     width: 80,
     inline: false,
+    context: None,
 };
 
 fn fixture() -> TempDir {

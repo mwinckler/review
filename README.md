@@ -394,6 +394,7 @@ Repository content and persistent editor snapshots are preserved.
 | `n` / `N` | Next/previous matching file or diff search result |
 | `u` | Toggle the unviewed-only filter |
 | `i` | Toggle inline and side-by-side rendering |
+| `+` / `-` | Increase or decrease diff context by one line. |
 | `z` | Toggle a full-width diff |
 | `Esc` | Clear file and revision filters, or cancel a search or Flash prompt. |
 | `r` | Refresh the comparison |
@@ -606,10 +607,17 @@ V = "toggle_viewed"
 
 Renderers receive temporary files containing the reviewed snapshots. Arguments
 are passed directly to the executable; use a wrapper script for pipelines.
-Supported placeholders are `{old}`, `{new}`, `{path}`, `{width}`, and `{display}`
-(`inline` or `side-by-side`). Filenames/extensions are preserved for language
-detection. ANSI colors are rendered inside the TUI. Exit codes 0 and 1 support
-conventional diff tools.
+Supported placeholders are `{old}`, `{new}`, `{path}`, `{width}`, `{context}`,
+and `{display}` (`inline` or `side-by-side`). Filenames/extensions are preserved
+for language detection. ANSI colors are rendered inside the TUI. Exit codes 0
+and 1 support conventional diff tools.
+
+Press `+` or `-` to change the number of unchanged lines around each change.
+The setting is saved with the review and applies to every file and folder
+preview. Difftastic starts from its configured `--context` or `DFT_CONTEXT`
+value, and unified `diff` starts from `-u` (3 lines) or `-U<N>`. To enable
+the shortcuts for a custom renderer, pass `{context}` as part of its context
+argument. The placeholder starts at 3 lines.
 
 Editor arguments are also passed directly, with `{file}`, `{line}`, `{column}`,
 and `{repo}` placeholders. `{read_only}` expands to `-R` for snapshots; a
@@ -638,7 +646,8 @@ Actions: `up`, `down`, `left`, `right`, `focus_tree`, `focus_diff`, `first`, `la
 `previous_file`, `next_unviewed`, `previous_unviewed`, `next_hunk`, `previous_hunk`,
 `open_editor`, `copy_path`, `restore`, `add_comment`, `select_line`, `select_lines`,
 `manage_comments`, `toggle_comments`, `submit_review`, `toggle_viewed`,
-`toggle_unviewed`, `toggle_inline`, `toggle_fullscreen`, `search`, `flash`,
+`toggle_unviewed`, `toggle_inline`, `increase_diff_context`,
+`decrease_diff_context`, `toggle_fullscreen`, `search`, `flash`,
 `manage_sessions`,
 `next_match`, `previous_match`, `refresh`, `clear_filters`, `help`, `quit`.
 

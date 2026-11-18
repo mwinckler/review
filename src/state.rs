@@ -27,6 +27,8 @@ pub struct ViewState {
     pub filter: String,
     pub unviewed_only: bool,
     pub inline: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff_context: Option<u32>,
     pub fullscreen: bool,
     pub tree_width: Option<u16>,
     pub comments_width: Option<u16>,

@@ -31,6 +31,7 @@ use crate::{
 
 const MAX_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CACHE_BYTES: usize = 8 * 1024 * 1024;
+const DEFAULT_CONTEXT: u32 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -66,10 +67,98 @@ impl Default for RendererConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+struct ContextFlag {
+    prefix: &'static str,
+    lines: u32,
+    replaced: Vec<usize>,
+}
+
+impl RendererConfig {
+    fn context_placeholder(&self) -> bool {
+        self.command
+            .iter()
+            .skip(1)
+            .any(|arg| arg.contains("{context}"))
+    }
+
+    pub fn default_context(&self) -> Option<u32> {
+        if self.context_placeholder() {
+            Some(DEFAULT_CONTEXT)
+        } else {
+            self.context_flag().map(|flag| flag.lines)
+        }
+    }
+
+    fn context_flag(&self) -> Option<ContextFlag> {
+        if self.context_placeholder() {
+            return None;
+        }
+        let program = Path::new(self.command.first()?).file_name()?.to_str()?;
+        let difftastic = program == "difft";
+        let (short, long, prefix) = match program {
+            "difft" => ("-c", "--context", "--context="),
+            "diff" | "gdiff" => ("-U", "--unified", "-U"),
+            _ => {
+                return None;
+            }
+        };
+        let mut lines = None;
+        let mut replaced = Vec::new();
+        let mut args = self.command.iter().enumerate().skip(1).peekable();
+        while let Some((index, arg)) = args.next() {
+            if arg == "--" {
+                break;
+            }
+            let count = if arg == short || (difftastic && arg == long) {
+                let Some(count) = args.peek().and_then(|(_, value)| value.parse().ok()) else {
+                    continue;
+                };
+                args.next();
+                replaced.push(index + 1);
+                Some(count)
+            } else if !difftastic && (arg == "-u" || arg == long) {
+                Some(DEFAULT_CONTEXT)
+            } else if let Some(value) = arg.strip_prefix(long).and_then(|arg| arg.strip_prefix('='))
+            {
+                value.parse().ok()
+            } else {
+                arg.strip_prefix(short).and_then(|value| {
+                    let value = if difftastic {
+                        value.strip_prefix('=').unwrap_or(value)
+                    } else {
+                        value
+                    };
+                    value.parse().ok()
+                })
+            };
+            if let Some(count) = count {
+                // GNU diff uses the largest context when several options specify it.
+                lines = Some(lines.map_or(count, |previous: u32| previous.max(count)));
+                replaced.push(index);
+            }
+        }
+        Some(ContextFlag {
+            prefix,
+            lines: match lines {
+                Some(lines) => lines,
+                None if difftastic => std::env::var("DFT_CONTEXT")
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(DEFAULT_CONTEXT),
+                None => {
+                    return None;
+                }
+            },
+            replaced,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct RenderOptions {
     pub width: u16,
     pub inline: bool,
+    pub context: Option<u32>,
 }
 
 pub fn render_pair(
@@ -108,6 +197,7 @@ pub fn render_pair(
         "side-by-side"
     };
     let width = options.width.max(1).to_string();
+    let context = options.context.unwrap_or(DEFAULT_CONTEXT).to_string();
     let old_path = old_path.to_string_lossy();
     let new_path = new_path.to_string_lossy();
     let replacements = [
@@ -116,15 +206,27 @@ pub fn render_pair(
         ("{width}", &width),
         ("{display}", display),
         ("{path}", &change.path),
+        ("{context}", &context),
     ];
-    let arguments: Vec<String> = config.command[1..]
+    let context_flag = options.context.and_then(|_| config.context_flag());
+    let context_arg = context_flag
+        .as_ref()
+        .map(|flag| format!("{}{context}", flag.prefix));
+    let arguments = config
+        .command
         .iter()
-        .map(|argument| command::expand(argument, &replacements))
-        .collect();
+        .enumerate()
+        .skip(1)
+        .filter(|(index, _)| {
+            context_flag
+                .as_ref()
+                .is_none_or(|flag| !flag.replaced.contains(index))
+        })
+        .map(|(_, argument)| command::expand(argument, &replacements));
     let mut stdout = tempfile::tempfile()?;
     let mut stderr = tempfile::tempfile()?;
     let mut child = Command::new(&config.command[0])
-        .args(arguments)
+        .args(context_arg.into_iter().chain(arguments))
         .stdin(Stdio::null())
         .stdout(stdout.try_clone()?)
         .stderr(stderr.try_clone()?)
@@ -222,6 +324,7 @@ pub(crate) fn changed_line_ranges(
         RenderOptions {
             width: 80,
             inline: true,
+            context: None,
         },
         &AtomicU64::new(1),
         1,
@@ -405,14 +508,8 @@ impl RenderWorker {
                     continue;
                 }
                 let key = blake3::hash(
-                    &serde_json::to_vec(&(
-                        &job.path,
-                        &job.changes,
-                        &job.revisions,
-                        job.options.width,
-                        job.options.inline,
-                    ))
-                    .expect("render key is serializable"),
+                    &serde_json::to_vec(&(&job.path, &job.changes, &job.revisions, job.options))
+                        .expect("render key is serializable"),
                 )
                 .to_hex()
                 .to_string();

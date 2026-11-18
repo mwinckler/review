@@ -65,7 +65,11 @@ fn difftastic_maps_colored_inline_split_and_wrapped_hunks_without_changing_the_o
                 &change(),
                 old.as_bytes(),
                 new.as_bytes(),
-                RenderOptions { width, inline },
+                RenderOptions {
+                    width,
+                    inline,
+                    context: None,
+                },
                 &AtomicU64::new(1),
                 1,
             )
@@ -107,6 +111,7 @@ fn single_sided_difftastic_changes_have_safe_locations() {
             RenderOptions {
                 width: 80,
                 inline: false,
+                context: None,
             },
             &AtomicU64::new(1),
             1,
@@ -133,7 +138,11 @@ fn numeric_source_lines_are_not_mistaken_for_difftastic_line_number_columns() {
             &file,
             old.as_bytes(),
             new.as_bytes(),
-            RenderOptions { width: 80, inline },
+            RenderOptions {
+                width: 80,
+                inline,
+                context: None,
+            },
             &AtomicU64::new(1),
             1,
         )
@@ -201,7 +210,11 @@ fn difftastic_source_lines_have_exact_sides_for_split_inline_added_and_deleted_f
                     &file,
                     old.as_bytes(),
                     new.as_bytes(),
-                    RenderOptions { width, inline },
+                    RenderOptions {
+                        width,
+                        inline,
+                        context: None,
+                    },
                     &AtomicU64::new(1),
                     1,
                 )
@@ -266,6 +279,7 @@ fn directory_results_and_cached_results_keep_hunk_paths_and_row_offsets() {
             RenderOptions {
                 width: 90,
                 inline: false,
+                context: None,
             },
         );
         let result = worker.results.recv_timeout(Duration::from_secs(5)).unwrap();

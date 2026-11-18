@@ -1755,6 +1755,7 @@ fn difft_output_is_embedded_with_ansi_colors() {
         RenderOptions {
             width: 80,
             inline: false,
+            context: None,
         },
         &AtomicU64::new(1),
         1,
@@ -1788,6 +1789,7 @@ fn external_renderer_supports_placeholders_exit_one_timeout_and_cancellation() {
         RenderOptions {
             width: 80,
             inline: true,
+            context: None,
         },
         &AtomicU64::new(1),
         1,
@@ -1807,7 +1809,8 @@ fn external_renderer_supports_placeholders_exit_one_timeout_and_cancellation() {
             b"",
             RenderOptions {
                 width: 80,
-                inline: false
+                inline: false,
+                context: None,
             },
             &AtomicU64::new(1),
             1
@@ -1824,7 +1827,8 @@ fn external_renderer_supports_placeholders_exit_one_timeout_and_cancellation() {
             b"",
             RenderOptions {
                 width: 80,
-                inline: false
+                inline: false,
+                context: None,
             },
             &AtomicU64::new(2),
             1
@@ -1871,6 +1875,7 @@ fn placeholders_in_filenames_are_treated_literally() {
         RenderOptions {
             width: 80,
             inline: false,
+            context: None,
         },
         &AtomicU64::new(1),
         1,

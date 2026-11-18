@@ -706,6 +706,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "n / N            Next/previous search match\n",
             "u                Toggle unviewed-only files\n",
             "i / z            Toggle inline / full-width diff\n",
+            "+ / -            Increase or decrease diff context.\n",
             "r                Refresh revisions, keep matching progress\n",
             "Esc              Clear filters\n",
             "q / Ctrl-c       Save and quit\n",
