@@ -620,7 +620,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             )
         }
     } else if app.focus == Focus::Comments && app.submission_dialog.is_some() {
-        "Use Ctrl-s to preview the review or Esc to close it.".into()
+        "Use Ctrl-o to choose a decision, Ctrl-s to preview, or Esc to close.".into()
     } else if app.comment_editor_active() {
         "Use Ctrl-h/j/k/l to change panes, Ctrl-s to save, or Ctrl-q to discard.".into()
     } else if app.focus == Focus::Comments {

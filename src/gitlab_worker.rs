@@ -8,7 +8,7 @@ use anyhow::{Context, Result, ensure};
 
 use crate::{
     gitlab::GitLab,
-    gitlab_review::SubmissionPreview,
+    gitlab_review::{ReviewDecision, SubmissionCheck, SubmissionPreview},
     store::{SavedSession, SessionLock},
     vcs::Repository,
 };
@@ -16,7 +16,10 @@ use crate::{
 pub enum GitLabJob {
     Refresh,
     Discussions,
-    Preview(String),
+    Preview {
+        summary: String,
+        decision: ReviewDecision,
+    },
     Publish(Box<SubmissionPreview>),
 }
 
@@ -72,7 +75,12 @@ impl GitLabWorker {
                         lock.save(&mut saved)?;
                         Ok(GitLabOutcome::Refreshed(invalidated))
                     }
-                    GitLabJob::Preview(summary) => client.preview_submission(&mut saved, &lock, &summary).map(GitLabOutcome::Preview),
+                    GitLabJob::Preview { summary, decision } => {
+                        Ok(match client.preview_submission(&mut saved, &lock, &summary, decision)? {
+                            SubmissionCheck::Ready(preview) => GitLabOutcome::Preview(preview),
+                            SubmissionCheck::Published(message) => GitLabOutcome::Published(message),
+                        })
+                    }
                     GitLabJob::Publish(preview) => client.submit_review(&mut saved, &lock, &preview).map(GitLabOutcome::Published),
                 }
             })).map_err(|_| "GitLab worker failed; recheck the saved submission before retrying".to_owned()).and_then(|result| result.map_err(|error| format!("{error:#}")));

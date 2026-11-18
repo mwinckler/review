@@ -685,6 +685,11 @@ fn run(
                         draft.insert(&text);
                         redraw = true;
                     } else if app.focus == Focus::Comments
+                        && !app
+                            .review
+                            .gitlab
+                            .as_ref()
+                            .is_some_and(|gitlab| gitlab.publication.pending_decision())
                         && let Some(dialog) = &mut app.submission_dialog
                     {
                         dialog.insert(&text);

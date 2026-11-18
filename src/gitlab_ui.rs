@@ -12,7 +12,9 @@ use ratatui::{
 
 use crate::{
     app::{App, Focus},
-    gitlab_review::{SubmissionPreview, acknowledge_retry, pending_comments, pending_replies},
+    gitlab_review::{
+        ReviewDecision, SubmissionPreview, acknowledge_retry, pending_comments, pending_replies,
+    },
     gitlab_worker::GitLabJob,
     input, markdown,
     state::Review,
@@ -21,6 +23,7 @@ use crate::{
 };
 
 pub struct SubmissionDialog {
+    pub decision: ReviewDecision,
     pub summary: String,
     pub cursor: usize,
     pub selection: usize,
@@ -33,13 +36,15 @@ pub struct SubmissionDialog {
 
 impl SubmissionDialog {
     pub fn new(review: &Review) -> Self {
-        let summary = review
+        let attempt = review
             .gitlab
             .as_ref()
-            .and_then(|gitlab| gitlab.publication.attempt.as_ref())
+            .and_then(|gitlab| gitlab.publication.attempt.as_ref());
+        let summary = attempt
             .map(|attempt| attempt.summary.clone())
             .unwrap_or_default();
         Self {
+            decision: attempt.map_or(ReviewDecision::default(), |attempt| attempt.decision),
             cursor: summary.len(),
             summary,
             selection: 0,
@@ -79,23 +84,37 @@ impl App {
         let Some(mut dialog) = self.submission_dialog.take() else {
             return;
         };
+        let pending = self
+            .review
+            .gitlab
+            .as_ref()
+            .is_some_and(|gitlab| gitlab.publication.pending_decision());
         if dialog.reset_confirmation {
             match key.code {
-                KeyCode::Char('y') => {
+                KeyCode::Char('y') if key.modifiers == KeyModifiers::NONE => {
                     acknowledge_retry(&mut self.review);
                     self.dirty = true;
                     self.comments_changed = true;
                     dialog.reset_confirmation = false;
-                    dialog.message =
-                        "Retry acknowledged. Ctrl-s rechecks the server before another write."
-                            .into();
+                    if pending {
+                        dialog.decision = ReviewDecision::Comment;
+                        dialog.summary.clear();
+                        dialog.cursor = 0;
+                        dialog.message =
+                            "Pending decision cleared. Published feedback remains on GitLab."
+                                .into();
+                    } else {
+                        dialog.message =
+                            "Retry acknowledged. Ctrl-s rechecks the server before another write."
+                                .into();
+                    }
                 }
                 KeyCode::Char('n') | KeyCode::Esc => dialog.reset_confirmation = false,
                 _ => {}
             }
         } else if let Some(preview) = &dialog.preview {
             match key.code {
-                KeyCode::Char('y') => {
+                KeyCode::Char('y') if key.modifiers == KeyModifiers::NONE => {
                     self.submission_action = Some(GitLabJob::Publish(Box::new(preview.clone())))
                 }
                 KeyCode::Char('n') | KeyCode::Esc => dialog.preview = None,
@@ -104,15 +123,24 @@ impl App {
         } else if key.code == KeyCode::Esc {
             return;
         } else if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.submission_action = Some(GitLabJob::Preview(dialog.summary.clone()));
+            self.submission_action = Some(GitLabJob::Preview {
+                summary: dialog.summary.clone(),
+                decision: dialog.decision,
+            });
         } else if key.code == KeyCode::Char('X')
-            && self
-                .review
-                .gitlab
-                .as_ref()
-                .is_some_and(|gitlab| gitlab.publication.uncertain())
+            && (pending
+                || self
+                    .review
+                    .gitlab
+                    .as_ref()
+                    .is_some_and(|gitlab| gitlab.publication.uncertain()))
         {
             dialog.reset_confirmation = true;
+        } else if pending {
+            // The receipt fixes the decision once feedback has been published.
+        } else if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            dialog.decision = dialog.decision.next();
+            dialog.message.clear();
         } else if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
             dialog.summary_focused = !dialog.summary_focused;
         } else if dialog.summary_focused {
@@ -159,6 +187,15 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
         }));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    let pending = app
+        .review
+        .gitlab
+        .as_ref()
+        .is_some_and(|gitlab| gitlab.publication.pending_decision());
+    let decision = dialog
+        .preview
+        .as_ref()
+        .map_or(dialog.decision, |preview| preview.decision);
     let comments: Vec<_> = pending_comments(&app.review)
         .map(|comment| {
             (
@@ -205,15 +242,31 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
             "Waiting for GitLab…".to_owned(),
         )
     } else if dialog.reset_confirmation {
-        ("An earlier write may already be visible. Confirm only after checking the MR on GitLab; retrying can duplicate feedback.".to_owned(), "y acknowledge retry · n / Esc cancel".to_owned())
+        if pending {
+            ("Clear the pending decision from this session? Check GitLab to see whether it already took effect.".into(), "y clear pending decision · n / Esc cancel".into())
+        } else {
+            ("An earlier write may already be visible. Confirm only after checking the MR on GitLab; retrying can duplicate feedback.".into(), "y acknowledge retry · n / Esc cancel".into())
+        }
     } else if let Some(preview) = &dialog.preview {
+        if preview.approval_only {
+            (
+                "Feedback is already published. Approve the reviewed MR version?".into(),
+                "y approve · n / Esc cancel".into(),
+            )
+        } else {
+            (
+                format!(
+                    "Publish {} comments/replies and a summary? Includes {} existing drafts from outside this session. ALL your pending MR drafts will be published.",
+                    preview.comment_ids.len(),
+                    preview.external_drafts
+                ),
+                "y submit review · n / Esc edit".to_owned(),
+            )
+        }
+    } else if pending {
         (
-            format!(
-                "Publish {} comments/replies and a summary? Includes {} existing drafts from outside this session. ALL your pending MR drafts will be published.",
-                preview.comment_ids.len(),
-                preview.external_drafts
-            ),
-            "y publish all pending drafts · n / Esc edit".to_owned(),
+            dialog.message.clone(),
+            "Ctrl-s recheck decision · X clear pending decision · Esc close".into(),
         )
     } else {
         let retry = if app
@@ -228,13 +281,27 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
         };
         (
             dialog.message.clone(),
-            format!("Ctrl-s preview · Tab summary/comments · PgUp/PgDn read{retry} · Esc close"),
+            format!(
+                "Ctrl-s preview · Ctrl-o decision · Tab summary/comments · PgUp/PgDn read{retry} · Esc close"
+            ),
         )
     };
     let prompt = Paragraph::new(display_path(&prompt)).wrap(Wrap { trim: false });
     let keys = Paragraph::new(keys).wrap(Wrap { trim: false });
-    let [identity, entries, detail, summary, message, controls] = Layout::vertical([
+    let decision_label = Paragraph::new(format!("Decision: {}", decision.label()))
+        .wrap(Wrap { trim: true })
+        .style(Style::default().fg(Color::Cyan));
+    let [
+        identity,
+        outcome,
+        entries,
+        detail,
+        summary,
+        message,
+        controls,
+    ] = Layout::vertical([
         Constraint::Length(1),
+        Constraint::Length(decision_label.line_count(inner.width) as u16),
         Constraint::Length(comments.len().clamp(1, 3) as u16),
         Constraint::Min(0),
         Constraint::Length(5),
@@ -248,6 +315,7 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
             identity,
         );
     }
+    frame.render_widget(decision_label, outcome);
     let selection = dialog.selection.min(comments.len().saturating_sub(1));
     let visible = tree::visible_range(comments.len(), selection, entries.height as usize);
     let items: Vec<_> = comments
@@ -282,7 +350,7 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
         frame.render_widget(paragraph.scroll((scroll as u16, 0)).block(block), detail);
     } else {
         frame.render_widget(
-            Paragraph::new("Write a summary to submit a review."),
+            Paragraph::new("Add a summary or choose a review decision."),
             detail,
         );
     }
@@ -295,6 +363,7 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
         && dialog.preview.is_none()
         && dialog.summary_focused
         && !dialog.reset_confirmation
+        && !pending
     {
         text.insert(dialog.cursor, '▏');
     }

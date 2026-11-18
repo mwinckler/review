@@ -30,6 +30,49 @@ impl Publication {
                 .as_ref()
                 .is_some_and(|attempt| attempt.publishing || attempt.summary_uncertain)
     }
+
+    pub fn pending_decision(&self) -> bool {
+        self.attempt
+            .as_ref()
+            .is_some_and(|attempt| attempt.feedback_published)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewDecision {
+    #[default]
+    Comment,
+    Approve,
+    RequestChanges,
+}
+
+impl ReviewDecision {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Comment => "Comment",
+            Self::Approve => "Approve",
+            Self::RequestChanges => "Request changes",
+        }
+    }
+
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::Comment => Self::Approve,
+            Self::Approve => Self::RequestChanges,
+            Self::RequestChanges => Self::Comment,
+        }
+    }
+
+    fn publish_body(self) -> Value {
+        match self {
+            Self::Comment => json!({"reviewer_state": "reviewed"}),
+            // Approval is a separate, SHA-guarded write. Keep the existing review state
+            // until that write succeeds.
+            Self::Approve => json!({}),
+            Self::RequestChanges => json!({"reviewer_state": "requested_changes"}),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -55,6 +98,10 @@ pub struct ReviewAttempt {
     pub summary_draft_id: Option<u64>,
     #[serde(default)]
     pub summary_uncertain: bool,
+    #[serde(default)]
+    pub decision: ReviewDecision,
+    #[serde(default)]
+    pub feedback_published: bool,
 }
 
 impl ReviewAttempt {
@@ -81,10 +128,46 @@ pub struct SubmissionPreview {
     pub summary: String,
     pub comment_ids: Vec<String>,
     pub external_drafts: usize,
+    pub decision: ReviewDecision,
+    pub approval_only: bool,
     user_id: u64,
     refs: DiffRefs,
     notes: Vec<PreparedNote>,
     foreign: Vec<DraftNote>,
+}
+
+pub enum SubmissionCheck {
+    Ready(SubmissionPreview),
+    Published(String),
+}
+
+#[derive(Deserialize)]
+struct ApprovalState {
+    user_has_approved: Option<bool>,
+    user_can_approve: Option<bool>,
+    #[serde(default)]
+    approved_by: Vec<Approver>,
+}
+
+impl ApprovalState {
+    fn approved(&self, user_id: u64) -> bool {
+        self.user_has_approved.unwrap_or_else(|| {
+            self.approved_by
+                .iter()
+                .any(|entry| entry.user.id == user_id)
+        })
+    }
+}
+
+#[derive(Deserialize)]
+struct Approver {
+    user: User,
+}
+
+#[derive(Deserialize)]
+struct Reviewer {
+    user: User,
+    state: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -158,6 +241,10 @@ pub fn pending_replies(review: &Review) -> impl Iterator<Item = &DiscussionReply
 /// Acknowledgment is explicit: an uncertain write may already be visible on GitLab.
 pub fn acknowledge_retry(review: &mut Review) {
     if let Some(gitlab) = &mut review.gitlab {
+        if gitlab.publication.pending_decision() {
+            gitlab.publication.attempt = None;
+            return;
+        }
         for receipt in gitlab.publication.comments.values_mut() {
             if receipt.uncertain {
                 receipt.uncertain = false;
@@ -180,19 +267,22 @@ impl GitLab {
         saved: &mut SavedSession,
         lock: &SessionLock,
         summary: &str,
-    ) -> Result<SubmissionPreview> {
+        decision: ReviewDecision,
+    ) -> Result<SubmissionCheck> {
         let context = saved
             .review
             .gitlab
             .as_ref()
-            .context("Open a GitLab MR to submit a review")?
-            .clone();
+            .context("Open a GitLab MR to submit a review")?;
         let user: User = self.get("user")?;
         ensure!(
             context.publication.user_id.is_none_or(|id| id == user.id),
             "This submission belongs to another GitLab account; authenticate as that account or start a new review session"
         );
-        let endpoint = mr_endpoint(&context);
+        let endpoint = mr_endpoint(context);
+        if context.publication.pending_decision() {
+            return self.check_published_feedback(saved, lock, user.id, false);
+        }
         let drafts: Vec<DraftNote> = self.list(&format!("{endpoint}/draft_notes?per_page=100"))?;
         let gitlab = saved.review.gitlab.as_mut().expect("MR session");
         self.load_discussions(gitlab)?;
@@ -204,10 +294,21 @@ impl GitLab {
             user.id,
         );
         lock.save(saved)?;
-        ensure!(
-            !reconciled?,
-            "The previous review was published successfully; its receipts are saved"
-        );
+        if reconciled? {
+            if saved
+                .review
+                .gitlab
+                .as_ref()
+                .expect("MR session")
+                .publication
+                .pending_decision()
+            {
+                return self.check_published_feedback(saved, lock, user.id, false);
+            }
+            return Ok(SubmissionCheck::Published(
+                "The previous review was published successfully.".into(),
+            ));
+        }
         let context = saved.review.gitlab.as_ref().expect("MR session");
         ensure!(
             !context
@@ -233,6 +334,13 @@ impl GitLab {
                 && saved.review.comparison.head_id == refs.head_sha,
             "MR changed since this review. Close this dialog and refresh with r before submitting"
         );
+        if decision == ReviewDecision::Approve {
+            let state = self.approval_state(&endpoint)?;
+            ensure!(
+                state.approved(user.id) || state.user_can_approve != Some(false),
+                "GitLab does not allow this account to approve the MR. Choose another review decision."
+            );
+        }
         let diffs = if pending_comments(&saved.review).next().is_some() {
             let versions: Vec<DiffVersion> =
                 self.list(&format!("{endpoint}/versions?per_page=100"))?;
@@ -308,10 +416,7 @@ impl GitLab {
                 );
             }
         }
-        ensure!(
-            !notes.is_empty() || !summary.trim().is_empty(),
-            "Every local comment has been published. Write a summary to submit another review"
-        );
+        let has_summary = !summary.trim().is_empty();
         let summary = if summary.trim().is_empty() {
             "Review completed.".to_owned()
         } else {
@@ -343,15 +448,24 @@ impl GitLab {
             })
             .collect();
         foreign.sort_by_key(|draft| draft.id);
-        Ok(SubmissionPreview {
+        ensure!(
+            !notes.is_empty()
+                || !foreign.is_empty()
+                || has_summary
+                || decision != ReviewDecision::Comment,
+            "Write a summary, add feedback, or choose a review decision."
+        );
+        Ok(SubmissionCheck::Ready(SubmissionPreview {
             summary,
             comment_ids: notes.iter().map(|note| note.id.clone()).collect(),
             external_drafts: foreign.len(),
+            decision,
+            approval_only: false,
             user_id: user.id,
             refs,
             notes,
             foreign,
-        })
+        }))
     }
 
     pub fn submit_review(
@@ -360,11 +474,23 @@ impl GitLab {
         lock: &SessionLock,
         approved: &SubmissionPreview,
     ) -> Result<String> {
-        let current = self.preview_submission(saved, lock, &approved.summary)?;
+        let current =
+            match self.preview_submission(saved, lock, &approved.summary, approved.decision)? {
+                SubmissionCheck::Ready(preview) => preview,
+                SubmissionCheck::Published(message) => return Ok(message),
+            };
         ensure!(
             &current == approved,
             "Pending comments or GitLab drafts changed; preview the review again before publishing"
         );
+        if approved.approval_only {
+            return Self::publication_message(self.check_published_feedback(
+                saved,
+                lock,
+                approved.user_id,
+                true,
+            )?);
+        }
         let context = saved.review.gitlab.as_ref().expect("MR session");
         let endpoint = mr_endpoint(context);
         let mut attempt = context
@@ -385,9 +511,12 @@ impl GitLab {
                 publishing: false,
                 summary_draft_id: None,
                 summary_uncertain: false,
+                decision: approved.decision,
+                feedback_published: false,
             });
         attempt.summary.clone_from(&approved.summary);
         attempt.comment_ids.clone_from(&approved.comment_ids);
+        attempt.decision = approved.decision;
         saved
             .review
             .gitlab
@@ -546,6 +675,11 @@ impl GitLab {
             .as_ref()
             .expect("MR session")
             .merge_request;
+        let user: User = self.get("user")?;
+        ensure!(
+            user.id == approved.user_id,
+            "GitLab account changed before publication. Switch back to the account that staged the drafts."
+        );
         let latest = self.merge_request(reviewed.iid)?;
         ensure!(
             latest.same_version(reviewed)?,
@@ -560,7 +694,7 @@ impl GitLab {
             .publication
             .attempt = Some(attempt.clone());
         lock.save(saved)?;
-        let body = json!({"reviewer_state":"reviewed"});
+        let body = approved.decision.publish_body();
         self.api(
             "POST",
             &format!("{endpoint}/draft_notes/bulk_publish"),
@@ -580,10 +714,120 @@ impl GitLab {
             result?,
             "GitLab accepted the review; its published notes are not visible yet. Recheck with Ctrl-s before retrying"
         );
+        if approved.decision != ReviewDecision::Comment {
+            return Self::publication_message(self.check_published_feedback(
+                saved,
+                lock,
+                approved.user_id,
+                true,
+            )?);
+        }
         Ok(format!(
             "Review published · {} comments",
             approved.notes.len()
         ))
+    }
+
+    fn approval_state(&self, endpoint: &str) -> Result<ApprovalState> {
+        self.get(&format!("{endpoint}/approvals"))
+            .context("Checking GitLab approval status")
+    }
+
+    fn publication_message(check: SubmissionCheck) -> Result<String> {
+        match check {
+            SubmissionCheck::Published(message) => Ok(message),
+            SubmissionCheck::Ready(_) => {
+                anyhow::bail!("Review published. Recheck the pending approval with Ctrl-s.")
+            }
+        }
+    }
+
+    fn check_published_feedback(
+        &self,
+        saved: &mut SavedSession,
+        lock: &SessionLock,
+        user_id: u64,
+        confirm_approval: bool,
+    ) -> Result<SubmissionCheck> {
+        let context = saved.review.gitlab.as_ref().expect("MR session");
+        let attempt = context
+            .publication
+            .attempt
+            .as_ref()
+            .filter(|attempt| attempt.feedback_published)
+            .context("The review's published feedback checkpoint is missing")?;
+        let endpoint = mr_endpoint(context);
+        let reviewed = &context.merge_request;
+        let refs = reviewed.refs()?.clone();
+        let latest = self
+            .merge_request(reviewed.iid)
+            .context("Review feedback was published. Check the MR to verify the decision")?;
+        let message = if !latest.same_version(reviewed)? {
+            "Feedback published. The MR changed during submission; check the decision on GitLab."
+        } else if attempt.decision == ReviewDecision::RequestChanges {
+            let reviewers: Vec<Reviewer> = self
+                .list(&format!("{endpoint}/reviewers?per_page=100"))
+                .context("Feedback published. Ctrl-s rechecks the requested changes")?;
+            if reviewers.iter().any(|reviewer| {
+                reviewer.user.id == user_id && reviewer.state == "requested_changes"
+            }) {
+                "Review published · Changes requested"
+            } else {
+                "Feedback published. GitLab did not record the change request; check the MR in GitLab."
+            }
+        } else {
+            let status = self
+                .approval_state(&endpoint)
+                .context("Feedback published. Ctrl-s rechecks the approval")?;
+            if !status.approved(user_id) {
+                ensure!(
+                    status.user_can_approve != Some(false),
+                    "Feedback published, but this account cannot approve. Check GitLab, or press X to clear the pending decision."
+                );
+                if !confirm_approval {
+                    return Ok(SubmissionCheck::Ready(SubmissionPreview {
+                        summary: attempt.summary.clone(),
+                        comment_ids: Vec::new(),
+                        external_drafts: 0,
+                        decision: ReviewDecision::Approve,
+                        approval_only: true,
+                        user_id,
+                        refs,
+                        notes: Vec::new(),
+                        foreign: Vec::new(),
+                    }));
+                }
+                let user: User = self.get("user")?;
+                ensure!(user.id == user_id, "GitLab account changed before approval");
+                ensure!(
+                    self.merge_request(reviewed.iid)?.same_version(reviewed)?,
+                    "Feedback published. The MR changed before approval; press Ctrl-s to reconcile."
+                );
+                self.api(
+                    "POST",
+                    &format!("{endpoint}/approve"),
+                    Some(&json!({"sha":refs.head_sha})),
+                    false,
+                )
+                .context("Feedback published. Ctrl-s rechecks the approval before retrying")?;
+                ensure!(
+                    self.approval_state(&endpoint)
+                        .context("Feedback published. Ctrl-s rechecks the approval")?
+                        .approved(user_id),
+                    "Feedback published. GitLab has not confirmed the approval; press Ctrl-s to recheck."
+                );
+            }
+            "Review published · MR approved"
+        };
+        saved
+            .review
+            .gitlab
+            .as_mut()
+            .expect("MR session")
+            .publication
+            .attempt = None;
+        lock.save(saved)?;
+        Ok(SubmissionCheck::Published(message.into()))
     }
 }
 
@@ -652,7 +896,9 @@ fn reconcile(
         && discussions
             .iter()
             .flat_map(|discussion| &discussion.notes)
-            .any(|note| note.author.id == user_id && note.body.contains(&attempt.marker()))
+            .any(|note| {
+                !note.system && note.author.id == user_id && note.body.contains(&attempt.marker())
+            })
     {
         ensure!(
             attempt.comment_ids.iter().all(|id| publication
@@ -661,7 +907,15 @@ fn reconcile(
                 .is_some_and(|receipt| receipt.note_id.is_some())),
             "The review summary was published but some comment receipts are missing; inspect the MR before retrying"
         );
-        publication.attempt = None;
+        if attempt.decision == ReviewDecision::Comment {
+            publication.attempt = None;
+        } else {
+            let attempt = publication.attempt.as_mut().expect("published attempt");
+            attempt.publishing = false;
+            attempt.summary_uncertain = false;
+            attempt.summary_draft_id = None;
+            attempt.feedback_published = true;
+        }
         return Ok(true);
     }
     if let Some(attempt) = &mut publication.attempt {

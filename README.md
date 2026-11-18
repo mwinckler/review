@@ -205,13 +205,19 @@ Staged replies remain attached to their submission receipts.
 Compose comments with `c` and save each locally with `Ctrl-s`. Press `P` to
 prepare a GitLab review in the comments pane. Use `Tab` to switch between the
 Markdown summary and pending comments/replies. Use `j` / `k` to select feedback
-and `PageUp` / `PageDown` to scroll its source and text. An empty summary uses
-“Review completed.” when comments are present.
+and `PageUp` / `PageDown` to scroll its source and text.
+
+Press `Ctrl-o` to cycle through **Comment**, **Approve**, and **Request changes**.
+You can approve or request changes with or without comments. An empty summary
+uses the default text “Review completed.”
 
 Press `Ctrl-s` to check the current MR version, source anchors, authenticated
 account, and pending GitLab drafts. Then press `y` to stage the comments as native
 GitLab draft notes and publish the review, or `n` / `Esc` to return to editing.
-Token authentication requires the `api` scope for submission.
+Token authentication requires the `api` scope for submission. Approve publishes
+feedback first, then approves the reviewed head commit. Request changes uses
+GitLab's native review state and requires server and project support; Review
+reports whether GitLab recorded it.
 
 **Publishing includes all of your pending GitLab drafts on this MR.** The
 confirmation shows the count of drafts from outside the session, including
@@ -231,6 +237,9 @@ published, and uncertain statuses. Submitted comments retain their original text
 and receipts; add a new comment for further feedback.
 
 If a response is lost, press `Ctrl-s` in the submission dialog to recheck GitLab.
+If the feedback was published but the approval is still pending, `Ctrl-s` lets
+you confirm just the approval. Use `X`, then `y`, to clear a pending decision
+from the session after checking GitLab; published feedback stays on the MR.
 **Check the MR in GitLab before acknowledging an uncertain retry:** a previous
 write may already be visible. `X`, then `y`, acknowledges that risk and allows a
 fresh preview. Quitting and editing pause while a GitLab operation owns the
