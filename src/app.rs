@@ -9,6 +9,7 @@ use crate::{
     gitlab_ui::SubmissionDialog,
     gitlab_worker::GitLabJob,
     hunks::{Hunk, HunkLocation, SourceLine},
+    restore::{Restore, RestoreState},
     session_dialog::{SessionAction, SessionDialog},
     state::{Position, Review},
     tree::{self, Row},
@@ -99,6 +100,7 @@ pub struct App {
     pub hunk_selection: Option<HunkLocation>,
     pub editor_requested: bool,
     pub copy_path_requested: bool,
+    pub restore: Option<RestoreState>,
     pub rendering: bool,
     pub session_dialog: Option<SessionDialog>,
     pub session_action: Option<SessionAction>,
@@ -147,6 +149,7 @@ impl App {
             hunk_selection: None,
             editor_requested: false,
             copy_path_requested: false,
+            restore: None,
             rendering: false,
             session_dialog: None,
             session_action: None,
@@ -570,6 +573,16 @@ impl App {
             self.quit = true;
             return;
         }
+        if let Some(state) = self.restore.take() {
+            self.restore = match (state, key.code, key.modifiers) {
+                (RestoreState::Confirm(action), KeyCode::Char('y'), KeyModifiers::NONE) => {
+                    Some(RestoreState::Apply(action))
+                }
+                (RestoreState::Confirm(_), KeyCode::Char('n') | KeyCode::Esc, _) => None,
+                (state, _, _) => Some(state),
+            };
+            return;
+        }
         if let Some(dialog) = &mut self.session_dialog {
             self.session_action = dialog.handle_key(key, page);
             return;
@@ -737,6 +750,11 @@ impl App {
             KeyCode::Char('Y') => {
                 self.copy_path_requested = true;
             }
+            KeyCode::Char('D')
+                if self.focus != Focus::Comments && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.confirm_restore();
+            }
             KeyCode::Char('q') => {
                 self.quit = true;
             }
@@ -903,6 +921,30 @@ impl App {
                 self.rebuild();
             }
             _ => {}
+        }
+    }
+
+    fn confirm_restore(&mut self) {
+        if self.revisions.is_some() {
+            self.message = "Press Esc to return to the full comparison before restoring.".into();
+            return;
+        }
+        let lines = self
+            .line_selection
+            .as_ref()
+            .filter(|_| self.focus == Focus::Diff)
+            .map(LineSelection::target);
+        if self.rendering && lines.is_some() {
+            self.message = "Wait for the diff to finish rendering.".into();
+            return;
+        }
+        match Restore::new(&self.review, lines) {
+            Ok(restore) => {
+                self.restore = Some(RestoreState::Confirm(restore));
+            }
+            Err(error) => {
+                self.message = format!("{error:#}");
+            }
         }
     }
 

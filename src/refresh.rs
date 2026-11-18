@@ -4,10 +4,14 @@ use std::{
     time::Duration,
 };
 
-use crate::vcs::{Change, Comparison, Repository};
+use crate::{
+    restore::Restore,
+    vcs::{Change, Comparison, Repository},
+};
 
 enum Request {
     Refresh,
+    Restore(Box<Restore>),
     Stop,
 }
 
@@ -20,6 +24,7 @@ pub struct RefreshResult {
 pub struct RefreshWorker {
     sender: Sender<Request>,
     pub results: Receiver<RefreshResult>,
+    pub restores: Receiver<Result<(), String>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -27,6 +32,7 @@ impl RefreshWorker {
     pub fn new(repo: &Repository, comparison: &Comparison) -> Self {
         let (sender, requests) = mpsc::channel();
         let (output, results) = mpsc::channel();
+        let (restored, restores) = mpsc::channel();
         let mut last_error = None;
         // Establish the live baseline before showing the review, preserving a
         // resumed session's pins until a subsequent repository change.
@@ -45,25 +51,32 @@ impl RefreshWorker {
         let repo = repo.clone();
         let thread = thread::spawn(move || {
             'watch: loop {
-                let mut manual = match requests.recv_timeout(Duration::from_secs(1)) {
-                    Ok(Request::Refresh) => true,
-                    Err(RecvTimeoutError::Timeout) => false,
-                    Ok(Request::Stop) | Err(RecvTimeoutError::Disconnected) => {
+                let first = match requests.recv_timeout(Duration::from_secs(1)) {
+                    Ok(request) => Some(request),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => {
                         break;
                     }
                 };
-                for request in requests.try_iter() {
+                let mut manual = false;
+                let mut restore = None;
+                for request in first.into_iter().chain(requests.try_iter()) {
                     match request {
                         Request::Refresh => {
                             manual = true;
+                        }
+                        Request::Restore(action) => {
+                            restore = Some(action);
                         }
                         Request::Stop => {
                             break 'watch;
                         }
                     }
                 }
+                let restore =
+                    restore.map(|action| action.apply(&repo).map_err(|error| format!("{error:#}")));
                 let polled = (|| -> anyhow::Result<_> {
-                    let comparison = if manual {
+                    let comparison = if manual || matches!(restore, Some(Ok(()))) {
                         Some(repo.refresh(&observed)?)
                     } else {
                         repo.refresh_if_changed(&observed)?
@@ -80,21 +93,27 @@ impl RefreshWorker {
                     Ok(Some((comparison, changes))) => {
                         observed = comparison.clone();
                         last_error = None;
-                        Ok((comparison, changes))
+                        Some(Ok((comparison, changes)))
                     }
-                    Ok(None) => {
-                        continue;
-                    }
+                    Ok(None) => None,
                     Err(error) => {
                         let error = format!("{error:#}");
                         if !manual && last_error.as_ref() == Some(&error) {
-                            continue;
+                            None
+                        } else {
+                            last_error = Some(error.clone());
+                            Some(Err(error))
                         }
-                        last_error = Some(error.clone());
-                        Err(error)
                     }
                 };
-                if output.send(RefreshResult { manual, snapshot }).is_err() {
+                if let Some(snapshot) = snapshot
+                    && output.send(RefreshResult { manual, snapshot }).is_err()
+                {
+                    break;
+                }
+                if let Some(result) = restore
+                    && restored.send(result).is_err()
+                {
                     break;
                 }
             }
@@ -102,12 +121,19 @@ impl RefreshWorker {
         Self {
             sender,
             results,
+            restores,
             thread: Some(thread),
         }
     }
 
     pub fn request(&self) {
         let _ = self.sender.send(Request::Refresh);
+    }
+
+    pub fn restore(&self, action: Restore) -> anyhow::Result<()> {
+        self.sender
+            .send(Request::Restore(Box::new(action)))
+            .map_err(|_| anyhow::anyhow!("The repository worker has stopped."))
     }
 }
 

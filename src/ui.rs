@@ -4,6 +4,7 @@ use crate::{
     comments::DiffSide,
     gitlab_comments::CommentEntry,
     gitlab_ui, markdown,
+    restore::RestoreState,
     session_dialog::SessionDialog,
     state::Review,
     tree,
@@ -603,7 +604,12 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         }
     }
     crate::comments_pane::draw(frame, app, panes.comments);
-    let footer = if let Some(flash) = &app.flash {
+    let footer = if matches!(
+        app.restore,
+        Some(RestoreState::Apply(_) | RestoreState::Applying)
+    ) {
+        "Restoring changes with jj…".into()
+    } else if let Some(flash) = &app.flash {
         if flash.query.is_empty() {
             "Flash: type a filename fragment · Esc cancel".into()
         } else {
@@ -623,6 +629,15 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         } else {
             display_path(&app.message)
         }
+    } else if app.searching {
+        let value = if app.focus == Focus::Tree {
+            &app.review.view.filter
+        } else {
+            &app.diff_search
+        };
+        format!("/{}▏", display_path(value))
+    } else if !app.message.is_empty() {
+        display_path(&app.message)
     } else if let Some(selection) = &app.line_selection {
         let target = selection.target();
         let (range, movement) = if selection.extending {
@@ -634,19 +649,10 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             (target.start_line.to_string(), "j/k move · v range")
         };
         format!(
-            "{}:{range} ({}) · {movement} · h/l old/new · o thread · c comment · Esc cancel",
+            "{}:{range} ({}) · {movement} · h/l old/new · D restore · o thread · c comment · Esc cancel",
             display_path(&target.path),
             target.side.label()
         )
-    } else if app.searching {
-        let value = if app.focus == Focus::Tree {
-            &app.review.view.filter
-        } else {
-            &app.diff_search
-        };
-        format!("/{}▏", display_path(value))
-    } else if !app.message.is_empty() {
-        display_path(&app.message)
     } else if !app.review.view.filter.is_empty() {
         format!(
             "Filter: {}  Esc clear · ? help",
@@ -662,7 +668,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     crate::thread::draw(frame, app, panes.comments, panes.footer);
     if app.help {
         let width = frame.area().width.min(74);
-        let height = frame.area().height.min(36);
+        let height = frame.area().height.min(37);
         let area = Rect::new(
             frame.area().x + (frame.area().width - width) / 2,
             frame.area().y + (frame.area().height - height) / 2,
@@ -688,6 +694,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "]Nh / [Nh        Select hunk number N (1-based)\n",
             "e                Open selected hunk/file in editor\n",
             "Y                Copy selected file/folder's full path\n",
+            "D                Restore the selected file or lines with jj.\n",
             "Enter            Highlight a source line in the diff\n",
             "c / v / C        Comment / select line range / comments\n",
             "t                Toggle the source-aligned comments pane.\n",
@@ -725,6 +732,34 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     }
     if let Some(dialog) = &app.submission_dialog {
         gitlab_ui::draw_submission(frame, app, dialog);
+    }
+    if let Some(RestoreState::Confirm(restore)) = &app.restore {
+        let screen = frame.area();
+        let width = screen.width.min(76);
+        let height = screen.height.min(7);
+        let area = Rect::new(
+            screen.x + (screen.width - width) / 2,
+            screen.y + (screen.height - height) / 2,
+            width,
+            height,
+        );
+        let block = Block::bordered()
+            .title(" Confirm restore ")
+            .border_style(Color::Yellow);
+        let inner = block.inner(area);
+        let [keys, body] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+        frame.render_widget(Clear, area);
+        frame.render_widget(block, area);
+        frame.render_widget(
+            Paragraph::new("Press y to restore or n / Esc to cancel."),
+            keys,
+        );
+        frame.render_widget(
+            Paragraph::new(format!("{} from the review base into @?", restore.label()))
+                .wrap(Wrap { trim: false }),
+            body,
+        );
     }
 }
 

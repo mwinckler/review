@@ -871,7 +871,7 @@ impl Repository {
                     &comparison.head_id
                 };
                 let path = if old { &change.old_path } else { &change.path };
-                let fileset = format!("root-file:{}", serde_json::to_string(path)?);
+                let fileset = exact_fileset(path)?;
                 // `jj file show` skips symlinks. An addition from the empty root
                 // exposes the stored target without following a working-tree link.
                 if entry.kind == "symlink" {
@@ -944,7 +944,7 @@ impl Repository {
         Ok(revisions[0].to_owned())
     }
 
-    fn command(&self, snapshot: bool) -> Command {
+    pub(crate) fn command(&self, snapshot: bool) -> Command {
         let program = match self.backend {
             Backend::Git => "git",
             Backend::Jj => "jj",
@@ -983,6 +983,10 @@ impl Repository {
         );
         Ok(output.stdout)
     }
+}
+
+pub(crate) fn exact_fileset(path: &str) -> Result<String> {
+    Ok(format!("root-file:{}", serde_json::to_string(path)?))
 }
 
 fn ensure_tracked_contents(path: &Path, tracked: &BTreeSet<PathBuf>) -> Result<()> {

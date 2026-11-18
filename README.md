@@ -365,6 +365,7 @@ Repository content and persistent editor snapshots are preserved.
 | `]Nh` / `[Nh` | Select hunk number `N` (1-based) |
 | `e` | Open the selected file or hunk in the editor, or edit a local comment in the comments pane. |
 | `Y` | Copy the selected file or directory's absolute path to the clipboard |
+| `D` | Restore the selected file or highlighted lines with Jujutsu. |
 | `c` | Compose a comment on the selected diff lines in the comments pane. |
 | `o` | Read or collapse a thread in the comments pane. |
 | `]c` / `[c` | Open the next/previous thread in the current preview |
@@ -451,6 +452,24 @@ Difftastic's colored line numbers identify changed lines (`--color=always`, as i
 the default configuration). Plain Difftastic output provides old-side hunk-start
 locations. For wrapper scripts, set `[renderer] hunk_format = "difftastic"` or
 `"unified"`. `"none"` uses file-level editor opening.
+
+### Restore files or lines
+
+In a local Jujutsu review with `@` as the head, select a changed file and press
+`D` to restore it from the review base. For example, `review '@-..@'` compares
+against the working copy's parent, while `review 'master..@'` restores from
+`master`. Press `y` to confirm, or `n` / `Esc` to cancel.
+
+To restore part of a text file, focus the diff and press `Enter` to highlight a
+line. Use `v` and `j` / `k` to extend a range, and `h` / `l` to choose the old or
+new side. Then press `D`, followed by `y`. A new-side selection removes added
+lines, and an old-side selection brings back deleted lines. When a changed
+block has the same number of lines on both sides, restore pairs them in order
+and replaces only the selected lines. Unselected edits stay in place.
+
+The review reloads after the restore. If the working copy changed since the
+displayed snapshot, review the updated diff and confirm again. To undo a restore,
+find its operation ID with `jj op log` and run `jj op revert <operation-id>`.
 
 ### Flash navigation
 
@@ -598,7 +617,7 @@ characters for shifted letters.
 Actions: `up`, `down`, `left`, `right`, `focus_tree`, `focus_diff`, `first`, `last`,
 `page_down`, `page_up`, `half_page_down`, `half_page_up`, `next_file`,
 `previous_file`, `next_unviewed`, `previous_unviewed`, `next_hunk`, `previous_hunk`,
-`open_editor`, `copy_path`, `add_comment`, `select_line`, `select_lines`,
+`open_editor`, `copy_path`, `restore`, `add_comment`, `select_line`, `select_lines`,
 `manage_comments`, `toggle_comments`, `submit_review`, `toggle_viewed`,
 `toggle_unviewed`, `toggle_inline`, `toggle_fullscreen`, `search`, `flash`,
 `manage_sessions`,

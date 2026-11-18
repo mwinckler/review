@@ -4,10 +4,7 @@ use std::{
     ops::RangeInclusive,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{
-        atomic::AtomicU64,
-        mpsc::{self, Receiver, SyncSender},
-    },
+    sync::mpsc::{self, Receiver, SyncSender},
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -17,8 +14,8 @@ use serde::Deserialize;
 
 use crate::{
     command,
-    hunks::{HunkFormat, HunkLocation, unified_ranges},
-    renderer::{RenderOptions, RendererConfig, render_pair},
+    hunks::HunkLocation,
+    renderer::changed_line_ranges,
     vcs::{Change, Comparison, Repository},
 };
 
@@ -149,46 +146,11 @@ pub(crate) fn remap_range(
     if before.contains(&0) || after.contains(&0) {
         return Ok(None);
     }
-    let config = RendererConfig {
-        command: [
-            "git",
-            "--no-pager",
-            "diff",
-            "--no-index",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--color=never",
-            "--unified=0",
-            "--",
-            "{old}",
-            "{new}",
-        ]
-        .map(str::to_owned)
-        .to_vec(),
-        timeout_ms: 2_000,
-        hunk_format: HunkFormat::None,
-    };
-    let patch = render_pair(
-        &config,
-        change,
-        before,
-        after,
-        RenderOptions {
-            width: 80,
-            inline: true,
-        },
-        &AtomicU64::new(1),
-        1,
-    )?;
+    let ranges = changed_line_ranges(change, before, after)?;
     let before = String::from_utf8_lossy(before);
     let after = String::from_utf8_lossy(after);
     let before: Vec<_> = before.lines().collect();
     let after: Vec<_> = after.lines().collect();
-    let ranges: Vec<_> = patch
-        .lines
-        .iter()
-        .filter_map(|line| unified_ranges(&line.to_string()))
-        .collect();
     let map = |line: usize| -> Option<usize> {
         let target = line.checked_sub(1)?;
         let source = before.get(target)?;

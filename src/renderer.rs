@@ -2,6 +2,7 @@ use std::{
     collections::VecDeque,
     fs,
     io::{Read, Seek, SeekFrom},
+    ops::Range,
     path::Path,
     process::{Command, Stdio},
     sync::{
@@ -186,6 +187,50 @@ pub fn render_pair(
         }
     }
     Ok(text)
+}
+
+pub(crate) fn changed_line_ranges(
+    change: &Change,
+    before: &[u8],
+    after: &[u8],
+) -> Result<Vec<(Range<usize>, Range<usize>)>> {
+    let config = RendererConfig {
+        command: [
+            "git",
+            "--no-pager",
+            "diff",
+            "--no-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--color=never",
+            "--unified=0",
+            "--inter-hunk-context=0",
+            "--",
+            "{old}",
+            "{new}",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
+        timeout_ms: 2_000,
+        hunk_format: HunkFormat::None,
+    };
+    let patch = render_pair(
+        &config,
+        change,
+        before,
+        after,
+        RenderOptions {
+            width: 80,
+            inline: true,
+        },
+        &AtomicU64::new(1),
+        1,
+    )?;
+    Ok(patch
+        .lines
+        .iter()
+        .filter_map(|line| hunks::unified_ranges(&line.to_string()))
+        .collect())
 }
 
 struct Job {

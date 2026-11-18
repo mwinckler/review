@@ -147,6 +147,7 @@ fn action_keys(action: &str) -> Option<&'static [&'static str]> {
         "previous_hunk" => &["[", "h"],
         "open_editor" => &["e"],
         "copy_path" => &["Y"],
+        "restore" => &["D"],
         "add_comment" => &["c"],
         "select_line" => &["Ctrl-h", "Ctrl-h", "Ctrl-l", "Enter"],
         "select_lines" => &["v"],

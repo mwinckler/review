@@ -25,6 +25,7 @@ use review::{
     gitlab_worker::{GitLabJob, GitLabOutcome, GitLabWorker},
     refresh::RefreshWorker,
     renderer::{RenderOptions, RenderWorker},
+    restore::RestoreState,
     session_dialog::{SessionAction, SessionDialog},
     state::Review,
     store::{SavedSession, SessionLock, SessionStore},
@@ -490,7 +491,7 @@ fn run(
         .gitlab
         .is_none()
         .then(|| RefreshWorker::new(repo, &app.review.comparison));
-    while !app.quit {
+    while !app.quit || matches!(app.restore, Some(RestoreState::Applying)) {
         let size = terminal.size()?;
         let panes = ui::panes(Rect::new(0, 0, size.width, size.height), app);
         let width = if panes.diff.width > 0 {
@@ -621,6 +622,7 @@ fn run(
                         || app.session_dialog.is_some()
                         || app.comments_overview_open()
                         || app.comment_editor_active()
+                        || app.restore.is_some()
                         || app.help
                         || (key.code == KeyCode::Char('c')
                             && key.modifiers.contains(KeyModifiers::CONTROL))
@@ -632,6 +634,7 @@ fn run(
                     for key in keys {
                         let search = app.focus == Focus::Diff
                             && app.session_dialog.is_none()
+                            && app.restore.is_none()
                             && !app.comments_overview_open()
                             && !app.searching
                             && !app.help
@@ -654,6 +657,7 @@ fn run(
                         app.handle_key(key, input_page, diff.lines.len(), size.width);
                         force_save |= key.code == KeyCode::Char(' ')
                             && app.session_dialog.is_none()
+                            && app.restore.is_none()
                             && !app.comment_editor_active()
                             && !app.comments_overview_open();
                         if search || search_enter {
@@ -688,6 +692,21 @@ fn run(
                 }
                 _ => {}
             }
+        }
+        if let Some(action) = RestoreState::take_confirmed(&mut app.restore) {
+            match refresher
+                .as_ref()
+                .context("Restore requires a local Jujutsu review.")
+                .and_then(|refresher| refresher.restore(action))
+            {
+                Ok(()) => {
+                    app.restore = Some(RestoreState::Applying);
+                }
+                Err(error) => {
+                    app.message = format!("Restore: {error:#}");
+                }
+            }
+            redraw = true;
         }
         if std::mem::take(&mut app.copy_path_requested) {
             if app.review.view.active.is_empty() {
@@ -893,6 +912,18 @@ fn run(
             force_save = true;
             redraw = true;
         }
+        let restored = refresher
+            .as_ref()
+            .and_then(|worker| match worker.restores.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Disconnected)
+                    if matches!(app.restore, Some(RestoreState::Applying)) =>
+                {
+                    Some(Err("The repository worker has stopped.".into()))
+                }
+                Err(_) => None,
+            });
+        let mut refresh_error = None;
         let refreshed: Vec<_> = refresher
             .as_ref()
             .map(|worker| worker.results.try_iter().collect())
@@ -932,8 +963,20 @@ fn run(
                         "Auto-refresh failed"
                     };
                     app.message = format!("{action}: {error}");
+                    refresh_error = Some(error);
                 }
             }
+            redraw = true;
+        }
+        if let Some(result) = restored {
+            app.restore = None;
+            app.message = match result {
+                Ok(()) => match refresh_error {
+                    Some(error) => format!("Restored changes, but the refresh failed: {error}"),
+                    None => "Restored changes from the review base.".into(),
+                },
+                Err(error) => format!("Restore: {error}"),
+            };
             redraw = true;
         }
         force_save |= std::mem::take(&mut app.comments_changed);
