@@ -325,7 +325,7 @@ impl Repository {
     }
 
     fn check_checkout_paths(&self, head: &str) -> Result<()> {
-        let comparison = self.resolve_snapshot("@", head, ComparisonMode::Direct)?;
+        let comparison = self.resolve_snapshot("@", head, ComparisonMode::Direct, true)?;
         let changes = self.changes(&comparison)?;
         let tracked: BTreeSet<_> = changes
             .iter()
@@ -393,7 +393,11 @@ impl Repository {
     }
 
     pub fn snapshot(&self, base: &str, head: &str) -> Result<Comparison> {
-        self.snapshot_with_mode(base, head, ComparisonMode::MergeBase)
+        self.snapshot_with_mode(base, head, ComparisonMode::MergeBase, true)
+    }
+
+    pub(crate) fn snapshot_commits(&self, base_id: &str, head_id: &str) -> Result<Comparison> {
+        self.snapshot_with_mode(base_id, head_id, ComparisonMode::Direct, false)
     }
 
     pub fn snapshot_expression(&self, expression: &str) -> Result<Comparison> {
@@ -428,16 +432,26 @@ impl Repository {
             if base.is_empty() { current } else { base },
             if head.is_empty() { current } else { head },
             mode,
+            true,
         )
     }
 
     pub fn refresh(&self, comparison: &Comparison) -> Result<Comparison> {
-        self.snapshot_with_mode(&comparison.base_ref, &comparison.head_ref, comparison.mode)
+        self.snapshot_with_mode(
+            &comparison.base_ref,
+            &comparison.head_ref,
+            comparison.mode,
+            true,
+        )
     }
 
     pub fn refresh_if_changed(&self, comparison: &Comparison) -> Result<Option<Comparison>> {
-        let mut updated =
-            self.resolve_snapshot(&comparison.base_ref, &comparison.head_ref, comparison.mode)?;
+        let mut updated = self.resolve_snapshot(
+            &comparison.base_ref,
+            &comparison.head_ref,
+            comparison.mode,
+            true,
+        )?;
         if updated.base_id == comparison.base_id && updated.head_id == comparison.head_id {
             return Ok(None);
         }
@@ -453,8 +467,9 @@ impl Repository {
         base: &str,
         head: &str,
         mode: ComparisonMode,
+        snapshot_working_copy: bool,
     ) -> Result<Comparison> {
-        let mut comparison = self.resolve_snapshot(base, head, mode)?;
+        let mut comparison = self.resolve_snapshot(base, head, mode, snapshot_working_copy)?;
         self.fill_change_ids(&mut comparison)?;
         self.fill_commit_titles(&mut comparison)?;
         self.fill_line_counts(&mut comparison)?;
@@ -462,8 +477,14 @@ impl Repository {
         Ok(comparison)
     }
 
-    fn resolve_snapshot(&self, base: &str, head: &str, mode: ComparisonMode) -> Result<Comparison> {
-        let head_id = self.resolve(head, true)?;
+    fn resolve_snapshot(
+        &self,
+        base: &str,
+        head: &str,
+        mode: ComparisonMode,
+        snapshot_working_copy: bool,
+    ) -> Result<Comparison> {
+        let head_id = self.resolve(head, snapshot_working_copy)?;
         let base_tip = self.resolve(base, false)?;
         let base_id = match mode {
             ComparisonMode::Direct => base_tip,

@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result, ensure};
 
 use crate::{
-    gitlab::GitLab,
+    gitlab::{Checkout, GitLab},
     gitlab_review::{ReviewDecision, SubmissionCheck, SubmissionPreview},
     store::{SavedSession, SessionLock},
     vcs::Repository,
@@ -67,7 +67,12 @@ impl GitLabWorker {
                     }
                     GitLabJob::Refresh => {
                         ensure!(context.publication.attempt.is_none(), "A pending draft review is saved. Finish it in GitLab or start a fresh MR review; P rechecks its receipts");
-                        let mut prepared = client.prepare(&repo, &context.remote, context.merge_request.iid)?;
+                        let checkout = if context.conductor_managed {
+                            Checkout::PreserveWorkspace
+                        } else {
+                            Checkout::Direct
+                        };
+                        let mut prepared = client.prepare(&repo, &context.remote, context.merge_request.iid, checkout)?;
                         prepared.gitlab.publication = context.publication;
                         prepared.gitlab.replies = context.replies;
                         let invalidated = saved.review.reconcile(prepared.comparison, prepared.changes);

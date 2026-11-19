@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
 use crate::{
+    conductor::Conductor,
     gitlab_comments::{Discussion, DiscussionReply},
     gitlab_review::Publication,
     vcs::{Change, Comparison, Repository, validate_commit_id},
@@ -183,6 +184,8 @@ pub struct GitLabReview {
     pub remote: String,
     pub merge_request: MergeRequest,
     #[serde(default)]
+    pub conductor_managed: bool,
+    #[serde(default)]
     pub publication: Publication,
     #[serde(default)]
     pub discussions: Vec<Discussion>,
@@ -203,6 +206,12 @@ pub struct PreparedReview {
     pub gitlab: GitLabReview,
     pub comparison: Comparison,
     pub changes: Vec<Change>,
+}
+
+pub enum Checkout {
+    Direct,
+    Conductor(Conductor),
+    PreserveWorkspace,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -427,8 +436,16 @@ impl GitLab {
         Ok(())
     }
 
-    pub fn prepare(&self, repo: &Repository, remote: &str, iid: u64) -> Result<PreparedReview> {
-        repo.ensure_clean()?;
+    pub fn prepare(
+        &self,
+        repo: &Repository,
+        remote: &str,
+        iid: u64,
+        checkout: Checkout,
+    ) -> Result<PreparedReview> {
+        if !matches!(checkout, Checkout::PreserveWorkspace) {
+            repo.ensure_clean()?;
+        }
         let remotes = repo.remotes()?;
         let remote_url = remotes
             .iter()
@@ -498,7 +515,7 @@ impl GitLab {
         repo.resolve(&refs.start_sha, false)
             .context("MR target snapshot is unavailable; fetch complete repository history")?;
         let comparison = repo
-            .snapshot_expression(&format!("{}..{}", refs.base_sha, refs.head_sha))
+            .snapshot_commits(&refs.base_sha, &refs.head_sha)
             .context(
                 "opening MR snapshots; fetch complete repository history if objects are missing",
             )?;
@@ -507,17 +524,24 @@ impl GitLab {
             project: self.project.clone(),
             remote: remote.to_owned(),
             merge_request: current,
+            conductor_managed: !matches!(checkout, Checkout::Direct),
             publication: Publication::default(),
             discussions: Vec::new(),
             replies: Vec::new(),
         };
         self.load_discussions(&mut gitlab)?;
-        repo.checkout_review(
-            &mr.source_branch,
-            &refs.head_sha,
-            &source_remote,
-            &mr.source_branch,
-        )?;
+        match checkout {
+            Checkout::Direct => repo.checkout_review(
+                &mr.source_branch,
+                &refs.head_sha,
+                &source_remote,
+                &mr.source_branch,
+            )?,
+            Checkout::Conductor(conductor) => {
+                conductor.checkout(repo, &mr.source_branch, &source_remote, &refs.head_sha)?;
+            }
+            Checkout::PreserveWorkspace => {}
+        }
         Ok(PreparedReview {
             gitlab,
             comparison,

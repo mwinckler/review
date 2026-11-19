@@ -154,13 +154,21 @@ reviewed commit intact. Fork MRs reuse a matching source remote or add one named
 **Local edits and divergent Git branches require attention before switching.**
 Review stops with instructions rather than discarding work or resetting history.
 
+If `conductor` is available on `PATH`, Review asks whether to check out and
+run the MR in Conductor. Choose `y` to let Conductor switch the source branch
+and start the workspace, or press `Enter` for Review's regular checkout. Run
+Review in a registered, initialized, stopped Treefort workspace to use Conductor.
+**Only run branches you trust:** Conductor fetches the current head of the branch
+and runs its code with access to the workspace's development environment.
+
 The comparison uses GitLab's recorded merge-base and source-head snapshots. MR
 identity and complete diff references are saved with the session, so resume and
 local comments retain their reviewed version. The header shows the MR's title and
 target/source branch labels with pinned snapshot IDs. Press `r` to fetch and
 prepare the latest MR version, preserving matching viewed markers and comment
-anchors. GitLab requests and fetches have a 90-second command timeout; refresh
-runs in the background while the working copy is being prepared.
+anchors. For Conductor-managed reviews, `r` updates the review snapshots and
+leaves the workspace on its current checkout. GitLab requests and fetches have
+a 90-second command timeout, and refresh runs in the background.
 
 ### Read existing GitLab comments
 

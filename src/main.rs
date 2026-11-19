@@ -18,9 +18,10 @@ use review::{
     app::{App, Focus},
     comment_dialog::{CommentAction, CommentDialog, CommentDraft},
     comments::write_todo,
+    conductor::Conductor,
     config::Config,
     editor::EditorWorker,
-    gitlab::{GitLab, MrReference, Project},
+    gitlab::{Checkout, GitLab, MrReference, Project},
     gitlab_ui::{self, Pick},
     gitlab_worker::{GitLabJob, GitLabOutcome, GitLabWorker},
     refresh::RefreshWorker,
@@ -465,8 +466,25 @@ fn start_gitlab(repo: &Repository, args: &GitLabArgs) -> Result<Option<Review>> 
             }
         }
     };
+    let mut checkout = Checkout::Direct;
+    if let Some(conductor) = Conductor::find() {
+        println!(
+            "Conductor runs the latest source branch with access to your workspace's development environment. Only run branches you trust."
+        );
+        print!(
+            "Check out and run {}!{iid} in Conductor? [y/N] ",
+            ui::display_path(&project.path)
+        );
+        io::stdout().flush()?;
+        let mut reply = String::new();
+        io::stdin().read_line(&mut reply)?;
+        let reply = reply.trim();
+        if reply.eq_ignore_ascii_case("y") || reply.eq_ignore_ascii_case("yes") {
+            checkout = Checkout::Conductor(conductor);
+        }
+    }
     eprintln!("Fetching and preparing MR !{iid}…");
-    let prepared = gitlab.prepare(repo, remote, iid)?;
+    let prepared = gitlab.prepare(repo, remote, iid, checkout)?;
     let mut review = Review::new(prepared.comparison, prepared.changes);
     review.gitlab = Some(prepared.gitlab);
     Ok(Some(review))
@@ -895,8 +913,19 @@ fn run(
                 }
                 Ok(GitLabOutcome::Refreshed(invalidated)) => {
                     app.clear_revision_filter();
-                    app.message =
-                        format!("MR snapshots refreshed · {invalidated} viewed marks reset");
+                    let workspace = if app
+                        .review
+                        .gitlab
+                        .as_ref()
+                        .is_some_and(|gitlab| gitlab.conductor_managed)
+                    {
+                        " · workspace unchanged"
+                    } else {
+                        ""
+                    };
+                    app.message = format!(
+                        "MR snapshots refreshed{workspace} · {invalidated} viewed marks reset"
+                    );
                     request_id = worker.cancel();
                     requested = None;
                 }
