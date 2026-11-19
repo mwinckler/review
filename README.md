@@ -161,8 +161,10 @@ Review stops with instructions rather than discarding work or resetting history.
 
 If `conductor` is available on `PATH`, Review asks whether to check out and
 run the MR in Conductor. Choose `y` to let Conductor switch the source branch
-and start the workspace, or press `Enter` for Review's regular checkout. Run
-Review in a registered, initialized, stopped Treefort workspace to use Conductor.
+and start the workspace, or press `Enter` for Review's regular checkout. The
+pinned MR diff opens while Conductor starts. Review reports when the workspace
+is ready or if startup fails. Run Review in a registered, initialized, stopped
+Treefort workspace to use Conductor.
 **Only run branches you trust:** Conductor fetches the current head of the branch
 and runs its code with access to the workspace's development environment.
 

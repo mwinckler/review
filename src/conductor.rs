@@ -1,15 +1,32 @@
 use std::{
     env,
+    io::{Read, Seek, SeekFrom},
     path::{self, PathBuf},
     process::{Command, Stdio},
+    sync::mpsc::{self, Receiver, TryRecvError},
+    thread,
 };
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 
 use crate::vcs::{Backend, Repository};
 
 pub struct Conductor {
     program: PathBuf,
+}
+
+pub struct ConductorStartup(Receiver<Result<()>>);
+
+impl ConductorStartup {
+    pub fn take_finished(&self) -> Option<Result<()>> {
+        match self.0.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(anyhow!(
+                "Conductor startup worker stopped unexpectedly."
+            ))),
+        }
+    }
 }
 
 impl Conductor {
@@ -34,22 +51,60 @@ impl Conductor {
         status.success().then_some(Self { program })
     }
 
-    pub(crate) fn checkout(
+    pub(crate) fn start(
+        self,
+        repo: &Repository,
+        branch: &str,
+        remote: &str,
+        expected_head: String,
+    ) -> Result<ConductorStartup> {
+        let repo = repo.clone();
+        let branch = branch.to_owned();
+        let remote = remote.to_owned();
+        let (sender, result) = mpsc::channel();
+        thread::Builder::new()
+            .name("conductor-startup".into())
+            .spawn(move || {
+                let _ = sender.send(self.checkout(&repo, &branch, &remote, &expected_head));
+            })
+            .context("Could not launch the Conductor startup worker.")?;
+        Ok(ConductorStartup(result))
+    }
+
+    fn checkout(
         &self,
         repo: &Repository,
         branch: &str,
         remote: &str,
         expected_head: &str,
     ) -> Result<()> {
+        let mut stderr = tempfile::tempfile().context("Could not capture Conductor output.")?;
         let status = Command::new(&self.program)
             .current_dir(&repo.root)
             .args(["checkout", branch, "--remote", remote])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(stderr.try_clone()?)
             .status()
             .context("Could not run Conductor checkout.")?;
-        ensure!(
-            status.success(),
-            "Conductor could not check out and start the workspace ({status})."
-        );
+        if !status.success() {
+            const LIMIT: u64 = 4096;
+            stderr.seek(SeekFrom::Start(
+                stderr.metadata()?.len().saturating_sub(LIMIT),
+            ))?;
+            let mut bytes = Vec::new();
+            stderr.take(LIMIT).read_to_end(&mut bytes)?;
+            let text = String::from_utf8_lossy(&bytes);
+            if let Some(detail) = text
+                .lines()
+                .rev()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+            {
+                bail!("Conductor startup failed: {detail}");
+            }
+            bail!("Conductor could not check out and start the workspace ({status}).");
+        }
         let revision = match repo.backend {
             Backend::Git => "HEAD",
             Backend::Jj => "@-",

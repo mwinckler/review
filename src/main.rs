@@ -18,7 +18,7 @@ use review::{
     app::{App, Focus},
     comment_dialog::{CommentAction, CommentDialog, CommentDraft},
     comments::write_todo,
-    conductor::Conductor,
+    conductor::{Conductor, ConductorStartup},
     config::Config,
     editor::EditorWorker,
     gitlab::{Checkout, GitLab, MrReference, Project},
@@ -329,13 +329,15 @@ fn main() -> Result<()> {
     };
     let config = Config::load(&config_path, cli.config.is_some())?;
     let resuming = resume_id.is_some();
+    let mut conductor_startup = None;
     let (mut saved, lock) = if let Some(id) = resume_id {
         store.open(&id)?
     } else {
         let review = if let Some(Commands::Gitlab(args)) = &cli.command {
-            let Some(review) = start_gitlab(&repo, args)? else {
+            let Some((review, startup)) = start_gitlab(&repo, args)? else {
                 return Ok(());
             };
+            conductor_startup = startup;
             review
         } else {
             let comparison = if let Some(expression) = cli.comparison {
@@ -370,6 +372,9 @@ fn main() -> Result<()> {
     app.default_diff_context = config.renderer.default_context();
     app.session_label = saved.label();
     app.message = format!("Session {} · ? help", app.session_label);
+    if conductor_startup.is_some() {
+        app.message.push_str(" · Conductor is starting.");
+    }
     if resuming && app.review.gitlab.is_some() {
         app.submission_action = Some(GitLabJob::Discussions);
     }
@@ -398,6 +403,7 @@ fn main() -> Result<()> {
             (&worker, &editor, &mut gitlab_worker),
             (&store, &mut saved, &lock),
             &config,
+            conductor_startup,
         )
     });
     // A terminal error can occur mid-request. Join the writer before any final save.
@@ -411,7 +417,10 @@ fn main() -> Result<()> {
     result.and(saved_result)
 }
 
-fn start_gitlab(repo: &Repository, args: &GitLabArgs) -> Result<Option<Review>> {
+fn start_gitlab(
+    repo: &Repository,
+    args: &GitLabArgs,
+) -> Result<Option<(Review, Option<ConductorStartup>)>> {
     let reference = args.mr.as_deref().map(MrReference::parse).transpose()?;
     let mut remotes = Vec::new();
     for (name, url) in repo.remotes()? {
@@ -488,7 +497,7 @@ fn start_gitlab(repo: &Repository, args: &GitLabArgs) -> Result<Option<Review>> 
     let prepared = gitlab.prepare(repo, remote, iid, checkout)?;
     let mut review = Review::new(prepared.comparison, prepared.changes);
     review.gitlab = Some(prepared.gitlab);
-    Ok(Some(review))
+    Ok(Some((review, prepared.conductor_startup)))
 }
 
 fn run(
@@ -498,6 +507,7 @@ fn run(
     workers: (&RenderWorker, &EditorWorker, &mut GitLabWorker),
     session: (&SessionStore, &mut SavedSession, &Arc<SessionLock>),
     config: &Config,
+    mut conductor_startup: Option<ConductorStartup>,
 ) -> Result<()> {
     let (worker, editor, gitlab_worker) = workers;
     let (store, saved, lock) = session;
@@ -626,6 +636,17 @@ fn run(
                     }
                 ),
                 Err(error) => format!("Editor: {error}"),
+            };
+            redraw = true;
+        }
+        if let Some(result) = conductor_startup
+            .as_ref()
+            .and_then(ConductorStartup::take_finished)
+        {
+            conductor_startup = None;
+            app.message = match result {
+                Ok(()) => "Conductor workspace is ready.".into(),
+                Err(error) => format!("{error:#}"),
             };
             redraw = true;
         }
@@ -768,6 +789,10 @@ fn run(
                         Ok(draft) => app.compose_comment(draft),
                         Err(error) => app.message = format!("Comment: {error:#}"),
                     }
+                }
+                CommentAction::WriteTodo(_) if conductor_startup.is_some() => {
+                    app.message =
+                        "Wait for Conductor before writing TODOs to the workspace.".into();
                 }
                 CommentAction::WriteTodo(id) => {
                     let result = app

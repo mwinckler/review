@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
 use crate::{
-    conductor::Conductor,
+    conductor::{Conductor, ConductorStartup},
     gitlab_comments::{Discussion, DiscussionReply},
     gitlab_review::Publication,
     vcs::{Change, Comparison, Repository, validate_commit_id},
@@ -206,6 +206,7 @@ pub struct PreparedReview {
     pub gitlab: GitLabReview,
     pub comparison: Comparison,
     pub changes: Vec<Change>,
+    pub conductor_startup: Option<ConductorStartup>,
 }
 
 pub enum Checkout {
@@ -530,22 +531,26 @@ impl GitLab {
             replies: Vec::new(),
         };
         self.load_discussions(&mut gitlab)?;
-        match checkout {
-            Checkout::Direct => repo.checkout_review(
-                &mr.source_branch,
-                &refs.head_sha,
-                &source_remote,
-                &mr.source_branch,
-            )?,
-            Checkout::Conductor(conductor) => {
-                conductor.checkout(repo, &mr.source_branch, &source_remote, &refs.head_sha)?;
+        let conductor_startup = match checkout {
+            Checkout::Direct => {
+                repo.checkout_review(
+                    &mr.source_branch,
+                    &refs.head_sha,
+                    &source_remote,
+                    &mr.source_branch,
+                )?;
+                None
             }
-            Checkout::PreserveWorkspace => {}
-        }
+            Checkout::Conductor(conductor) => {
+                Some(conductor.start(repo, &mr.source_branch, &source_remote, refs.head_sha)?)
+            }
+            Checkout::PreserveWorkspace => None,
+        };
         Ok(PreparedReview {
             gitlab,
             comparison,
             changes,
+            conductor_startup,
         })
     }
 }
