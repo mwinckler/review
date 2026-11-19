@@ -645,7 +645,7 @@ impl App {
         }
         if self.comment_editor_active() {
             if self.submission_dialog.is_some() {
-                self.handle_submission_dialog(key, page);
+                self.handle_submission_dialog(key);
             } else {
                 self.handle_comment_dialog(key, page);
             }

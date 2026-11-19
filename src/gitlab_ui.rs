@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{cell::Cell, time::Duration};
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -29,6 +29,7 @@ pub struct SubmissionDialog {
     pub cursor: usize,
     pub selection: usize,
     pub scroll: usize,
+    feedback_viewport: Cell<(usize, usize)>,
     pub summary_focused: bool,
     pub preview: Option<SubmissionPreview>,
     pub reset_confirmation: bool,
@@ -50,6 +51,7 @@ impl SubmissionDialog {
             summary,
             selection: 0,
             scroll: 0,
+            feedback_viewport: Cell::default(),
             summary_focused: true,
             preview: None,
             reset_confirmation: false,
@@ -77,11 +79,7 @@ impl App {
         self.submission_dialog = Some(SubmissionDialog::new(&self.review));
     }
 
-    pub(crate) fn handle_submission_dialog(
-        &mut self,
-        key: crossterm::event::KeyEvent,
-        page: usize,
-    ) {
+    pub(crate) fn handle_submission_dialog(&mut self, key: crossterm::event::KeyEvent) {
         let Some(mut dialog) = self.submission_dialog.take() else {
             return;
         };
@@ -149,6 +147,8 @@ impl App {
         } else {
             let count =
                 pending_comments(&self.review).count() + pending_replies(&self.review).count();
+            let (height, max_scroll) = dialog.feedback_viewport.get();
+            let step = (height / 2).max(1);
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
                     dialog.selection = (dialog.selection + 1).min(count.saturating_sub(1));
@@ -159,12 +159,11 @@ impl App {
                     dialog.scroll = 0;
                 }
                 KeyCode::PageDown => {
-                    dialog.scroll = dialog
-                        .scroll
-                        .saturating_add(page / 2)
-                        .min(u16::MAX as usize)
+                    dialog.scroll = dialog.scroll.saturating_add(step).min(max_scroll);
                 }
-                KeyCode::PageUp => dialog.scroll = dialog.scroll.saturating_sub(page / 2),
+                KeyCode::PageUp => {
+                    dialog.scroll = dialog.scroll.min(max_scroll).saturating_sub(step);
+                }
                 _ => {}
             }
         }
@@ -173,6 +172,11 @@ impl App {
 }
 
 pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionDialog) {
+    const SUMMARY_MIN_HEIGHT: u16 = 7 + 2;
+    const FEEDBACK_MIN_HEIGHT: u16 = 1 + 2;
+    const FEEDBACK_MAX_HEIGHT: u16 = 4 + 2;
+
+    dialog.feedback_viewport.set((0, 0));
     let area = panes(frame.area(), app).comments;
     if area.is_empty() {
         return;
@@ -197,6 +201,12 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
         .preview
         .as_ref()
         .map_or(dialog.decision, |preview| preview.decision);
+    let (icon, color) = match decision {
+        ReviewDecision::Comment => (" 🗨 ", Color::Yellow),
+        ReviewDecision::Approve => (" ✓ ", Color::Green),
+        ReviewDecision::RequestChanges => (" ✗ ", Color::Red),
+    };
+    let decision_style = Style::default().fg(color);
     let comments: Vec<_> = pending_comments(&app.review)
         .map(|comment| {
             (
@@ -261,7 +271,7 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
                     preview.comment_ids.len(),
                     preview.external_drafts
                 ),
-                "y submit review · n / Esc edit".to_owned(),
+                format!("y submit review ({}) · n / Esc edit", decision.label()),
             )
         }
     } else if pending {
@@ -287,27 +297,40 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
             ),
         )
     };
-    let prompt = Paragraph::new(display_path(&prompt)).wrap(Wrap { trim: false });
+    let message = Paragraph::new(display_path(&prompt)).wrap(Wrap { trim: false });
     let keys = Paragraph::new(keys).wrap(Wrap { trim: false });
-    let decision_label = Paragraph::new(format!("Decision: {}", decision.label()))
-        .wrap(Wrap { trim: true })
-        .style(Style::default().fg(Color::Cyan));
-    let [
-        identity,
-        outcome,
-        entries,
-        detail,
-        summary,
-        message,
-        controls,
-    ] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(decision_label.line_count(inner.width) as u16),
-        Constraint::Length(comments.len().clamp(1, 3) as u16),
-        Constraint::Min(0),
-        Constraint::Length(5),
-        Constraint::Length(prompt.line_count(inner.width).max(1).min(u16::MAX as usize) as u16),
-        Constraint::Length(keys.line_count(inner.width).min(u16::MAX as usize) as u16),
+    let line_count =
+        |paragraph: &Paragraph<'_>| paragraph.line_count(inner.width).min(u16::MAX as usize) as u16;
+    let message_height = if prompt.is_empty() {
+        0
+    } else {
+        line_count(&message)
+    };
+    let controls_height = line_count(&keys);
+    let available = inner
+        .height
+        .saturating_sub(message_height)
+        .saturating_sub(controls_height);
+    let identity_height = u16::from(available > SUMMARY_MIN_HEIGHT && app.review.gitlab.is_some());
+    let feedback_space = available.saturating_sub(SUMMARY_MIN_HEIGHT + identity_height);
+    let detail_min = if !comments.is_empty() && feedback_space > FEEDBACK_MIN_HEIGHT {
+        FEEDBACK_MIN_HEIGHT
+    } else {
+        0
+    };
+    let entries_height = (feedback_space - detail_min).min(comments.len().min(3) as u16);
+    let detail_height = if detail_min > 0 {
+        (feedback_space - entries_height).min(FEEDBACK_MAX_HEIGHT)
+    } else {
+        0
+    };
+    let [identity, entries, detail, summary, status, controls] = Layout::vertical([
+        Constraint::Length(identity_height),
+        Constraint::Length(entries_height),
+        Constraint::Length(detail_height),
+        Constraint::Min(SUMMARY_MIN_HEIGHT.min(available)),
+        Constraint::Length(message_height),
+        Constraint::Length(controls_height),
     ])
     .areas(inner);
     if let Some(gitlab) = &app.review.gitlab {
@@ -316,7 +339,6 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
             identity,
         );
     }
-    frame.render_widget(decision_label, outcome);
     let selection = dialog.selection.min(comments.len().saturating_sub(1));
     let visible = tree::visible_range(comments.len(), selection, entries.height as usize);
     let items: Vec<_> = comments
@@ -332,7 +354,9 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
         entries,
         &mut state,
     );
-    if let Some((_, source, body)) = comments.get(selection) {
+    if !detail.is_empty()
+        && let Some((_, source, body)) = comments.get(selection)
+    {
         let mut text: Vec<_> = source
             .lines()
             .map(|line| Line::from(display_path(line)))
@@ -345,15 +369,13 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
             .borders(Borders::ALL)
             .title(" Pending feedback ");
         let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
-        let scroll = dialog
-            .scroll
-            .min(max_scroll(&paragraph, block.inner(detail)));
+        let viewport = block.inner(detail);
+        let max_scroll = max_scroll(&paragraph, viewport);
+        dialog
+            .feedback_viewport
+            .set((viewport.height as usize, max_scroll));
+        let scroll = dialog.scroll.min(max_scroll);
         frame.render_widget(paragraph.scroll((scroll as u16, 0)).block(block), detail);
-    } else {
-        frame.render_widget(
-            Paragraph::new("Add a summary or choose a review decision."),
-            detail,
-        );
     }
     let mut text = dialog
         .preview
@@ -393,17 +415,12 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
                 Block::default()
                     .borders(Borders::ALL)
                     .title(" Summary · Markdown ")
-                    .border_style(Style::default().fg(
-                        if app.focus == Focus::Comments && dialog.summary_focused {
-                            Color::Cyan
-                        } else {
-                            Color::DarkGray
-                        },
-                    )),
+                    .title_top(Line::from(Span::styled(icon, decision_style)).right_aligned())
+                    .border_style(decision_style),
             ),
         summary,
     );
-    frame.render_widget(prompt.style(Style::default().fg(Color::Yellow)), message);
+    frame.render_widget(message.style(Style::default().fg(Color::Yellow)), status);
     frame.render_widget(keys.style(Style::default().fg(Color::Cyan)), controls);
 }
 
