@@ -529,7 +529,8 @@ Press `Esc` to restore the previous pane and layout.
 
 Press `c` on a file, selected hunk, or displayed source line to compose a comment.
 To choose a single line, focus the diff with `Tab` or `Ctrl-l`, then press `Enter`.
-Use `j` / `k` or arrows to move the highlight and `c` to comment on that line.
+Use `j` / `k` or arrows to move through source rows in display order, switching
+sides as needed. Press `c` to comment on the highlighted line.
 For a range, press `v` at the highlighted line, extend it with `j` / `k` or the page
 keys, then press `c`. Press `v` again or `Enter` to return to a single-line highlight
 at the current endpoint. Starting a highlight uses the currently visible source.

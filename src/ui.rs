@@ -542,6 +542,11 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             Paragraph::new(visible).scroll((0, position.horizontal)),
             viewport,
         );
+        let single_selection_row = app
+            .line_selection
+            .as_ref()
+            .filter(|selection| selection.anchor == selection.cursor)
+            .and_then(|selection| selection.source_row(&app.source_lines));
         for source in app.source_lines.iter().filter(|source| {
             !app.rendering
                 && source.row >= position.vertical
@@ -549,7 +554,11 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         }) {
             let y = viewport.y + (source.row - position.vertical) as u16;
             if let Some(selection) = &app.line_selection
-                && selection.contains(source)
+                && if selection.anchor == selection.cursor {
+                    single_selection_row == Some(source.row)
+                } else {
+                    selection.contains(source)
+                }
             {
                 let (start, end) = match (source.split_column, selection.side) {
                     (Some(split), DiffSide::Old) => (0, split),

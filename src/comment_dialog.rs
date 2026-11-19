@@ -31,9 +31,101 @@ pub struct LineSelection {
     pub anchor: usize,
     pub cursor: usize,
     pub extending: bool,
+    pub(crate) row: Option<usize>,
+}
+
+enum LineMotion {
+    Relative(isize),
+    First,
+    Last,
+}
+
+impl LineMotion {
+    fn index(self, current: usize, last: usize) -> usize {
+        match self {
+            Self::Relative(amount) => current.saturating_add_signed(amount).min(last),
+            Self::First => 0,
+            Self::Last => last,
+        }
+    }
 }
 
 impl LineSelection {
+    fn at_source(source: &SourceLine, side: DiffSide, extending: bool) -> Option<Self> {
+        let (side, number) = if let Some(number) = source.number(side) {
+            (side, number)
+        } else if let Some(number) = source.location.new_line {
+            (DiffSide::New, number)
+        } else {
+            (DiffSide::Old, source.location.old_line?)
+        };
+        Some(Self {
+            path: source.location.path.clone(),
+            side,
+            anchor: number,
+            cursor: number,
+            extending,
+            row: Some(source.row),
+        })
+    }
+
+    fn source_index(&self, sources: &[SourceLine]) -> Option<usize> {
+        let matches = |source: &SourceLine| {
+            source.location.path == self.path && source.number(self.side) == Some(self.cursor)
+        };
+        // Keep the exact rendered occurrence, but resolve by source location after reflow.
+        self.row
+            .and_then(|row| sources.binary_search_by_key(&row, |source| source.row).ok())
+            .filter(|&index| matches(&sources[index]))
+            .or_else(|| sources.iter().position(matches))
+    }
+
+    pub(crate) fn source_row(&self, sources: &[SourceLine]) -> Option<usize> {
+        self.source_index(sources).map(|index| sources[index].row)
+    }
+
+    fn move_cursor(&mut self, sources: &[SourceLine], motion: LineMotion) {
+        if !self.extending {
+            let Some(last) = sources.len().checked_sub(1) else {
+                return;
+            };
+            let current = self.source_index(sources).or_else(|| {
+                self.row
+                    .map(|row| sources.partition_point(|source| source.row < row).min(last))
+            });
+            let index = motion.index(current.unwrap_or(0), last);
+            if let Some(next) = Self::at_source(&sources[index], self.side, false) {
+                *self = next;
+            }
+            return;
+        }
+
+        // An inclusive comment range stays in one file and on one side.
+        let numbers = sources
+            .iter()
+            .filter(|source| source.location.path == self.path)
+            .filter_map(|source| source.number(self.side));
+        let number = match motion {
+            LineMotion::First => numbers.min(),
+            LineMotion::Last => numbers.max(),
+            LineMotion::Relative(_) => {
+                let numbers: Vec<_> = numbers.collect::<BTreeSet<_>>().into_iter().collect();
+                numbers.len().checked_sub(1).map(|last| {
+                    let index = numbers
+                        .partition_point(|number| *number < self.cursor)
+                        .min(last);
+                    numbers[motion.index(index, last)]
+                })
+            }
+        };
+        if let Some(number) = number
+            && self.cursor != number
+        {
+            self.cursor = number;
+            self.row = None;
+        }
+    }
+
     pub fn target(&self) -> LineTarget {
         LineTarget {
             path: self.path.clone(),
@@ -456,52 +548,28 @@ impl App {
             })
             .or_else(|| self.source_lines.iter().find(|line| line.row >= position))
             .or_else(|| self.source_lines.last());
-        let Some(source) = source else {
+        let Some(selection) =
+            source.and_then(|source| LineSelection::at_source(source, target.side, extending))
+        else {
             self.message = "Use c and the line-range fields with this renderer".into();
             return;
         };
-        let (side, line) = if let Some(line) = source.number(target.side) {
-            (target.side, line)
-        } else if let Some(line) = source.location.new_line {
-            (DiffSide::New, line)
-        } else {
-            (
-                DiffSide::Old,
-                source
-                    .location
-                    .old_line
-                    .expect("Source row has a line number"),
-            )
-        };
-        self.line_selection = Some(LineSelection {
-            path: source.location.path.clone(),
-            side,
-            anchor: line,
-            cursor: line,
-            extending,
-        });
+        self.line_selection = Some(selection);
         self.focus = Focus::Diff;
         self.keep_line_selection_visible(page, lines);
     }
 
     pub fn keep_line_selection_visible(&mut self, page: usize, lines: usize) {
-        let Some(selection) = &self.line_selection else {
+        let Some(selection) = &mut self.line_selection else {
             return;
         };
-        let row = self
-            .source_lines
-            .iter()
-            .find(|line| {
-                line.location.path == selection.path
-                    && line.number(selection.side) == Some(selection.cursor)
-            })
-            .map(|line| line.row);
-        if let Some(row) = row {
+        if let Some(row) = selection.source_row(&self.source_lines) {
+            selection.row = Some(row);
             let position = self.position();
             if row < position.vertical {
                 position.vertical = row;
             } else if row >= position.vertical + page {
-                position.vertical = row.saturating_sub(page - 1);
+                position.vertical = row.saturating_sub(page.saturating_sub(1));
             }
             position.vertical = position.vertical.min(lines.saturating_sub(page));
         }
@@ -516,7 +584,8 @@ impl App {
         let Some(selection) = &mut self.line_selection else {
             return false;
         };
-        let amount = match (key.code, key.modifiers.contains(KeyModifiers::CONTROL)) {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        let amount = match (key.code, control) {
             (KeyCode::Char('j') | KeyCode::Down, false) => Some(1),
             (KeyCode::Char('k') | KeyCode::Up, false) => Some(-1),
             (KeyCode::PageDown, _) | (KeyCode::Char('f'), true) => Some(page as isize),
@@ -526,21 +595,7 @@ impl App {
             _ => None,
         };
         if let Some(amount) = amount {
-            let numbers: Vec<_> = self
-                .source_lines
-                .iter()
-                .filter(|line| line.location.path == selection.path)
-                .filter_map(|line| line.number(selection.side))
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            if !numbers.is_empty() {
-                let index = numbers
-                    .partition_point(|number| *number < selection.cursor)
-                    .min(numbers.len() - 1);
-                selection.cursor =
-                    numbers[index.saturating_add_signed(amount).min(numbers.len() - 1)];
-            }
+            selection.move_cursor(&self.source_lines, LineMotion::Relative(amount));
         } else {
             if key
                 .modifiers
@@ -549,20 +604,11 @@ impl App {
                 return false;
             }
             match key.code {
-                KeyCode::Char('g' | 'G') | KeyCode::Home | KeyCode::End => {
-                    let numbers = self
-                        .source_lines
-                        .iter()
-                        .filter(|line| line.location.path == selection.path)
-                        .filter_map(|line| line.number(selection.side));
-                    let number = if matches!(key.code, KeyCode::Char('g') | KeyCode::Home) {
-                        numbers.min()
-                    } else {
-                        numbers.max()
-                    };
-                    if let Some(number) = number {
-                        selection.cursor = number;
-                    }
+                KeyCode::Char('g') | KeyCode::Home => {
+                    selection.move_cursor(&self.source_lines, LineMotion::First);
+                }
+                KeyCode::Char('G') | KeyCode::End => {
+                    selection.move_cursor(&self.source_lines, LineMotion::Last);
                 }
                 KeyCode::Char('h' | 'l') | KeyCode::Left | KeyCode::Right => {
                     let side = if matches!(key.code, KeyCode::Char('h') | KeyCode::Left) {
@@ -570,27 +616,18 @@ impl App {
                     } else {
                         DiffSide::New
                     };
-                    let row = self
-                        .source_lines
-                        .iter()
-                        .find(|line| {
-                            line.location.path == selection.path
-                                && line.number(selection.side) == Some(selection.cursor)
-                        })
-                        .map(|line| line.row)
-                        .unwrap_or(0);
-                    if let Some(number) = self
+                    let row = selection.source_row(&self.source_lines).unwrap_or(0);
+                    if let Some(source) = self
                         .source_lines
                         .iter()
                         .filter(|line| {
                             line.location.path == selection.path && line.number(side).is_some()
                         })
                         .min_by_key(|line| line.row.abs_diff(row))
-                        .and_then(|line| line.number(side))
+                        && let Some(next) =
+                            LineSelection::at_source(source, side, selection.extending)
                     {
-                        selection.side = side;
-                        selection.anchor = number;
-                        selection.cursor = number;
+                        *selection = next;
                     }
                 }
                 KeyCode::Char('v') => selection.extending = !selection.extending,

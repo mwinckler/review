@@ -58,6 +58,7 @@ impl App {
                 anchor: target.start_line,
                 cursor: target.end_line,
                 extending: false,
+                row: None,
             });
         }
         self.focus_comments();

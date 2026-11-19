@@ -1,7 +1,7 @@
 use std::{ops::Range, path::Path};
 
 use ratatui::{
-    style::Color,
+    style::{Color, Modifier},
     text::{Line, Span, Text},
 };
 use serde::{Deserialize, Serialize};
@@ -108,36 +108,31 @@ pub fn source_lines(
             for hunk in hunks {
                 for row in hunk.rows.start + 1..hunk.rows.end {
                     let line = &text.lines[row];
-                    let cells = cells(line);
+                    let gutters = gutters(line);
                     let mut location = HunkLocation {
                         path: change.path.clone(),
                         old_line: None,
                         new_line: None,
                     };
-                    for (index, &(number, color, offset)) in cells.iter().enumerate() {
-                        let Some(number) = number.filter(|number| *number > 0) else {
+                    for gutter in &gutters {
+                        let Some(number) = gutter.number else {
                             continue;
                         };
-                        let new = match color {
-                            Some(Color::Green | Color::LightGreen) => true,
-                            Some(Color::Red | Color::LightRed) => false,
-                            _ => {
-                                change.old.kind.is_empty()
-                                    || (cells.len() > 1 && index == 1)
-                                    || (cells.len() == 1 && offset > 0)
+                        match gutter.side(change) {
+                            DiffSide::Old if !change.old.kind.is_empty() => {
+                                location.old_line = Some(number);
                             }
-                        };
-                        if new && !change.new.kind.is_empty() {
-                            location.new_line = Some(number);
-                        } else if !new && !change.old.kind.is_empty() {
-                            location.old_line = Some(number);
+                            DiffSide::New if !change.new.kind.is_empty() => {
+                                location.new_line = Some(number);
+                            }
+                            _ => {}
                         }
                     }
                     if location.old_line.is_some() || location.new_line.is_some() {
-                        let string = line.to_string();
-                        let split_column = cells
+                        let split_column = gutters
                             .get(1)
-                            .map(|cell| Span::raw(&string[..cell.2]).width());
+                            .filter(|gutter| gutter.offset > gutters[0].end)
+                            .map(|gutter| Span::raw(&line.to_string()[..gutter.offset]).width());
                         result.push(SourceLine {
                             row,
                             location,
@@ -282,24 +277,73 @@ fn title(line: &str) -> Option<(&str, &str)> {
     Some((path, language))
 }
 
-fn cells(line: &Line<'_>) -> Vec<(Option<usize>, Option<Color>, usize)> {
-    let mut result = Vec::new();
+struct Gutter {
+    number: Option<usize>,
+    changed: Option<DiffSide>,
+    offset: usize,
+    end: usize,
+}
+
+impl Gutter {
+    fn side(&self, change: &Change) -> DiffSide {
+        if let Some(side) = self.changed {
+            side
+        } else if change.old.kind.is_empty() || self.offset > 0 {
+            DiffSide::New
+        } else {
+            DiffSide::Old
+        }
+    }
+}
+
+fn gutters(line: &Line<'_>) -> Vec<Gutter> {
+    let mut result: Vec<Gutter> = Vec::new();
     let mut offset = 0;
+    let mut previous = "";
     for span in &line.spans {
-        if span.content.ends_with(' ')
-            && span.content.split_whitespace().all(|token| {
-                token
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || byte == b'.')
-            })
+        let content = span.content.as_ref();
+        let end = offset + content.len();
+        // Difftastic styles gutters separately from the source. Unchanged
+        // numbers and missing-line markers are dim; changed numbers use color.
+        let changed = match span.style.fg {
+            Some(Color::Red | Color::LightRed) => Some(DiffSide::Old),
+            Some(Color::Green | Color::LightGreen) => Some(DiffSide::New),
+            _ => None,
+        };
+        let dim = span.style.add_modifier.contains(Modifier::DIM);
+        if let Some(field) = content
+            .strip_suffix(' ')
+            .map(|field| field.trim_start_matches(' '))
+            && (dim || changed.is_some())
+            && (field.bytes().all(|byte| byte.is_ascii_digit())
+                || (dim && field.bytes().all(|byte| byte == b'.')))
         {
-            for token in span.content.split_whitespace() {
-                result.push((token.parse().ok(), span.style.fg, offset));
+            let gutter = Gutter {
+                number: field.parse().ok().filter(|number| *number > 0),
+                changed,
+                offset,
+                end,
+            };
+            if let Some(first) = result.first() {
+                // The old gutter starts at column zero. The new gutter follows
+                // either immediately (shared content) or after padded old content.
+                if first.offset == 0
+                    && first.changed != Some(DiffSide::New)
+                    && (dim
+                        || (gutter.changed == Some(DiffSide::New)
+                            && span.style.add_modifier.contains(Modifier::BOLD)))
+                    && (offset == first.end || previous.ends_with("  "))
+                {
+                    result.push(gutter);
+                    break;
+                }
+            } else if offset == 0 || (previous == "   " && offset == 3) {
+                result.push(gutter);
             }
         }
-        offset += span.content.len();
+        previous = content;
+        offset = end;
     }
-    result.truncate(2);
     result
 }
 
@@ -326,31 +370,26 @@ fn difftastic(text: &Text<'_>, change: &Change) -> Vec<Hunk> {
         let mut last_new: Option<usize> = None;
         let mut deletion = None;
         for line in &text.lines[start + 1..end] {
-            let cells = cells(line);
-            for (index, &(number, color, offset)) in cells.iter().enumerate() {
-                let Some(number) = number.filter(|number| *number > 0) else {
+            for gutter in gutters(line) {
+                let Some(number) = gutter.number else {
                     continue;
                 };
-                match color {
-                    Some(Color::Green | Color::LightGreen) => {
+                match (gutter.changed, gutter.side(change)) {
+                    (Some(_), DiffSide::New) => {
                         new_line.get_or_insert(number);
                     }
-                    Some(Color::Red | Color::LightRed) => {
+                    (Some(_), DiffSide::Old) => {
                         old_line.get_or_insert(number);
                         if deletion.is_none() {
                             deletion = last_new.map(|line| line + 1);
                         }
                     }
-                    _ => {
-                        if (cells.len() > 1 && index == 1)
-                            || (cells.len() == 1 && offset > 0)
-                            || change.old.kind.is_empty()
-                        {
-                            first_new.get_or_insert(number);
-                            last_new = Some(number);
-                        } else {
-                            first_old.get_or_insert(number);
-                        }
+                    (None, DiffSide::New) => {
+                        first_new.get_or_insert(number);
+                        last_new = Some(number);
+                    }
+                    (None, DiffSide::Old) => {
+                        first_old.get_or_insert(number);
                     }
                 }
             }
