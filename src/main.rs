@@ -512,7 +512,7 @@ fn run(
         .gitlab
         .is_none()
         .then(|| RefreshWorker::new(repo, &app.review.comparison));
-    while !app.quit || matches!(app.restore, Some(RestoreState::Applying)) {
+    while !app.quit || app.network_busy || matches!(app.restore, Some(RestoreState::Applying)) {
         let size = terminal.size()?;
         let panes = ui::panes(Rect::new(0, 0, size.width, size.height), app);
         let diff_viewport_width = panes.diff.width.saturating_sub(2);
@@ -640,21 +640,20 @@ fn run(
         let mut force_save = false;
         if event::poll(Duration::from_millis(30))? {
             match event::read()? {
-                Event::Key(_) | Event::Paste(_) if app.network_busy => {
-                    app.message = "Waiting for the current GitLab operation to finish…".into();
-                    redraw = true;
-                }
-                Event::Key(key) if key.kind != KeyEventKind::Release => {
+                Event::Key(_) | Event::Paste(_) if app.quit => {}
+                Event::Key(key)
+                    if key.kind != KeyEventKind::Release
+                        && (!app.network_busy || App::is_quit_key(key)) =>
+                {
                     app.message.clear();
-                    let keys = if app.searching
+                    let keys = if App::is_quit_key(key)
+                        || app.searching
                         || app.flash.is_some()
                         || app.session_dialog.is_some()
                         || app.comments_overview_open()
                         || app.comment_editor_active()
                         || app.restore.is_some()
                         || app.help
-                        || (key.code == KeyCode::Char('c')
-                            && key.modifiers.contains(KeyModifiers::CONTROL))
                     {
                         vec![key]
                     } else {
@@ -695,6 +694,10 @@ fn run(
                     }
                     redraw = true;
                 }
+                Event::Key(_) | Event::Paste(_) if app.network_busy => {
+                    app.message = "Waiting for the current GitLab operation to finish…".into();
+                    redraw = true;
+                }
                 Event::Resize(_, _) => {
                     redraw = true;
                 }
@@ -713,14 +716,9 @@ fn run(
                         draft.insert(&text);
                         redraw = true;
                     } else if app.focus == Focus::Comments
-                        && !app
-                            .review
-                            .gitlab
-                            .as_ref()
-                            .is_some_and(|gitlab| gitlab.publication.pending_decision())
                         && let Some(dialog) = &mut app.submission_dialog
                     {
-                        dialog.insert(&text);
+                        dialog.insert(&app.review, &text);
                         redraw = true;
                     }
                 }

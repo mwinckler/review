@@ -325,6 +325,14 @@ impl CommentDialog {
     pub(crate) fn is_editor(&self) -> bool {
         matches!(self, Self::Compose(_) | Self::Reply(_))
     }
+
+    pub(crate) fn accepts_text(&self) -> bool {
+        match self {
+            Self::Compose(draft) => !draft.preview,
+            Self::Reply(draft) => !draft.preview,
+            Self::Browse(_) => false,
+        }
+    }
 }
 
 pub struct ReplyDraft {
@@ -779,7 +787,7 @@ impl App {
                                 return;
                             }
                         }
-                        KeyCode::Esc | KeyCode::Char('q' | 'C') => {
+                        KeyCode::Esc | KeyCode::Char('C') => {
                             return;
                         }
                         KeyCode::Char('j') | KeyCode::Down => {

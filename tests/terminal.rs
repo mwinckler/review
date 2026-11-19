@@ -465,7 +465,7 @@ fn session_names_are_editable_in_the_tui_persist_on_resume_and_recheck_other_ses
         terminal.output.clear();
         terminal.send(b"ggjR");
         terminal.wait_until(|text| text.contains("another"));
-        terminal.send(b"qq");
+        terminal.send(b"q");
         assert!(terminal.finish().success(), "{}", terminal.output);
         let saved = store.list().unwrap();
         assert_eq!(
@@ -491,7 +491,7 @@ fn session_names_are_editable_in_the_tui_persist_on_resume_and_recheck_other_ses
                 .iter()
                 .any(|saved| saved.id == "r1" && saved.name.is_none())
         });
-        terminal.send(b"qq");
+        terminal.send(b"q");
         assert!(terminal.finish().success(), "{}", terminal.output);
     }
 }
@@ -556,7 +556,7 @@ fn session_manager_multiselect_confirms_deletion_and_preserves_active_reviews() 
     terminal.wait_until(|text| text.contains("Permanently delete 2"));
     terminal.send(b"y");
     terminal.wait_until(|text| text.contains("Forgot 2") && store.list().unwrap().len() == 2);
-    terminal.send(b"qq");
+    terminal.send(b"q");
     assert!(terminal.finish().success(), "{}", terminal.output);
     let remaining = store.list().unwrap();
     assert_eq!(

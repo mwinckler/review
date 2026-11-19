@@ -236,7 +236,7 @@ impl App {
         }
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match (key.code, control) {
-            (KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | 'o' | ' '), false) => {
+            (KeyCode::Esc | KeyCode::Enter | KeyCode::Char('o' | ' '), false) => {
                 thread.full = false;
                 thread.scroll = 0;
             }

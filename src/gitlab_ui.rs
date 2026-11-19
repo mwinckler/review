@@ -60,8 +60,18 @@ impl SubmissionDialog {
         }
     }
 
-    pub fn insert(&mut self, value: &str) {
-        if self.preview.is_none() && !self.reset_confirmation && self.summary_focused {
+    pub(crate) fn accepts_text(&self, review: &Review) -> bool {
+        self.preview.is_none()
+            && !self.reset_confirmation
+            && self.summary_focused
+            && !review
+                .gitlab
+                .as_ref()
+                .is_some_and(|gitlab| gitlab.publication.pending_decision())
+    }
+
+    pub fn insert(&mut self, review: &Review, value: &str) {
+        if self.accepts_text(review) {
             input::insert(&mut self.summary, &mut self.cursor, value);
         }
     }
@@ -249,10 +259,12 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
         }))
         .collect();
     let (prompt, keys) = if app.network_busy {
-        (
-            "GitLab operation in progress; submission checkpoints are saved.".to_owned(),
-            "Waiting for GitLab…".to_owned(),
-        )
+        let prompt = if app.quit {
+            app.message.clone()
+        } else {
+            "GitLab operation in progress; submission checkpoints are saved.".to_owned()
+        };
+        (prompt, "Waiting for GitLab…".to_owned())
     } else if dialog.reset_confirmation {
         if pending {
             ("Clear the pending decision from this session? Check GitLab to see whether it already took effect.".into(), "y clear pending decision · n / Esc cancel".into())
@@ -386,12 +398,7 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
         .as_ref()
         .map(|preview| preview.summary.clone())
         .unwrap_or_else(|| dialog.summary.clone());
-    if app.focus == Focus::Comments
-        && dialog.preview.is_none()
-        && dialog.summary_focused
-        && !dialog.reset_confirmation
-        && !pending
-    {
+    if app.focus == Focus::Comments && !app.network_busy && dialog.accepts_text(&app.review) {
         text.insert(dialog.cursor, '▏');
     }
     let text = if dialog.preview.is_some() || !dialog.summary_focused {

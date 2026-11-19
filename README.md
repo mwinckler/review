@@ -263,8 +263,8 @@ you confirm just the approval. Use `X`, then `y`, to clear a pending decision
 from the session after checking GitLab; published feedback stays on the MR.
 **Check the MR in GitLab before acknowledging an uncertain retry:** a previous
 write may already be visible. `X`, then `y`, acknowledges that risk and allows a
-fresh preview. Quitting and editing pause while a GitLab operation owns the
-session writer, keeping saved submission checkpoints consistent.
+fresh preview. While GitLab owns the session writer, the app finishes the
+operation before quitting so submission checkpoints stay consistent.
 
 ## Stop and resume
 
@@ -309,7 +309,8 @@ and renames a closed session. Use `review --rename r3 ""` to clear its name.
 Renaming preserves the session's review data, last-opened time, and listing order.
 IDs and unique prefixes continue to select named sessions for resume and management.
 
-Press `q` or `Ctrl-c` to save and quit. Viewed changes save immediately;
+Press `q` to save and quit from any screen outside a focused input. `Ctrl-c`
+also quits while an input is focused. Viewed changes save immediately;
 navigation state autosaves within 250 ms. Line comments save immediately when
 submitted. Resume restores comments, the comparison,
 viewed files, selection, pane focus, directory expansion, filters, layout,
@@ -361,7 +362,7 @@ to move, `Space` to toggle selections, and `a` to select all closed sessions or
 clear the selection, including sessions outside the viewport. `gg` / `G` and the
 page-scrolling keys also work. Press `d`, `Delete`, or `Enter` to review the
 confirmation, then `y` to delete or `n` / `Esc` to cancel. `r` reloads the list;
-`Esc` / `q` closes the dialog and returns to the review.
+`Esc` closes the dialog and returns to the review.
 
 Press `R` to rename the highlighted session, including the current review. Edit or
 paste its name, then press `Enter` to save or `Esc` to cancel. Arrow keys, `Home`,
@@ -415,7 +416,7 @@ Repository content and persistent editor snapshots are preserved.
 | `Esc` | Clear file and revision filters, or cancel a search or Flash prompt. |
 | `r` | Refresh the comparison |
 | `?` | Show help and custom key aliases |
-| `q`, `Ctrl-c` | Save and quit |
+| `q`, `Ctrl-c` | Save and quit. A focused input keeps `q` for editing. |
 
 Marking a file viewed advances to the next unviewed file matching the current
 filter, expanding its parent folders and wrapping at the end. Pane focus and
@@ -657,7 +658,7 @@ use typed characters for their own input. Keys may be a character, a named key
 (`Space`, `Enter`, `Tab`, `BackTab`, `Esc`, `Backspace`, arrows, `PageUp`,
 `PageDown`, `Home`, `End`), or a `Ctrl-`/`Alt-` combination. Use uppercase
 characters for shifted letters.
-`Ctrl-c` always saves and exits.
+The quit shortcuts take precedence over key aliases.
 
 Actions: `up`, `down`, `left`, `right`, `focus_tree`, `focus_diff`, `first`, `last`,
 `page_down`, `page_up`, `half_page_down`, `half_page_up`, `next_file`,

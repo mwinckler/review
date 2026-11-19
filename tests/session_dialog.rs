@@ -199,10 +199,7 @@ fn deletion_requires_an_explicit_confirmation_and_cancellation_keeps_selection()
         key(&mut dialog, KeyCode::Char('y')),
         Some(SessionAction::Forget(vec!["000000000002".into()]))
     );
-    assert_eq!(
-        key(&mut dialog, KeyCode::Char('q')),
-        Some(SessionAction::Close)
-    );
+    assert_eq!(key(&mut dialog, KeyCode::Esc), Some(SessionAction::Close));
 }
 
 #[test]

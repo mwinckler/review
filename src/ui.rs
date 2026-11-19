@@ -721,12 +721,12 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "+ / -            Increase or decrease diff context.\n",
             "r                Refresh revisions, keep matching progress\n",
             "Esc              Clear filters\n",
-            "q / Ctrl-c       Save and quit\n",
+            "q / Ctrl-c       Save and quit; q stays in a focused input.\n",
         ));
         if !app.bindings_help.is_empty() {
             text.push_str(&format!("\nCustom: {}\n", display_path(&app.bindings_help)));
         }
-        text.push_str("\nPress any key to close");
+        text.push_str("\nPress Esc to close.");
         frame.render_widget(
             Paragraph::new(text).block(
                 Block::default()

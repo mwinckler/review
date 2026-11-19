@@ -171,7 +171,7 @@ impl SessionDialog {
                         self.selected.iter().cloned().collect(),
                     ));
                 }
-                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('n' | 'N' | 'q') => {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('n' | 'N') => {
                     self.confirming = false;
                 }
                 _ => {}
@@ -212,7 +212,7 @@ impl SessionDialog {
                     }
                 }
             }
-            KeyCode::Esc | KeyCode::Char('q') => return Some(SessionAction::Close),
+            KeyCode::Esc => return Some(SessionAction::Close),
             KeyCode::Char('r') => return Some(SessionAction::Reload),
             KeyCode::Char('j') | KeyCode::Down => self.move_by(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_by(-1),

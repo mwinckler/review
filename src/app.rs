@@ -585,13 +585,49 @@ impl App {
         true
     }
 
+    pub fn is_quit_key(key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('q') => key.modifiers == KeyModifiers::NONE,
+            KeyCode::Char('c') => key.modifiers.contains(KeyModifiers::CONTROL),
+            _ => false,
+        }
+    }
+
+    fn text_input_focused(&self) -> bool {
+        if self.network_busy || self.restore.is_some() {
+            return false;
+        }
+        if let Some(dialog) = &self.session_dialog {
+            return dialog.renaming.is_some();
+        }
+        if self.comments_overview_open() || self.help {
+            return false;
+        }
+        if self.searching || self.flash.is_some() {
+            return true;
+        }
+        if self.focus != Focus::Comments {
+            return false;
+        }
+        if let Some(dialog) = &self.submission_dialog {
+            return dialog.accepts_text(&self.review);
+        }
+        self.comment_dialog
+            .as_ref()
+            .is_some_and(CommentDialog::accepts_text)
+    }
+
     fn handle_input(&mut self, key: KeyEvent, page: usize, diff_lines: usize, terminal_width: u16) {
-        if self.network_busy {
-            self.message = "Waiting for the current GitLab operation to finish…".into();
+        if Self::is_quit_key(key) && (key.code != KeyCode::Char('q') || !self.text_input_focused())
+        {
+            self.quit = true;
+            if self.network_busy {
+                self.message = "Quitting after the current GitLab operation finishes…".into();
+            }
             return;
         }
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.quit = true;
+        if self.network_busy {
+            self.message = "Waiting for the current GitLab operation to finish…".into();
             return;
         }
         if let Some(state) = self.restore.take() {
@@ -775,9 +811,6 @@ impl App {
                 if self.focus != Focus::Comments && !key.modifiers.contains(KeyModifiers::ALT) =>
             {
                 self.confirm_restore();
-            }
-            KeyCode::Char('q') => {
-                self.quit = true;
             }
             KeyCode::Char('?') => {
                 self.help = true;
