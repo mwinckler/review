@@ -201,10 +201,10 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
         .preview
         .as_ref()
         .map_or(dialog.decision, |preview| preview.decision);
-    let (icon, color) = match decision {
-        ReviewDecision::Comment => (" 🗨 ", Color::Yellow),
-        ReviewDecision::Approve => (" ✓ ", Color::Green),
-        ReviewDecision::RequestChanges => (" ✗ ", Color::Red),
+    let (decision_title, color) = match decision {
+        ReviewDecision::Comment => (" Comment 🗨 ", Color::Yellow),
+        ReviewDecision::Approve => (" Approve ✓ ", Color::Green),
+        ReviewDecision::RequestChanges => (" Reject ✗ ", Color::Red),
     };
     let decision_style = Style::default().fg(color);
     let comments: Vec<_> = pending_comments(&app.review)
@@ -414,8 +414,10 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" Summary · Markdown ")
-                    .title_top(Line::from(Span::styled(icon, decision_style)).right_aligned())
+                    .title(" Summary ")
+                    .title_top(
+                        Line::from(Span::styled(decision_title, decision_style)).right_aligned(),
+                    )
                     .border_style(decision_style),
             ),
         summary,

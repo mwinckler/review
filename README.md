@@ -212,9 +212,9 @@ prepare a GitLab review in the comments pane. Use `Tab` to switch between the
 Markdown summary and pending comments/replies. Use `j` / `k` to select feedback
 and `PageUp` / `PageDown` to scroll its source and text.
 
-Press `Ctrl-o` to cycle through **Comment**, **Approve**, and **Request changes**.
-The summary border shows your choice as a yellow chat bubble, green checkmark,
-or red X, respectively.
+Press `Ctrl-o` to cycle through **Comment**, **Approve**, and **Reject**.
+The summary border shows your choice next to a yellow chat bubble, green
+checkmark, or red X, respectively.
 You can approve or request changes with or without comments. An empty summary
 uses the default text “Review completed.”
 
