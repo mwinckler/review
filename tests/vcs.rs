@@ -537,7 +537,7 @@ fn positional_ranges_compare_tips_directly_even_when_branches_diverge() {
 }
 
 #[test]
-fn positional_revisions_and_omitted_endpoints_default_to_the_current_revision() {
+fn positional_branch_names_and_omitted_endpoints_compare_to_the_current_revision() {
     let dir = fixture();
     for backend in [Backend::Git, Backend::Jj] {
         let repo = Repository::discover(dir.path(), Some(backend)).unwrap();
@@ -556,7 +556,6 @@ fn positional_revisions_and_omitted_endpoints_default_to_the_current_revision() 
             ("..feature", current, "feature", &current_id, &feature_id),
             ("..", current, current, &current_id, &current_id),
             ("main", "main", current, &main_id, &current_id),
-            ("@", "@", current, &current_id, &current_id),
             (
                 " main .. feature ",
                 "main",
@@ -623,8 +622,9 @@ fn positional_comparisons_accept_native_revision_expressions_and_short_ids() {
                 "description(\"missing \\\"..\\\" text\") | feature",
             ] {
                 let comparison = repo.snapshot_expression(expression).unwrap();
-                assert_eq!(comparison.base_ref, expression);
-                assert_eq!(comparison.base_id, feature_id);
+                assert_eq!(comparison.head_ref, expression);
+                assert_eq!(comparison.base_id, main_id);
+                assert_eq!(comparison.head_id, feature_id);
             }
         }
     }
@@ -655,7 +655,7 @@ fn git_ranges_preserve_literal_ref_names_and_message_searches() {
         .chain([
             "HEAD^{/b..e}..feature".to_owned(),
             "main..:/fea..re".to_owned(),
-            ":/b..e".to_owned(),
+            ":/fea..re".to_owned(),
         ])
     {
         let comparison = repo

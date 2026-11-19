@@ -60,7 +60,8 @@ struct Cli {
     /// Resume a saved review by ID/prefix, or compare revisions.
     ///
     /// Saved IDs and unique prefixes take precedence over revision expressions.
-    /// BASE..HEAD compares snapshots directly; REV means REV..@.
+    /// BASE..HEAD compares snapshots directly, and a branch or bookmark alone means BRANCH..@.
+    /// A lone revision is compared with its first parent.
     /// Endpoints accept the selected backend's single-revision expressions.
     /// Omitted endpoints and @ select HEAD (Git) or the working copy (Jujutsu).
     /// Git also accepts BASE...HEAD for a merge-base comparison.

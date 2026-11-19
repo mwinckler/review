@@ -25,10 +25,14 @@ review
 review ukr..vqm
 review master..feature/my-change
 
-# Compare against the current revision (@); these forms are equivalent
+# Compare a revision or branch against the current revision (@)
 review ukr..
 review ukr..@
+review master
+
+# Review the changes introduced by one revision
 review ukr
+review --backend git HEAD~3
 
 # Native revision expressions
 review 'trunk()..@'
@@ -56,11 +60,12 @@ names; use `review r3..@` to compare a revision with the same name. Ambiguous se
 prefixes list the matching IDs.
 
 Otherwise, positional `BASE..HEAD` compares the two snapshots directly. Either
-omitted endpoint defaults to `@`, and a lone `REV` means `REV..@`. `@` selects Git's
-current `HEAD` or Jujutsu's working-copy revision. Each endpoint accepts the
-selected backend's revision syntax and resolves to one revision, including branch
-names, commit IDs, jj change IDs, and expressions such as `heads(master::feature)`.
-Quote expressions containing shell metacharacters.
+omitted endpoint defaults to `@`, which selects Git's current `HEAD` or Jujutsu's
+working-copy revision. A lone Git branch or Jujutsu bookmark name means `BRANCH..@`.
+A lone revision ID or expression compares that revision to its first parent, or
+to the empty tree for an initial commit. Each endpoint accepts the selected
+backend's revision syntax and resolves to one revision. Quote expressions
+containing shell metacharacters.
 
 Bare `review` defaults to `--base master`. Use `--base` with an optional `--head`
 to compare from their unique merge base; Git's positional `BASE...HEAD` uses the

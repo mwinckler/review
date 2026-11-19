@@ -82,6 +82,7 @@ pub enum ComparisonMode {
     #[default]
     MergeBase,
     Direct,
+    SingleRevision,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -406,6 +407,10 @@ impl Repository {
             !expression.is_empty(),
             "comparison expression cannot be empty"
         );
+        let current = match self.backend {
+            Backend::Git => "HEAD",
+            Backend::Jj => "@",
+        };
         let (base, head, mode) = match range_separator(expression, self.backend)? {
             Some((index, length)) => {
                 ensure!(
@@ -422,11 +427,8 @@ impl Repository {
                     },
                 )
             }
-            None => (expression, "", ComparisonMode::Direct),
-        };
-        let current = match self.backend {
-            Backend::Git => "HEAD",
-            Backend::Jj => "@",
+            None if self.is_branch(expression)? => (expression, "", ComparisonMode::Direct),
+            None => ("", expression, ComparisonMode::SingleRevision),
         };
         self.snapshot_with_mode(
             if base.is_empty() { current } else { base },
@@ -434,6 +436,47 @@ impl Repository {
             mode,
             true,
         )
+    }
+
+    fn is_branch(&self, expression: &str) -> Result<bool> {
+        match self.backend {
+            Backend::Git => {
+                if matches!(expression, "HEAD" | "@") {
+                    return Ok(false);
+                }
+                let reference = self
+                    .run(
+                        &[
+                            "rev-parse",
+                            "--symbolic-full-name",
+                            "--verify",
+                            "--end-of-options",
+                            expression,
+                        ],
+                        false,
+                    )
+                    .unwrap_or_default();
+                Ok(
+                    reference.starts_with(b"refs/heads/")
+                        || reference.starts_with(b"refs/remotes/"),
+                )
+            }
+            Backend::Jj => {
+                let symbols = self.run(
+                    &[
+                        "bookmark",
+                        "list",
+                        "--all-remotes",
+                        "-T",
+                        r#"if(present, if(remote, name ++ "@" ++ remote, name) ++ "\0")"#,
+                    ],
+                    false,
+                )?;
+                Ok(symbols
+                    .split(|byte| *byte == 0)
+                    .any(|symbol| symbol == expression.as_bytes()))
+            }
+        }
     }
 
     pub fn refresh(&self, comparison: &Comparison) -> Result<Comparison> {
@@ -485,17 +528,23 @@ impl Repository {
         snapshot_working_copy: bool,
     ) -> Result<Comparison> {
         let head_id = self.resolve(head, snapshot_working_copy)?;
-        let base_tip = self.resolve(base, false)?;
-        let base_id = match mode {
-            ComparisonMode::Direct => base_tip,
-            ComparisonMode::MergeBase => self.merge_base(&base_tip, &head_id)?,
+        let (base_ref, base_id) = match mode {
+            ComparisonMode::Direct => (base, self.resolve(base, false)?),
+            ComparisonMode::MergeBase => {
+                let base_tip = self.resolve(base, false)?;
+                (base, self.merge_base(&base_tip, &head_id)?)
+            }
+            ComparisonMode::SingleRevision => {
+                let parents = self.revision_parents(&head_id)?;
+                self.parent_snapshot(parents.first().map(String::as_str))?
+            }
         };
         Ok(Comparison {
-            base_ref: base.to_owned(),
+            base_ref: base_ref.to_owned(),
             head_ref: head.to_owned(),
             base_id,
             head_id,
-            base_title: None,
+            base_title: (base_ref == "empty tree").then(String::new),
             head_title: None,
             base_change_id: None,
             head_change_id: None,
@@ -580,11 +629,15 @@ impl Repository {
             }
             return Ok(updated);
         }
-        let (base, head) = (&comparison.base_id, &comparison.head_id);
         let jj = Self {
             root: self.root.clone(),
             backend: Backend::Jj,
         };
+        if comparison.mode == ComparisonMode::SingleRevision {
+            self.fill_single_revision_files(&jj, comparison)?;
+            return Ok(true);
+        }
+        let (base, head) = (&comparison.base_id, &comparison.head_id);
         let commits = match jj.run(
             &[
                 "log",
@@ -650,18 +703,85 @@ impl Repository {
         Ok(true)
     }
 
-    pub fn revision_comparison(&self, first: &Revision, last: &Revision) -> Result<Comparison> {
-        let base_id = match first.parents.first() {
-            Some(parent) => parent.clone(),
-            None => match self.backend {
-                Backend::Jj => self.resolve("root()", false)?,
-                Backend::Git => {
-                    String::from_utf8(self.run(&["hash-object", "-t", "tree", "--stdin"], false)?)?
-                        .trim()
-                        .to_owned()
-                }
-            },
+    fn fill_single_revision_files(&self, jj: &Self, comparison: &mut Comparison) -> Result<()> {
+        let head = &comparison.head_id;
+        let short_id = match jj.run(
+            &[
+                "log",
+                "--no-graph",
+                "-r",
+                head,
+                "-T",
+                "change_id.shortest(3)",
+            ],
+            false,
+        ) {
+            Ok(id) => id,
+            Err(error) if self.backend == Backend::Jj => return Err(error),
+            Err(_) => self.run(&["rev-parse", "--short=8", head], false)?,
         };
+        let id = String::from_utf8(short_id)?.trim().to_owned();
+        let revision = Revision {
+            commit_id: head.clone(),
+            parents: self.revision_parents(head)?,
+            title: comparison.head_title.clone(),
+        };
+        comparison.file_commit_ids = Some(
+            self.changes(comparison)?
+                .into_iter()
+                .map(|change| (change.path, vec![id.clone()]))
+                .collect(),
+        );
+        comparison.revisions = Some(BTreeMap::from([(id, revision)]));
+        Ok(())
+    }
+
+    fn revision_parents(&self, commit_id: &str) -> Result<Vec<String>> {
+        let (output, skip) = match self.backend {
+            Backend::Git => (
+                self.run(
+                    &["rev-list", "--parents", "--max-count=1", commit_id],
+                    false,
+                )?,
+                1,
+            ),
+            Backend::Jj => (
+                self.run(
+                    &[
+                        "log",
+                        "--no-graph",
+                        "-r",
+                        commit_id,
+                        "-T",
+                        r#"parents.map(|parent| parent.commit_id()).join(" ")"#,
+                    ],
+                    false,
+                )?,
+                0,
+            ),
+        };
+        Ok(String::from_utf8(output)?
+            .split_whitespace()
+            .skip(skip)
+            .map(str::to_owned)
+            .collect())
+    }
+
+    fn parent_snapshot(&self, parent: Option<&str>) -> Result<(&'static str, String)> {
+        if let Some(parent) = parent {
+            return Ok(("parent", parent.to_owned()));
+        }
+        match self.backend {
+            Backend::Jj => Ok(("root()", self.resolve("root()", false)?)),
+            Backend::Git => {
+                let tree = self.run(&["hash-object", "-t", "tree", "--stdin"], false)?;
+                Ok(("empty tree", String::from_utf8(tree)?.trim().to_owned()))
+            }
+        }
+    }
+
+    pub fn revision_comparison(&self, first: &Revision, last: &Revision) -> Result<Comparison> {
+        let (_, base_id) = self.parent_snapshot(first.parents.first().map(String::as_str))?;
         Ok(Comparison {
             base_ref: base_id.clone(),
             head_ref: last.commit_id.clone(),
