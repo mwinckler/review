@@ -228,16 +228,17 @@ and `PageUp` / `PageDown` to scroll its source and text.
 Press `Ctrl-o` to cycle through **Comment**, **Approve**, and **Reject**.
 The summary border shows your choice next to a yellow chat bubble, green
 checkmark, or red X, respectively.
-You can approve or request changes with or without comments. An empty summary
-uses the default text “Review completed.”
+Choose **Approve** and leave the summary blank to send just an approval when
+there are no comments, replies, or pending GitLab drafts. When publishing a
+review with feedback or requesting changes, an empty summary uses the default
+text “Review completed.”
 
 Press `Ctrl-s` to check the current MR version, source anchors, authenticated
-account, and pending GitLab drafts. Then press `y` to stage the comments as native
-GitLab draft notes and publish the review, or `n` / `Esc` to return to editing.
-Token authentication requires the `api` scope for submission. Approve publishes
-feedback first, then approves the reviewed head commit. Request changes uses
-GitLab's native review state and requires server and project support; Review
-reports whether GitLab recorded it.
+account, and pending GitLab drafts. Then press `y` to confirm, or `n` / `Esc` to
+return to editing. Token authentication requires the `api` scope for submission.
+Review publishes any feedback as native GitLab draft notes before approving the
+reviewed head commit. Request changes uses GitLab's native review state and
+requires server and project support; Review reports whether GitLab recorded it.
 
 **Publishing includes all of your pending GitLab drafts on this MR.** The
 confirmation shows the count of drafts from outside the session, including

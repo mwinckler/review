@@ -14,7 +14,8 @@ use crate::{
     app::{App, Focus},
     gitlab::{OpenMergeRequest, ReviewStatus},
     gitlab_review::{
-        ReviewDecision, SubmissionPreview, acknowledge_retry, pending_comments, pending_replies,
+        ReviewDecision, SubmissionKind, SubmissionPreview, acknowledge_retry, pending_comments,
+        pending_replies,
     },
     gitlab_worker::GitLabJob,
     input, markdown,
@@ -259,20 +260,23 @@ pub(crate) fn draw_submission(frame: &mut Frame, app: &App, dialog: &SubmissionD
             ("An earlier write may already be visible. Confirm only after checking the MR on GitLab; retrying can duplicate feedback.".into(), "y acknowledge retry · n / Esc cancel".into())
         }
     } else if let Some(preview) = &dialog.preview {
-        if preview.approval_only {
-            (
-                "Feedback is already published. Approve the reviewed MR version?".into(),
-                "y approve · n / Esc cancel".into(),
-            )
-        } else {
-            (
+        match preview.kind {
+            SubmissionKind::Approval | SubmissionKind::PendingApproval => {
+                let prompt = if preview.kind == SubmissionKind::PendingApproval {
+                    "Feedback is already published. Approve the reviewed MR version?"
+                } else {
+                    "Approve the reviewed MR version?"
+                };
+                (prompt.into(), "y approve · n / Esc cancel".into())
+            }
+            SubmissionKind::Feedback => (
                 format!(
                     "Publish {} comments/replies and a summary? Includes {} existing drafts from outside this session. ALL your pending MR drafts will be published.",
                     preview.comment_ids.len(),
                     preview.external_drafts
                 ),
                 format!("y submit review ({}) · n / Esc edit", decision.label()),
-            )
+            ),
         }
     } else if pending {
         (

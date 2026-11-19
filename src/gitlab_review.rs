@@ -9,7 +9,7 @@ use sha1::{Digest, Sha1};
 
 use crate::{
     comments::{Comment, DiffSide},
-    gitlab::{DiffRefs, GitLab, User},
+    gitlab::{DiffRefs, GitLab, MergeRequest, User},
     gitlab_comments::{Discussion, DiscussionReply},
     state::Review,
     store::{SavedSession, SessionLock, now_millis},
@@ -129,11 +129,18 @@ pub struct SubmissionPreview {
     pub comment_ids: Vec<String>,
     pub external_drafts: usize,
     pub decision: ReviewDecision,
-    pub approval_only: bool,
+    pub kind: SubmissionKind,
     user_id: u64,
     refs: DiffRefs,
     notes: Vec<PreparedNote>,
     foreign: Vec<DraftNote>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubmissionKind {
+    Feedback,
+    Approval,
+    PendingApproval,
 }
 
 pub enum SubmissionCheck {
@@ -387,22 +394,6 @@ impl GitLab {
                 );
             }
         }
-        let has_summary = !summary.trim().is_empty();
-        let summary = if summary.trim().is_empty() {
-            "Review completed.".to_owned()
-        } else {
-            summary.trim().to_owned()
-        };
-        ensure!(
-            context
-                .publication
-                .attempt
-                .as_ref()
-                .is_none_or(
-                    |attempt| attempt.summary_draft_id.is_none() || attempt.summary == summary
-                ),
-            "The summary is already staged on GitLab; restore its original text before continuing"
-        );
         let mut foreign: Vec<_> = drafts
             .into_iter()
             .filter(|draft| {
@@ -419,6 +410,8 @@ impl GitLab {
             })
             .collect();
         foreign.sort_by_key(|draft| draft.id);
+        let summary = summary.trim();
+        let has_summary = !summary.is_empty();
         ensure!(
             !notes.is_empty()
                 || !foreign.is_empty()
@@ -426,12 +419,36 @@ impl GitLab {
                 || decision != ReviewDecision::Comment,
             "Write a summary, add feedback, or choose a review decision."
         );
+        let staged_summary = context
+            .publication
+            .attempt
+            .as_ref()
+            .filter(|attempt| attempt.summary_draft_id.is_some());
+        let kind = if decision == ReviewDecision::Approve
+            && !has_summary
+            && notes.is_empty()
+            && foreign.is_empty()
+            && staged_summary.is_none()
+        {
+            SubmissionKind::Approval
+        } else {
+            SubmissionKind::Feedback
+        };
+        let summary = if !has_summary && kind == SubmissionKind::Feedback {
+            "Review completed.".to_owned()
+        } else {
+            summary.to_owned()
+        };
+        ensure!(
+            staged_summary.is_none_or(|attempt| attempt.summary == summary),
+            "The summary is already staged on GitLab; restore its original text before continuing"
+        );
         Ok(SubmissionCheck::Ready(SubmissionPreview {
             summary,
             comment_ids: notes.iter().map(|note| note.id.clone()).collect(),
             external_drafts: foreign.len(),
             decision,
-            approval_only: false,
+            kind,
             user_id: user.id,
             refs,
             notes,
@@ -454,7 +471,7 @@ impl GitLab {
             &current == approved,
             "Pending comments or GitLab drafts changed; preview the review again before publishing"
         );
-        if approved.approval_only {
+        if approved.kind == SubmissionKind::PendingApproval {
             return Self::publication_message(self.check_published_feedback(
                 saved,
                 lock,
@@ -463,6 +480,12 @@ impl GitLab {
             )?);
         }
         let context = saved.review.gitlab.as_ref().expect("MR session");
+        if approved.kind == SubmissionKind::Approval {
+            // The approval state itself lets a retry reconcile an uncertain response.
+            self.approve_reviewed_version(&context.merge_request, approved.user_id)?;
+            Self::clear_attempt(saved, lock)?;
+            return Ok("MR approved.".into());
+        }
         let endpoint = context.merge_request.endpoint();
         let mut attempt = context
             .publication
@@ -741,6 +764,10 @@ impl GitLab {
             } else {
                 "Feedback published. GitLab did not record the change request; check the MR in GitLab."
             }
+        } else if confirm_approval {
+            self.approve_reviewed_version(reviewed, user_id)
+                .context("Feedback was published. Ctrl-s rechecks the pending approval")?;
+            "Review published · MR approved"
         } else {
             let status = self
                 .approval_state(&endpoint)
@@ -750,50 +777,66 @@ impl GitLab {
                     status.user_can_approve != Some(false),
                     "Feedback published, but this account cannot approve. Check GitLab, or press X to clear the pending decision."
                 );
-                if !confirm_approval {
-                    return Ok(SubmissionCheck::Ready(SubmissionPreview {
-                        summary: attempt.summary.clone(),
-                        comment_ids: Vec::new(),
-                        external_drafts: 0,
-                        decision: ReviewDecision::Approve,
-                        approval_only: true,
-                        user_id,
-                        refs,
-                        notes: Vec::new(),
-                        foreign: Vec::new(),
-                    }));
-                }
-                let user: User = self.get("user")?;
-                ensure!(user.id == user_id, "GitLab account changed before approval");
-                ensure!(
-                    self.merge_request(reviewed.iid)?.same_version(reviewed)?,
-                    "Feedback published. The MR changed before approval; press Ctrl-s to reconcile."
-                );
-                self.api(
-                    "POST",
-                    &format!("{endpoint}/approve"),
-                    Some(&json!({"sha":refs.head_sha})),
-                    false,
-                )
-                .context("Feedback published. Ctrl-s rechecks the approval before retrying")?;
-                ensure!(
-                    self.approval_state(&endpoint)
-                        .context("Feedback published. Ctrl-s rechecks the approval")?
-                        .approved(user_id),
-                    "Feedback published. GitLab has not confirmed the approval; press Ctrl-s to recheck."
-                );
+                return Ok(SubmissionCheck::Ready(SubmissionPreview {
+                    summary: attempt.summary.clone(),
+                    comment_ids: Vec::new(),
+                    external_drafts: 0,
+                    decision: ReviewDecision::Approve,
+                    kind: SubmissionKind::PendingApproval,
+                    user_id,
+                    refs,
+                    notes: Vec::new(),
+                    foreign: Vec::new(),
+                }));
             }
             "Review published · MR approved"
         };
-        saved
+        Self::clear_attempt(saved, lock)?;
+        Ok(SubmissionCheck::Published(message.into()))
+    }
+
+    fn approve_reviewed_version(&self, reviewed: &MergeRequest, user_id: u64) -> Result<()> {
+        let user: User = self.get("user")?;
+        ensure!(user.id == user_id, "GitLab account changed before approval");
+        let endpoint = reviewed.endpoint();
+        let status = self.approval_state(&endpoint)?;
+        ensure!(
+            self.merge_request(reviewed.iid)?.same_version(reviewed)?,
+            "The MR changed before approval. Refresh and review the latest version."
+        );
+        if status.approved(user_id) {
+            return Ok(());
+        }
+        ensure!(
+            status.user_can_approve != Some(false),
+            "GitLab does not allow this account to approve the MR."
+        );
+        self.api(
+            "POST",
+            &format!("{endpoint}/approve"),
+            Some(&json!({"sha":reviewed.refs()?.head_sha})),
+            false,
+        )
+        .context("GitLab did not confirm the approval. Ctrl-s rechecks it before retrying")?;
+        ensure!(
+            self.approval_state(&endpoint)?.approved(user_id),
+            "GitLab has not confirmed the approval. Press Ctrl-s to recheck."
+        );
+        Ok(())
+    }
+
+    fn clear_attempt(saved: &mut SavedSession, lock: &SessionLock) -> Result<()> {
+        let attempt = &mut saved
             .review
             .gitlab
             .as_mut()
             .expect("MR session")
             .publication
-            .attempt = None;
-        lock.save(saved)?;
-        Ok(SubmissionCheck::Published(message.into()))
+            .attempt;
+        if attempt.take().is_some() {
+            lock.save(saved)?;
+        }
+        Ok(())
     }
 }
 
