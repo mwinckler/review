@@ -118,6 +118,7 @@ pub struct App {
     pub revisions: Option<RevisionSelection>,
     pub revision_preview: Option<(Comparison, Vec<Change>)>,
     hunk_actions: VecDeque<HunkNavigation>,
+    horizontal_scroll_limit: u16,
     prefix: Option<(char, Option<usize>)>,
     search_original: String,
 }
@@ -169,6 +170,7 @@ impl App {
             revisions: None,
             revision_preview: None,
             hunk_actions: VecDeque::new(),
+            horizontal_scroll_limit: 0,
             prefix: None,
             search_original: String::new(),
         };
@@ -216,6 +218,21 @@ impl App {
             .positions
             .entry(self.review.view.active.clone())
             .or_default()
+    }
+
+    pub fn update_horizontal_scroll_limit(&mut self, diff_width: usize, viewport_width: u16) {
+        if viewport_width == 0 {
+            self.horizontal_scroll_limit = 0;
+            return;
+        }
+        self.horizontal_scroll_limit =
+            u16::try_from(diff_width.saturating_sub(viewport_width as usize)).unwrap_or(u16::MAX);
+        if let Some(position) = self.review.view.positions.get_mut(&self.review.view.active)
+            && position.horizontal > self.horizontal_scroll_limit
+        {
+            position.horizontal = self.horizontal_scroll_limit;
+            self.dirty = true;
+        }
     }
 
     pub fn preview_changes(&self) -> impl Iterator<Item = &Change> {
@@ -816,14 +833,14 @@ impl App {
             }
             KeyCode::Char('h') | KeyCode::Left => {
                 if self.focus == Focus::Diff {
-                    self.position().horizontal = self.position().horizontal.saturating_sub(4);
+                    self.scroll_diff_horizontally(-4);
                 } else {
                     self.collapse();
                 }
             }
             KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
                 if self.focus == Focus::Diff {
-                    self.position().horizontal = self.position().horizontal.saturating_add(4);
+                    self.scroll_diff_horizontally(4);
                 } else if let Some(row) = self.rows.get(self.selection) {
                     if row.file.is_none() {
                         if key.code == KeyCode::Enter
@@ -1054,6 +1071,14 @@ impl App {
             .vertical
             .saturating_add_signed(amount)
             .min(lines.saturating_sub(page));
+    }
+
+    fn scroll_diff_horizontally(&mut self, amount: i16) {
+        if !self.rendering && self.horizontal_scroll_limit > 0 {
+            let limit = self.horizontal_scroll_limit;
+            let position = self.position();
+            position.horizontal = position.horizontal.saturating_add_signed(amount).min(limit);
+        }
     }
 
     fn collapse(&mut self) {

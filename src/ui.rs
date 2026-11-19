@@ -508,13 +508,16 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             );
         }
         let height = viewport.height as usize;
-        let position = app
+        let mut position = app
             .review
             .view
             .positions
             .get(&app.review.view.active)
             .cloned()
             .unwrap_or_default();
+        if app.rendering {
+            position.horizontal = 0;
+        }
         let selected = app.selected_hunk().map(|hunk| &hunk.rows);
         let visible = Text::from(
             diff.lines

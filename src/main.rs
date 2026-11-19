@@ -501,6 +501,7 @@ fn run(
     let (worker, editor, gitlab_worker) = workers;
     let (store, saved, lock) = session;
     let mut diff = Text::raw("Select a changed file");
+    let mut diff_width = 0;
     let mut requested = None;
     let mut request_id = 0;
     let mut redraw = true;
@@ -513,12 +514,12 @@ fn run(
     while !app.quit || matches!(app.restore, Some(RestoreState::Applying)) {
         let size = terminal.size()?;
         let panes = ui::panes(Rect::new(0, 0, size.width, size.height), app);
+        let diff_viewport_width = panes.diff.width.saturating_sub(2);
         let width = if panes.diff.width > 0 {
-            panes.diff.width
+            diff_viewport_width
         } else {
-            size.width
+            size.width.saturating_sub(2)
         }
-        .saturating_sub(2)
         .max(1);
         let diff_page = panes
             .diff
@@ -585,6 +586,7 @@ fn run(
             } else {
                 "0 files match the current filters. Press Esc to clear them."
             });
+            diff_width = diff.width();
         }
         for result in worker.results.try_iter() {
             if result.id == request_id {
@@ -596,6 +598,7 @@ fn run(
                     Ok(text) => text,
                     Err(error) => Text::raw(format!("Diff error\n\n{}", ui::display_path(&error))),
                 };
+                diff_width = diff.width();
                 app.position().vertical = app
                     .position()
                     .vertical
@@ -626,6 +629,9 @@ fn run(
             redraw = true;
         }
         if redraw {
+            if !app.rendering {
+                app.update_horizontal_scroll_limit(diff_width, diff_viewport_width);
+            }
             app.update_flash(panes.tree.height.saturating_sub(2) as usize);
             terminal.draw(|frame| ui::draw(frame, app, &diff))?;
             redraw = false;
