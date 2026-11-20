@@ -206,6 +206,20 @@ impl EditorWorker {
     pub fn new(config: EditorConfig, snapshots: PathBuf) -> Self {
         let (sender, requests) = mpsc::sync_channel(1);
         let (output, results) = mpsc::channel();
+        let uses_terminal_launcher = config
+            .command
+            .first()
+            .and_then(|program| Path::new(program).file_name())
+            .is_some_and(|name| name == "xdg-terminal-exec");
+        let launch_error = move |status| {
+            if uses_terminal_launcher {
+                format!(
+                    "Configure a preferred terminal or set `editor.command`. Launcher exited with {status}."
+                )
+            } else {
+                format!("Editor launcher exited with {status}. Check `editor.command`.")
+            }
+        };
         let thread = thread::spawn(move || {
             let mut children: Vec<Child> = Vec::new();
             loop {
@@ -213,8 +227,7 @@ impl EditorWorker {
                     Ok(None) => true,
                     Ok(Some(status)) => {
                         if !status.success() {
-                            let _ =
-                                output.send(Err(format!("Editor launcher exited with {status}")));
+                            let _ = output.send(Err(launch_error(status)));
                         }
                         false
                     }
@@ -233,6 +246,19 @@ impl EditorWorker {
                     }
                 };
                 let opened = (|| -> Result<EditorLocation> {
+                    let program = config
+                        .command
+                        .first()
+                        .context("editor.command must contain an executable")?;
+                    let setting = Some("editor.command");
+                    if uses_terminal_launcher
+                        && let [_, separator, editor, ..] = config.command.as_slice()
+                        && separator == "--"
+                        && !editor.contains('{')
+                    {
+                        command::require(program, &job.repo.root, setting)?;
+                        command::require(editor, &job.repo.root, setting)?;
+                    }
                     let location = location(
                         &job.repo,
                         &job.comparison,
@@ -258,10 +284,6 @@ impl EditorWorker {
                         ("{repo}", root),
                         ("{read_only}", read_only),
                     ];
-                    let program = config
-                        .command
-                        .first()
-                        .context("editor.command must contain an executable")?;
                     let arguments: Vec<String> = config.command[1..]
                         .iter()
                         .filter(|argument| {
@@ -269,22 +291,24 @@ impl EditorWorker {
                         })
                         .map(|argument| command::expand(argument, &replacements))
                         .collect();
-                    let mut child = Command::new(program)
-                        .args(arguments)
-                        .current_dir(&job.repo.root)
-                        .env(
-                            "REVIEW_EDITOR_READ_ONLY",
-                            if location.read_only { "1" } else { "0" },
-                        )
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .spawn()
-                        .with_context(|| format!("starting editor {program:?}"))?;
+                    let mut child = command::launch(
+                        Command::new(program)
+                            .args(arguments)
+                            .current_dir(&job.repo.root)
+                            .env(
+                                "REVIEW_EDITOR_READ_ONLY",
+                                if location.read_only { "1" } else { "0" },
+                            )
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null()),
+                        setting,
+                        Command::spawn,
+                    )?;
                     thread::sleep(Duration::from_millis(30));
                     match child.try_wait()? {
                         Some(status) if !status.success() => {
-                            bail!("Editor launcher exited with {status}");
+                            bail!(launch_error(status));
                         }
                         Some(_) => {}
                         None => {

@@ -8,8 +8,17 @@ mark files viewed, and pick up where you left off.
 
 ## Install
 
-Requires Rust 1.88+, Git, and `difft` on `PATH`. Jujutsu reviews use `jj` 0.46+
-(the structured diff template interface).
+Build Review with Rust 1.88 or newer. Install the runtime tools for the features
+you use and make their executables available on `PATH`:
+
+| Feature | Required tools |
+|---|---|
+| Git reviews | [Git](https://git-scm.com/install/). |
+| Jujutsu reviews | [Jujutsu](https://docs.jj-vcs.dev/latest/install-and-setup/) 0.46 or newer. |
+| Default diff rendering | [Difftastic](https://difftastic.wilfred.me.uk/) (`difft`), or choose a renderer with `renderer.command`. |
+| GitLab commands | [GitLab CLI](https://docs.gitlab.com/cli/) (`glab`). Run `review gitlab login` after installing it. GitLab reviews also use Git to read remotes. |
+| Default editor shortcut | [Neovim](https://neovim.io/), [`xdg-terminal-exec`](https://github.com/Vladimir-csp/xdg-terminal-exec), and a configured terminal emulator. Set `editor.command` to use another launcher. |
+| Line-level restores and source-line mapping | Git. Jujutsu line restores also use a POSIX shell and standard system utilities. |
 
 ```sh
 cargo install --path .
@@ -140,9 +149,10 @@ review gitlab login --web       # Browser OAuth
 review gitlab login --device    # Device OAuth for headless environments
 ```
 
-Login shares `glab`'s credentials and works outside a repository. Repository
-fetches use your SSH keys or HTTPS credential helper. For HTTPS token access,
-`glab auth login --setup-git-credential-helper` configures the helper.
+Login shares `glab`'s credentials and works outside a repository. For SSH
+remotes, install an SSH client such as OpenSSH and configure your keys. For
+HTTPS token access, `glab auth login --setup-git-credential-helper` configures
+the credential helper.
 
 ```sh
 review gitlab                   # Pick an open MR in this repository

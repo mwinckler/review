@@ -9,7 +9,10 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 
-use crate::vcs::{Backend, Repository};
+use crate::{
+    command,
+    vcs::{Backend, Repository},
+};
 
 pub struct Conductor {
     program: PathBuf,
@@ -79,14 +82,16 @@ impl Conductor {
         expected_head: &str,
     ) -> Result<()> {
         let mut stderr = tempfile::tempfile().context("Could not capture Conductor output.")?;
-        let status = Command::new(&self.program)
-            .current_dir(&repo.root)
-            .args(["checkout", branch, "--remote", remote])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(stderr.try_clone()?)
-            .status()
-            .context("Could not run Conductor checkout.")?;
+        let status = command::launch(
+            Command::new(&self.program)
+                .current_dir(&repo.root)
+                .args(["checkout", branch, "--remote", remote])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(stderr.try_clone()?),
+            None,
+            Command::status,
+        )?;
         if !status.success() {
             const LIMIT: u64 = 4096;
             stderr.seek(SeekFrom::Start(

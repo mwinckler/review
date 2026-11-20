@@ -53,6 +53,7 @@ impl GitLabWorker {
             self.thread.is_none(),
             "A GitLab operation is already running"
         );
+        GitLab::require_cli(&repo.root)?;
         let repo = repo.clone();
         self.thread = Some(thread::Builder::new().name("gitlab".into()).spawn(move || {
             let result = catch_unwind(AssertUnwindSafe(|| -> Result<GitLabOutcome> {

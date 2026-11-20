@@ -188,12 +188,17 @@ impl Restore {
         let mut command = repo.command(true);
         let content;
         if let Some(partial) = self.partial(repo)? {
+            command::require("sh", &repo.root, None)?;
             if let Some(restored) = partial.content {
+                for program in ["mkdir", "cat", "chmod"] {
+                    command::require(program, &repo.root, None)?;
+                }
                 let mut file = tempfile::NamedTempFile::new()?;
                 file.write_all(&restored)?;
                 command.env("REVIEW_RESTORE_CONTENT", file.path());
                 content = Some(file);
             } else {
+                command::require("rm", &repo.root, None)?;
                 command.env_remove("REVIEW_RESTORE_CONTENT");
                 content = None;
             }

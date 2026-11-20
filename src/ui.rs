@@ -538,10 +538,13 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 })
                 .collect::<Vec<_>>(),
         );
-        frame.render_widget(
-            Paragraph::new(visible).scroll((0, position.horizontal)),
-            viewport,
-        );
+        let paragraph = Paragraph::new(visible);
+        let paragraph = if app.render_failed {
+            paragraph.wrap(Wrap { trim: true })
+        } else {
+            paragraph.scroll((0, position.horizontal))
+        };
+        frame.render_widget(paragraph, viewport);
         let single_selection_row = app
             .line_selection
             .as_ref()

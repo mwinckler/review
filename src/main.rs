@@ -174,6 +174,9 @@ fn main() -> Result<()> {
         }
         return GitLab::login(args.hostname.as_deref(), web, device);
     }
+    if matches!(cli.command, Some(Commands::Gitlab(_))) {
+        GitLab::require_cli(&cli.repo)?;
+    }
     let state_dir = match cli.state_dir {
         Some(directory) => directory,
         None => {
@@ -581,6 +584,7 @@ fn run(
                 );
                 requested = Some(key);
                 app.rendering = true;
+                app.render_failed = false;
                 app.hunks.clear();
                 if !same_preview {
                     app.source_lines.clear();
@@ -591,6 +595,7 @@ fn run(
             }
         } else {
             app.rendering = false;
+            app.render_failed = false;
             app.hunks.clear();
             app.source_lines.clear();
             app.editor_requested = false;
@@ -615,6 +620,7 @@ fn run(
                 app.hunks = result.hunks;
                 app.source_lines = result.source_lines;
                 app.revision_preview = result.revision_preview;
+                app.render_failed = result.text.is_err();
                 diff = match result.text {
                     Ok(text) => text,
                     Err(error) => Text::raw(format!("Diff error\n\n{}", ui::display_path(&error))),

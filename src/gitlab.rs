@@ -1,6 +1,11 @@
 //! GitLab metadata and authenticated API access through `glab`.
 
-use std::{path::PathBuf, process::Command, thread, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+    thread,
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
@@ -271,6 +276,10 @@ pub struct GitLab {
 }
 
 impl GitLab {
+    pub fn require_cli(directory: &Path) -> Result<()> {
+        crate::command::require("glab", directory, None)
+    }
+
     pub fn new(repo: &Repository, project: &Project) -> Self {
         Self {
             directory: repo.root.clone(),
@@ -290,9 +299,7 @@ impl GitLab {
         if device {
             command.arg("--device");
         }
-        let status = command
-            .status()
-            .context("running glab; install the GitLab CLI to authenticate")?;
+        let status = crate::command::launch(&mut command, None, Command::status)?;
         ensure!(status.success(), "GitLab authentication failed");
         Ok(())
     }

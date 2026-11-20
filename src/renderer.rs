@@ -225,18 +225,17 @@ pub fn render_pair(
         .map(|(_, argument)| command::expand(argument, &replacements));
     let mut stdout = tempfile::tempfile()?;
     let mut stderr = tempfile::tempfile()?;
-    let mut child = Command::new(&config.command[0])
-        .args(context_arg.into_iter().chain(arguments))
-        .stdin(Stdio::null())
-        .stdout(stdout.try_clone()?)
-        .stderr(stderr.try_clone()?)
-        .spawn()
-        .with_context(|| {
-            format!(
-                "starting {:?}; install it or configure renderer.command",
-                config.command[0]
-            )
-        })?;
+    // Git also provides the internal line-mapping diff.
+    let setting = (config.command[0] != "git").then_some("renderer.command");
+    let mut child = command::launch(
+        Command::new(&config.command[0])
+            .args(context_arg.into_iter().chain(arguments))
+            .stdin(Stdio::null())
+            .stdout(stdout.try_clone()?)
+            .stderr(stderr.try_clone()?),
+        setting,
+        Command::spawn,
+    )?;
     let started = Instant::now();
     let status = loop {
         let error = if generation.load(Ordering::Relaxed) != expected {

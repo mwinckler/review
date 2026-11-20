@@ -191,7 +191,7 @@ impl Repository {
         let output = crate::command::output(&mut command, None)?;
         ensure!(
             output.status.success(),
-            "fetching {remote}: {}. Check repository SSH/HTTPS credentials and branch access",
+            "fetching {remote}: {}. For SSH, check your SSH client and keys. For HTTPS, check your credentials. Verify branch access.",
             String::from_utf8_lossy(&output.stderr).trim()
         );
         Ok(())
@@ -217,10 +217,12 @@ impl Repository {
                 root: self.root.clone(),
                 backend: Backend::Git,
             };
-            let output = git
-                .command(false)
-                .args(["diff", "--cached", "--quiet", "--no-ext-diff", "--"])
-                .output()?;
+            let output = crate::command::launch(
+                git.command(false)
+                    .args(["diff", "--cached", "--quiet", "--no-ext-diff", "--"]),
+                None,
+                |command| command.output(),
+            )?;
             ensure!(
                 output.status.success(),
                 "Git index contains staged changes or could not be checked. Save the staged work before preparing an MR with jj"
@@ -257,16 +259,17 @@ impl Repository {
         match self.backend {
             Backend::Git => {
                 self.run(&["check-ref-format", "--branch", branch], false)?;
-                let existing = self
-                    .command(false)
-                    .args([
+                let existing = crate::command::launch(
+                    self.command(false).args([
                         "show-ref",
                         "--verify",
                         "--quiet",
                         &format!("refs/heads/{branch}"),
-                    ])
-                    .output()?
-                    .status;
+                    ]),
+                    None,
+                    |command| command.output(),
+                )?
+                .status;
                 if existing.success() {
                     let local = self.resolve(&format!("refs/heads/{branch}"), false)?;
                     ensure!(
@@ -1054,22 +1057,23 @@ impl Repository {
             Backend::Jj => {
                 let changes = self.changes(comparison)?;
                 let mut errors = tempfile::tempfile()?;
-                let mut child = self
-                    .command(false)
-                    .args([
-                        "diff",
-                        "--from",
-                        &comparison.base_id,
-                        "--to",
-                        &comparison.head_id,
-                        "--git",
-                        "--context",
-                        "0",
-                    ])
-                    .stdout(Stdio::piped())
-                    .stderr(errors.try_clone()?)
-                    .spawn()
-                    .context("running jj diff for line counts")?;
+                let mut child = crate::command::launch(
+                    self.command(false)
+                        .args([
+                            "diff",
+                            "--from",
+                            &comparison.base_id,
+                            "--to",
+                            &comparison.head_id,
+                            "--git",
+                            "--context",
+                            "0",
+                        ])
+                        .stdout(Stdio::piped())
+                        .stderr(errors.try_clone()?),
+                    None,
+                    Command::spawn,
+                )?;
                 let counts = parse_jj_line_counts(
                     BufReader::new(child.stdout.take().expect("diff stdout is piped")),
                     &changes,
@@ -1222,10 +1226,7 @@ impl Repository {
     fn run(&self, args: &[&str], snapshot: bool) -> Result<Vec<u8>> {
         let mut command = self.command(snapshot);
         let program = command.get_program().to_string_lossy().into_owned();
-        let output = command
-            .args(args)
-            .output()
-            .with_context(|| format!("running {program}; is it installed?"))?;
+        let output = crate::command::launch(command.args(args), None, |command| command.output())?;
         ensure!(
             output.status.success(),
             "{program} {}: {}",
