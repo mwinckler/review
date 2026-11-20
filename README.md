@@ -281,14 +281,14 @@ for editing; `d`, then `y`, discards the pending reply. `Ctrl-q` discards unsave
 composer edits. Replies to general, resolved, and historical conversations retain
 the original GitLab discussion identity.
 
-Press `P` to preview and publish pending replies together with line comments and
+Press `Alt-p` to preview and publish pending replies together with line comments and
 the review summary. Replies use native GitLab draft notes and the same saved
 write intents, receipts, and uncertain-response recovery as line comments.
 Staged replies remain attached to their submission receipts.
 
 ### Submit a GitLab review
 
-Compose comments with `c` and save each locally with `Ctrl-s`. Press `P` to
+Compose comments with `c` and save each locally with `Ctrl-s`. Press `Alt-p` to
 prepare a GitLab review in the comments pane. Use `Tab` to switch between the
 Markdown summary and pending comments/replies. Use `j` / `k` to select feedback
 and `PageUp` / `PageDown` to scroll its source and text.
@@ -461,6 +461,7 @@ Repository content and persistent editor snapshots are preserved.
 | `,` / `.` | Select the previous/next revision that changed the file. |
 | `Shift-,` / `Shift-.` (`<` / `>`) | Extend the selected revision range. |
 | `]f` / `[f` | Next/previous file, expanding its parents |
+| `Shift-n` / `Shift-p` | Move the diff cursor to the next or previous file heading in a folder preview. |
 | `]u` / `[u` | Next/previous unviewed file |
 | `]h` / `[h` | Select and highlight the next/previous diff hunk |
 | `]Nh` / `[Nh` | Select hunk number `N` (1-based) |
@@ -474,12 +475,12 @@ Repository content and persistent editor snapshots are preserved.
 | `C` | Open the thread overview; `Enter` reads the selected thread in the comments pane. |
 | `R` | Reply to the selected GitLab thread in the comments pane. |
 | `t` | Show or hide the source-aligned comments pane. |
-| `P` | Preview and submit comments as a GitLab review |
+| `Alt-p` | Preview and submit comments as a GitLab review. |
 | `/` | Filter filenames in the tree; search text in the diff |
 | `s` | Flash jump to a visible tree entry from either pane |
 | `S` | Manage, rename, and forget saved sessions with multiselect |
 | `B` | Edit the comparison revisions for a local review. |
-| `n` / `N` | Next/previous matching file or diff search result |
+| `n` / `Alt-n` | Go to the next or previous matching file or diff search result. |
 | `u` | Toggle the unviewed-only filter |
 | `i` | Toggle inline and side-by-side rendering |
 | `+` / `-` | Increase or decrease diff context by one line. |
@@ -501,8 +502,9 @@ Search and filtering are case-insensitive. Directory counts show progress across
 their changed files. Pressing `Space` on a folder in the tree marks all its changed
 files viewed, including nested files and files hidden by filters or collapsed folders.
 Pressing it on a fully viewed folder unmarks all its changed files.
-Highlighting a folder shows a combined diff of all its changed descendants,
-including collapsed and filtered-out files, with a heading for each file.
+New reviews start on the topmost visible folder, or the first file if there
+are no folders. Highlighting a folder shows a combined diff of all its changed
+descendants, including collapsed and filtered-out files, with a heading for each.
 Focus the right pane with `Ctrl-l` or `Tab` to move the cursor or search the
 combined diff. Press `Space` to mark the file under the cursor viewed and
 collapse its diff to the filename heading. Press `Space` on that heading to

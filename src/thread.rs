@@ -261,6 +261,9 @@ impl App {
             (KeyCode::Char('P'), false) if self.review.gitlab.is_some() => {
                 self.open_submission();
             }
+            (KeyCode::Char('n'), false) if key.modifiers == KeyModifiers::ALT => {
+                self.jump_thread(false)
+            }
             (KeyCode::Char('n' | 'j') | KeyCode::Down, false) => self.jump_thread(true),
             (KeyCode::Char('N' | 'k') | KeyCode::Up, false) => self.jump_thread(false),
             (KeyCode::PageDown, _) | (KeyCode::Char('d' | 'f'), true) => {

@@ -443,6 +443,7 @@ fn tree_collapses_filters_and_counts_viewed_files() {
 #[test]
 fn vim_navigation_marking_and_unviewed_jumps_work() {
     let mut app = App::new(review());
+    key(&mut app, KeyCode::Home);
     assert_eq!(app.active, Some(0));
     key(&mut app, KeyCode::Char(' '));
     assert!(app.review.is_viewed(&app.review.changes[0]));
@@ -504,6 +505,7 @@ fn backspace_focuses_the_tree_but_edits_search_prompts() {
 fn marking_a_file_advances_to_the_next_unviewed_file_from_either_pane() {
     for focus in [Focus::Tree, Focus::Diff] {
         let mut review = review();
+        review.view.selected = "README.md".into();
         review.toggle_viewed(1);
         review
             .view
@@ -573,6 +575,7 @@ fn marking_in_unviewed_only_mode_advances_relative_to_the_marked_file() {
 fn automatic_advance_respects_filename_filters() {
     let mut review = review();
     review.view.filter = ".rs".into();
+    review.view.selected = "a/one.rs".into();
     review.changes = vec![change("a/one.rs"), change("b/skip.txt"), change("c/two.rs")];
     let mut app = App::new(review);
 
@@ -838,7 +841,7 @@ fn line_count_sections_use_separators_trailing_labels_and_colored_numbers() {
         .unwrap();
     let buffer = terminal.backend().buffer();
     let top: String = (0..140).map(|x| buffer[(x, 0)].symbol()).collect();
-    let expected = "+2 -1 · +123 -45 total · +31 -9 tests";
+    let expected = "+8 -6 · +123 -45 total · +31 -9 tests";
     assert!(top.ends_with(expected), "{top}");
     let start = 140 - Line::raw(expected).width() as u16;
     for (sign, color) in [('+', Color::Green), ('-', Color::Red)] {
@@ -1020,7 +1023,7 @@ fn overall_line_counts_are_right_justified_and_colored_on_the_top_line() {
             } else {
                 total.as_str()
             };
-            let selected = format!("+2 -1 · {global}");
+            let selected = format!("+8 -6 · {global}");
             let expected = if Line::raw(selected.as_str()).width() <= width as usize {
                 selected.as_str()
             } else {
@@ -1119,7 +1122,7 @@ fn highlighted_line_counts_track_file_and_folder_navigation_from_either_pane() {
     });
     let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
     for (keys, expected) in [
-        ("", "+2 -1 · +10 -7 total · +0 -0 tests"),
+        ("k", "+2 -1 · +10 -7 total · +0 -0 tests"),
         ("j", "+8 -6 · +10 -7 total · +0 -0 tests"),
         ("j", "+3 -2 · +10 -7 total · +0 -0 tests"),
         ("j", "+5 -4 · +10 -7 total · +0 -0 tests"),
@@ -1238,7 +1241,7 @@ fn viewed_files_and_fully_viewed_folders_are_dimmed() {
             );
         }
         assert!(
-            terminal.backend().buffer()[(1, 2)]
+            terminal.backend().buffer()[(1, app.selection as u16 + 2)]
                 .modifier
                 .contains(Modifier::BOLD)
         );
@@ -1337,7 +1340,7 @@ fn flash_queries_are_incremental_and_escape_restores_the_previous_layout() {
     assert!(app.flash.is_none());
     assert_eq!(app.focus, Focus::Diff);
     assert!(app.review.view.fullscreen);
-    assert_eq!(app.review.view.selected, "README.md");
+    assert_eq!(app.review.view.selected, "src/");
     assert!(app.review.view.filter.is_empty());
 }
 
@@ -1400,7 +1403,7 @@ fn flash_jump_keys_require_the_displayed_case() {
         app.flash.as_ref().unwrap().query,
         format!("b{}", label.to_ascii_uppercase())
     );
-    assert_eq!(app.review.view.selected, "README.md");
+    assert_eq!(app.review.view.selected, "src/");
     key(&mut app, KeyCode::Backspace);
     assert_eq!(app.flash.as_ref().unwrap().query, "b");
     key(&mut app, KeyCode::Char(label));

@@ -203,7 +203,14 @@ impl App {
         let selection = self
             .rows
             .iter()
-            .position(|row| row.path == self.review.view.selected)
+            .position(|row| row.path == selected)
+            .or_else(|| {
+                if selected.is_empty() {
+                    self.rows.iter().position(|row| row.file.is_none())
+                } else {
+                    None
+                }
+            })
             .or_else(|| self.rows.iter().position(|row| row.file.is_some()))
             .unwrap_or(0);
         self.select(selection);
@@ -267,6 +274,10 @@ impl App {
             .file_headings
             .partition_point(|heading| heading.row <= row);
         self.file_headings.get(index.checked_sub(1)?)
+    }
+
+    pub fn in_folder_diff(&self) -> bool {
+        self.focus == Focus::Diff && self.review.view.active.ends_with('/')
     }
 
     pub(crate) fn diff_cursor_row(&self) -> Option<usize> {
@@ -903,6 +914,18 @@ impl App {
             }
             return;
         }
+        if self.in_folder_diff()
+            && let Some(forward) = match (key.code, key.modifiers) {
+                (KeyCode::Char('N'), KeyModifiers::NONE | KeyModifiers::SHIFT)
+                | (KeyCode::Char('n'), KeyModifiers::SHIFT) => Some(true),
+                (KeyCode::Char('P'), KeyModifiers::NONE | KeyModifiers::SHIFT)
+                | (KeyCode::Char('p'), KeyModifiers::SHIFT) => Some(false),
+                _ => None,
+            }
+        {
+            self.jump_diff_file(forward);
+            return;
+        }
         match key.code {
             KeyCode::Char('o') => self.expand_comment(),
             KeyCode::Char('c') => {
@@ -932,6 +955,9 @@ impl App {
                 }
             }
             KeyCode::Char('P') => {
+                self.open_submission();
+            }
+            KeyCode::Char('p') if key.modifiers == KeyModifiers::ALT => {
                 self.open_submission();
             }
             KeyCode::Char('e') => {
@@ -1023,7 +1049,7 @@ impl App {
                 }
             }
             KeyCode::Char(' ') => {
-                if self.focus == Focus::Diff && self.review.view.active.ends_with('/') {
+                if self.in_folder_diff() {
                     self.toggle_viewed_in_directory();
                     return;
                 }
@@ -1091,7 +1117,10 @@ impl App {
                 self.refresh = true;
             }
             KeyCode::Char('n' | 'N') if self.focus == Focus::Tree => {
-                self.jump_file(key.code == KeyCode::Char('n'), false);
+                self.jump_file(
+                    key.code == KeyCode::Char('n') && !key.modifiers.contains(KeyModifiers::ALT),
+                    false,
+                );
             }
             KeyCode::Char('/') => {
                 self.searching = true;
@@ -1128,6 +1157,31 @@ impl App {
                 self.rebuild();
             }
             _ => {}
+        }
+    }
+
+    fn jump_diff_file(&mut self, forward: bool) {
+        if self.rendering {
+            self.message = "Wait for the diff to finish rendering.".into();
+            return;
+        }
+        let row = self
+            .diff_cursor_row()
+            .unwrap_or_else(|| self.position().vertical);
+        let next = self
+            .file_headings
+            .partition_point(|heading| heading.row <= row);
+        let target = if forward {
+            self.file_headings.get(next)
+        } else {
+            next.checked_sub(2)
+                .and_then(|index| self.file_headings.get(index))
+        };
+        if let Some(heading) = target {
+            let row = heading.row;
+            self.hunk_selection = None;
+            self.select_diff_line_at(row);
+            self.position().horizontal = 0;
         }
     }
 

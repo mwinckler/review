@@ -779,15 +779,27 @@ fn run(
                         config.translate(key)
                     };
                     for key in keys {
-                        let search = app.focus == Focus::Diff
+                        let search = if app.focus == Focus::Diff
                             && app.session_dialog.is_none()
                             && app.revision_dialog.is_none()
                             && app.restore.is_none()
                             && !app.comments_overview_open()
                             && !app.searching
                             && !app.help
-                            && !key.modifiers.contains(KeyModifiers::CONTROL)
-                            && matches!(key.code, KeyCode::Char('n' | 'N'));
+                        {
+                            match (key.code, key.modifiers) {
+                                (KeyCode::Char('n'), KeyModifiers::NONE) => Some(true),
+                                (KeyCode::Char('n'), KeyModifiers::ALT) => Some(false),
+                                (KeyCode::Char('N'), KeyModifiers::NONE | KeyModifiers::SHIFT)
+                                    if !app.in_folder_diff() =>
+                                {
+                                    Some(false)
+                                }
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
                         let search_enter = app.focus == Focus::Diff
                             && app.searching
                             && app.session_dialog.is_none()
@@ -809,8 +821,8 @@ fn run(
                             && app.restore.is_none()
                             && !app.comment_editor_active()
                             && !app.comments_overview_open();
-                        if search || search_enter {
-                            app.search_diff(&diff, key.code != KeyCode::Char('N'));
+                        if let Some(forward) = search.or(search_enter.then_some(true)) {
+                            app.search_diff(&diff, forward);
                         }
                     }
                     redraw = true;

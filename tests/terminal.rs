@@ -167,6 +167,9 @@ fn single_line_highlights_and_ranges_save_comments_at_the_chosen_lines() {
         let mut terminal = Pty::spawn(command);
         terminal.wait_until(|text| text.contains("second();"));
         terminal.output.clear();
+        terminal.send(b"j");
+        terminal.wait_until(|text| text.contains("second();"));
+        terminal.output.clear();
         terminal.send(b"\tljjc");
         terminal.wait_until(|text| text.contains("New line comment"));
         terminal.wait_until(|text| text.contains("println!"));
@@ -224,6 +227,9 @@ fn line_comments_autosave_resume_and_write_source_todos_only_after_confirmation(
         let mut start = command();
         start.args(["--base", "feature"]);
         let mut terminal = Pty::spawn(start);
+        terminal.wait_until(|text| text.contains("first();"));
+        terminal.output.clear();
+        terminal.send(b"j");
         terminal.wait_until(|text| text.contains("first();"));
         terminal.send(b"Vjx");
         terminal.wait_until(|text| text.contains("New line comment"));
@@ -1316,8 +1322,8 @@ fn exercise_default_launch(backend: Backend) {
     assert_eq!(first.review.comparison.head_id, expected.head_id);
     assert_eq!(first.repository, fixture.path().canonicalize().unwrap());
     assert_eq!(first.review.viewed.len(), 1);
-    assert_eq!(first.review.view.selected, first.review.changes[1].path);
-    assert_eq!(first.review.view.active, first.review.changes[1].path);
+    assert_eq!(first.review.view.selected, "src/");
+    assert_eq!(first.review.view.active, "src/");
 
     let mut terminal = Pty::spawn(command());
     terminal.wait_until(|text| text.contains("Changed files"));
@@ -1334,7 +1340,7 @@ fn exercise_default_launch(backend: Backend) {
     resume.arg("--resume");
     let mut terminal = Pty::spawn(resume);
     terminal.wait_until(|text| text.contains(&latest.id));
-    terminal.send(b"gg ");
+    terminal.send(b" ");
     terminal.wait_until(|_| {
         let sessions = store.list().unwrap();
         sessions.len() == 2 && sessions[0].id == latest.id && sessions[0].review.viewed.is_empty()
@@ -1372,7 +1378,7 @@ fn exercise_terminal(backend: Backend) {
     first.args(["--base", "main", "--head", "feature"]);
     let mut terminal = Pty::spawn(first);
     terminal.wait_until(|text| text.contains("Changed files"));
-    terminal.send(b"v");
+    terminal.send(b"ggv");
     terminal.wait_until(|_| {
         store
             .list()
