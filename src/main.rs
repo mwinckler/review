@@ -25,7 +25,7 @@ use review::{
     gitlab_ui::{self, Pick},
     gitlab_worker::{GitLabJob, GitLabOutcome, GitLabWorker},
     refresh::RefreshWorker,
-    renderer::{RenderFilter, RenderOptions, RenderWorker},
+    renderer::{DiffPreview, FolderPreview, RenderOptions, RenderWorker},
     restore::RestoreState,
     session_dialog::{SessionAction, SessionDialog},
     state::Review,
@@ -519,6 +519,22 @@ fn start_gitlab(
     Ok(Some((review, prepared.conductor_startup)))
 }
 
+fn install_diff_preview(
+    app: &mut App,
+    preview: DiffPreview,
+    page: usize,
+) -> (Text<'static>, usize) {
+    app.hunks = preview.hunks;
+    app.source_lines = preview.source_lines;
+    app.clear_file_headings();
+    app.set_file_headings(preview.file_headings);
+    let position = app.position();
+    position.vertical = position
+        .vertical
+        .min(preview.text.lines.len().saturating_sub(page));
+    (preview.text, preview.width)
+}
+
 fn run(
     terminal: &mut ratatui::DefaultTerminal,
     repo: &Repository,
@@ -532,6 +548,7 @@ fn run(
     let (store, saved, lock) = session;
     let mut diff = Text::raw("Select a changed file");
     let mut diff_width = 0;
+    let mut folder = None;
     let mut requested = None;
     let mut request_id = 0;
     let mut redraw = true;
@@ -571,40 +588,43 @@ fn run(
         } else {
             diff_page
         };
+        let mut folder_changed = false;
+        let mut new_folder = false;
         if redraw && !app.review.view.active.is_empty() {
             let options = RenderOptions {
                 width,
                 inline: app.review.view.inline,
                 context: app.review.view.diff_context,
             };
-            let filter = RenderFilter {
-                revisions: app.revision_range(),
-                viewed: if app.review.view.active.ends_with('/') && !app.review.viewed.is_empty() {
-                    app.preview_changes()
-                        .filter(|change| app.review.is_viewed(change))
-                        .map(|change| change.path.clone())
-                        .collect()
-                } else {
-                    BTreeSet::new()
-                },
-            };
-            let key = (app.review.view.active.clone(), options, filter);
+            let key = (
+                app.review.view.active.clone(),
+                options,
+                app.revision_range(),
+            );
             if requested.as_ref() != Some(&key) {
                 let same_preview = requested.as_ref().is_some_and(|previous| {
                     previous.0 == key.0
                         && previous.1.inline == options.inline
                         && previous.2 == key.2
                 });
-                request_id = worker.request_preview(
-                    repo,
-                    &app.review.comparison,
-                    &app.review.view.active,
-                    app.preview_changes().cloned().collect(),
-                    options,
-                    key.2.clone(),
-                );
-                requested = Some(key);
-                app.rendering = true;
+                let changes = app.preview_changes().cloned().collect();
+                if key.0.ends_with('/') {
+                    request_id = worker.cancel();
+                    folder = Some(FolderPreview::new(changes));
+                    new_folder = true;
+                    folder_changed = true;
+                } else {
+                    folder = None;
+                    request_id = worker.request_revisions(
+                        repo,
+                        &app.review.comparison,
+                        &key.0,
+                        changes,
+                        options,
+                        key.2.clone(),
+                    );
+                }
+                app.rendering = folder.is_none();
                 app.render_failed = false;
                 app.hunks.clear();
                 app.clear_file_headings();
@@ -613,9 +633,10 @@ fn run(
                     app.revision_preview = None;
                 }
                 diff = Text::raw("Rendering…");
-                redraw = true;
+                requested = Some(key);
             }
         } else if app.review.view.active.is_empty() {
+            folder = None;
             app.rendering = false;
             app.render_failed = false;
             app.hunks.clear();
@@ -639,21 +660,36 @@ fn run(
         for result in worker.results.try_iter() {
             if result.id == request_id {
                 app.rendering = false;
-                app.hunks = result.hunks;
-                app.source_lines = result.source_lines;
-                app.set_file_headings(result.file_headings);
-                app.revision_preview = result.revision_preview;
-                app.render_failed = result.text.is_err();
-                diff = match result.text {
-                    Ok(text) => text,
-                    Err(error) => Text::raw(format!("Diff error\n\n{}", ui::display_path(&error))),
-                };
-                diff_width = diff.width();
-                app.position().vertical = app
-                    .position()
-                    .vertical
-                    .min(diff.lines.len().saturating_sub(diff_page));
+                if let Some(folder) = &mut folder {
+                    folder.finish(result.files);
+                    folder_changed = true;
+                } else {
+                    app.revision_preview = result.revision_preview;
+                    app.render_failed = result.files.is_err();
+                    let preview = match result.files {
+                        Ok(files) => DiffPreview::single_file(&files, app.revisions.is_some()),
+                        Err(error) => DiffPreview::from_text(Text::raw(format!(
+                            "Diff error\n\n{}",
+                            ui::display_path(&error)
+                        ))),
+                    };
+                    (diff, diff_width) = install_diff_preview(app, preview, diff_page);
+                }
                 redraw = true;
+            }
+        }
+        if redraw
+            && let Some(folder) = &mut folder
+            && let Some((path, options, _)) = &requested
+        {
+            folder_changed |= folder.update_viewed(&app.review);
+            let missing = folder.request_missing();
+            if !missing.is_empty() {
+                request_id = worker.request(repo, &app.review.comparison, path, missing, *options);
+                app.rendering |= new_folder;
+            }
+            if folder_changed && !app.rendering {
+                (diff, diff_width) = install_diff_preview(app, folder.assemble(), diff_page);
             }
         }
         redraw |= app.apply_hunk_navigation(diff_page, diff.lines.len());
@@ -954,7 +990,7 @@ fn run(
                 key.0 == app.review.view.active
                     && key.1.inline == app.review.view.inline
                     && key.1.context == app.review.view.diff_context
-                    && key.2.revisions == app.revision_range()
+                    && key.2 == app.revision_range()
             })
         {
             app.editor_requested = false;

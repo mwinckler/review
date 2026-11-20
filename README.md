@@ -703,10 +703,11 @@ Use an editor bridge script to customize window selection or editor integration.
 Editor preparation and launching run in the background; failures appear in the
 footer.
 
-Diff jobs run in the background. Superseded jobs are cancelled, completed views
-are cached, and resizing re-renders for the current pane width. Renderer output
-is limited to 16 MiB per job, with one configured timeout budget for each file or
-directory preview.
+Diff jobs run in the background. The folder preview combines separately cached
+file diffs, so collapsing a file is immediate and expanding it only renders
+that file when its diff is missing. Superseded jobs are cancelled, and resizing
+uses diffs rendered for the current pane width. Renderer output is limited to
+16 MiB per job, with one configured timeout budget for each batch of files.
 Binary changes, renames, symlinks, executable-bit changes, submodule pointers,
 and Jujutsu conflict contents remain visible through file metadata and diffs.
 

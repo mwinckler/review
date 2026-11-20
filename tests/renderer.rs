@@ -4,7 +4,7 @@ use std::{fs, thread, time::Duration};
 
 use ratatui::text::Text;
 use review::{
-    renderer::{RenderOptions, RenderWorker, RendererConfig},
+    renderer::{DiffPreview, FolderPreview, RenderOptions, RenderWorker, RendererConfig},
     vcs::{Backend, Comparison, Repository},
 };
 use tempfile::TempDir;
@@ -46,7 +46,7 @@ fn render(
     comparison: &Comparison,
     path: &str,
 ) -> Result<Text<'static>, String> {
-    let changes = repo
+    let changes: Vec<_> = repo
         .changes(comparison)
         .unwrap()
         .into_iter()
@@ -54,13 +54,20 @@ fn render(
             change.path == path || (path.ends_with('/') && change.path.starts_with(path))
         })
         .collect();
-    let id = worker.request(repo, comparison, path, changes, OPTIONS);
+    let id = worker.request(repo, comparison, path, changes.clone(), OPTIONS);
     let result = worker
         .results
         .recv_timeout(Duration::from_secs(30))
         .unwrap();
     assert_eq!(result.id, id);
-    result.text
+    let files = result.files?;
+    if path.ends_with('/') {
+        let mut folder = FolderPreview::new(changes);
+        folder.finish(Ok(files));
+        Ok(folder.assemble().text)
+    } else {
+        Ok(DiffPreview::single_file(&files, false).text)
+    }
 }
 
 #[test]
@@ -91,7 +98,7 @@ fn directory_jobs_render_every_descendant_with_headings_from_pinned_contents() {
 }
 
 #[test]
-fn directory_cache_keys_include_every_descendant() {
+fn directory_render_reuses_unchanged_file_diffs() {
     let dir = fixture();
     let log = tempfile::NamedTempFile::new().unwrap();
     let config = RendererConfig {
@@ -128,7 +135,7 @@ fn directory_cache_keys_include_every_descendant() {
         .to_string();
     assert!(output.contains("NESTED_UPDATED"));
     assert!(!output.contains("DIRECTORY_NESTED"));
-    assert_eq!(fs::metadata(log.path()).unwrap().len(), 6);
+    assert_eq!(fs::metadata(log.path()).unwrap().len(), 4);
 }
 
 #[test]
@@ -175,7 +182,8 @@ fn selecting_a_file_cancels_a_directory_job() {
     let id = worker.request(&repo, &comparison, &file.path, vec![file.clone()], OPTIONS);
     let result = worker.results.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(result.id, id);
-    assert_eq!(result.text.unwrap().to_string(), "File metadata changed");
+    let preview = DiffPreview::single_file(&result.files.unwrap(), false);
+    assert_eq!(preview.text.to_string(), "File metadata changed");
 }
 
 #[test]

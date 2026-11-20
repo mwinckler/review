@@ -5,7 +5,7 @@ use std::{fs, sync::atomic::AtomicU64, time::Duration};
 use ratatui::{style::Color, text::Text};
 use review::{
     hunks::{self, HunkFormat},
-    renderer::{RenderOptions, RenderWorker, RendererConfig, render_pair},
+    renderer::{FolderPreview, RenderOptions, RenderWorker, RendererConfig, render_pair},
     vcs::{Backend, Change, Entry, Repository},
 };
 
@@ -283,8 +283,11 @@ fn directory_results_and_cached_results_keep_hunk_paths_and_row_offsets() {
             },
         );
         let result = worker.results.recv_timeout(Duration::from_secs(5)).unwrap();
-        let text = result.text.unwrap();
-        let hunk = result
+        let mut folder = FolderPreview::new(changes.clone());
+        folder.finish(Ok(result.files.unwrap()));
+        let preview = folder.assemble();
+        let text = preview.text;
+        let hunk = preview
             .hunks
             .iter()
             .find(|hunk| hunk.location.path == "src/main.rs")
@@ -296,7 +299,7 @@ fn directory_results_and_cached_results_keep_hunk_paths_and_row_offsets() {
                 .contains("src/main.rs")
         );
         assert!(!text.to_string().contains("uncommitted"));
-        let source = result
+        let source = preview
             .source_lines
             .iter()
             .find(|line| line.location.path == "src/main.rs" && line.location.new_line == Some(1))

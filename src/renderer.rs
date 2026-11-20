@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
     io::{Read, Seek, SeekFrom},
     ops::Range,
@@ -342,13 +342,7 @@ struct Job {
     path: String,
     changes: Vec<Change>,
     options: RenderOptions,
-    filter: RenderFilter,
-}
-
-#[derive(Clone, Default, PartialEq, Eq, Serialize)]
-pub struct RenderFilter {
-    pub revisions: Option<(Revision, Revision)>,
-    pub viewed: BTreeSet<String>,
+    revisions: Option<(Revision, Revision)>,
 }
 
 #[derive(Clone)]
@@ -371,23 +365,261 @@ fn text_size(text: &Text<'_>) -> usize {
         .sum()
 }
 
-#[derive(Clone, Default)]
-struct Preview {
-    text: Text<'static>,
-    file_headings: Vec<FileHeading>,
-    hunks: Vec<Hunk>,
-    source_lines: Vec<SourceLine>,
-    revision_preview: Option<(Comparison, Vec<Change>)>,
+#[derive(Default)]
+pub struct DiffPreview {
+    pub text: Text<'static>,
+    pub width: usize,
+    pub file_headings: Vec<FileHeading>,
+    pub hunks: Vec<Hunk>,
+    pub source_lines: Vec<SourceLine>,
 }
 
-fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Result<Preview> {
-    let directory = job.path.ends_with('/');
-    let started = Instant::now();
+impl DiffPreview {
+    pub fn from_text(text: Text<'static>) -> Self {
+        Self {
+            width: text.width(),
+            text,
+            ..Self::default()
+        }
+    }
+
+    fn append_line(&mut self, line: Line<'static>) {
+        self.width = self.width.max(line.width());
+        self.text.lines.push(line);
+    }
+
+    fn append_heading(&mut self, change: &Change, viewed: bool) {
+        self.file_headings.push(FileHeading {
+            row: self.text.lines.len(),
+            path: change.path.clone(),
+        });
+        let (title, metadata) = change_heading(change);
+        let modifier = if viewed {
+            Modifier::DIM
+        } else {
+            Modifier::BOLD
+        };
+        self.append_line(Line::from(vec![
+            Span::styled(
+                title,
+                Style::default().fg(Color::Cyan).add_modifier(modifier),
+            ),
+            Span::styled(metadata, Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+    fn append_diff(&mut self, file: &FileDiff) {
+        let offset = self.text.lines.len();
+        self.width = self.width.max(file.width);
+        self.text.lines.extend_from_slice(&file.text.lines);
+        self.hunks
+            .extend(file.hunks.iter().cloned().map(|mut hunk| {
+                hunk.rows.start += offset;
+                hunk.rows.end += offset;
+                hunk
+            }));
+        self.source_lines
+            .extend(file.source_lines.iter().cloned().map(|mut line| {
+                line.row += offset;
+                line
+            }));
+    }
+
+    pub fn single_file(files: &FileDiffs, revision_filtered: bool) -> Self {
+        if let Some(file) = files.values().next() {
+            Self {
+                text: file.text.clone(),
+                width: file.width,
+                hunks: file.hunks.clone(),
+                source_lines: file.source_lines.clone(),
+                ..Self::default()
+            }
+        } else if revision_filtered {
+            Self::from_text(Text::raw(
+                "No changes to this file in the selected revision range",
+            ))
+        } else {
+            Self::default()
+        }
+    }
+}
+
+pub struct FileDiff {
+    text: Text<'static>,
+    width: usize,
+    hunks: Vec<Hunk>,
+    source_lines: Vec<SourceLine>,
+    text_size: usize,
+}
+
+pub type FileDiffs = BTreeMap<String, Arc<FileDiff>>;
+
+pub struct FolderPreview {
+    changes: Vec<Change>,
+    files: FileDiffs,
+    viewed: BTreeSet<String>,
+    pending: Vec<String>,
+    errors: BTreeMap<String, String>,
+}
+
+impl FolderPreview {
+    pub fn new(changes: Vec<Change>) -> Self {
+        Self {
+            changes,
+            files: BTreeMap::new(),
+            viewed: BTreeSet::new(),
+            pending: Vec::new(),
+            errors: BTreeMap::new(),
+        }
+    }
+
+    pub fn update_viewed(&mut self, review: &crate::state::Review) -> bool {
+        let viewed: BTreeSet<_> = self
+            .changes
+            .iter()
+            .filter(|change| review.is_viewed(change))
+            .map(|change| change.path.clone())
+            .collect();
+        if self.viewed == viewed {
+            return false;
+        }
+        self.errors.retain(|path, _| !viewed.contains(path));
+        self.viewed = viewed;
+        true
+    }
+
+    pub fn request_missing(&mut self) -> Vec<Change> {
+        if !self.pending.is_empty() {
+            return Vec::new();
+        }
+        let missing: Vec<_> = self
+            .changes
+            .iter()
+            .filter(|change| {
+                !self.viewed.contains(&change.path)
+                    && !self.files.contains_key(&change.path)
+                    && !self.errors.contains_key(&change.path)
+            })
+            .cloned()
+            .collect();
+        self.pending
+            .extend(missing.iter().map(|change| change.path.clone()));
+        missing
+    }
+
+    pub fn finish(&mut self, result: Result<FileDiffs, String>) {
+        match result {
+            Ok(files) => self.store_diffs(files),
+            Err(error) => self.errors.extend(
+                self.pending
+                    .iter()
+                    .filter(|path| !self.viewed.contains(*path))
+                    .map(|path| (path.clone(), error.clone())),
+            ),
+        }
+        self.pending.clear();
+    }
+
+    fn store_diffs(&mut self, files: FileDiffs) {
+        // Prefer keeping expanded diffs when the active folder cache fills up.
+        let limit = MAX_OUTPUT_BYTES as usize;
+        let incoming: usize = files.values().map(|file| file.text_size).sum();
+        let mut size: usize = self.files.values().map(|file| file.text_size).sum();
+        self.files.retain(|path, file| {
+            if size + incoming > limit && self.viewed.contains(path) {
+                size -= file.text_size;
+                return false;
+            }
+            true
+        });
+        for (path, file) in files {
+            if size + file.text_size <= limit {
+                size += file.text_size;
+                self.files.insert(path, file);
+            } else if !self.viewed.contains(&path) {
+                self.errors
+                    .insert(path, "Folder diff output exceeded 16 MiB.".into());
+            }
+        }
+    }
+
+    pub fn assemble(&self) -> DiffPreview {
+        let mut preview = DiffPreview::default();
+        for change in &self.changes {
+            let viewed = self.viewed.contains(&change.path);
+            preview.append_heading(change, viewed);
+            if viewed {
+                continue;
+            }
+            if let Some(file) = self.files.get(&change.path) {
+                preview.append_diff(file);
+            } else if let Some(error) = self.errors.get(&change.path) {
+                preview.append_line(Line::raw(display_path(error)));
+            } else {
+                preview.append_line(Line::raw("Rendering…"));
+            }
+        }
+        preview
+    }
+}
+
+fn render_file(
+    config: &RendererConfig,
+    job: &Job,
+    comparison: &Comparison,
+    change: &Change,
+    started: Instant,
+    generation: &AtomicU64,
+) -> Result<FileDiff> {
+    let old = job.repo.content(comparison, change, true)?;
+    let new = job.repo.content(comparison, change, false)?;
     let mut remaining = config.clone();
-    let mut preview = Preview::default();
-    if let Some((first, last)) = &job.filter.revisions {
+    remaining.timeout_ms = config
+        .timeout_ms
+        .saturating_sub(started.elapsed().as_millis() as u64);
+    ensure!(
+        remaining.timeout_ms > 0,
+        "renderer timed out; increase renderer.timeout_ms or choose another renderer"
+    );
+    let text = render_pair(
+        &remaining,
+        change,
+        &old,
+        &new,
+        job.options,
+        generation,
+        job.id,
+    )?;
+    let line_counts = (
+        old.split_inclusive(|byte| *byte == b'\n').count(),
+        new.split_inclusive(|byte| *byte == b'\n').count(),
+    );
+    let format = config.hunk_format.for_command(&config.command);
+    let hunks = hunks::parse(&text, change, format);
+    let source_lines = hunks::source_lines(&text, change, format, &hunks, line_counts);
+    let text_size = text_size(&text);
+    let width = text.width();
+    Ok(FileDiff {
+        text,
+        width,
+        hunks,
+        source_lines,
+        text_size,
+    })
+}
+
+type FileCache = VecDeque<((String, RenderOptions), Arc<FileDiff>, usize)>;
+
+fn render_job(
+    config: &RendererConfig,
+    job: &Job,
+    generation: &AtomicU64,
+    cache: &mut FileCache,
+) -> Result<RenderResult> {
+    let started = Instant::now();
+    let directory = job.path.ends_with('/');
+    let revision_preview = if let Some((first, last)) = &job.revisions {
         let comparison = job.repo.revision_comparison(first, last)?;
-        let changes = job
+        let changes: Vec<_> = job
             .repo
             .changes(&comparison)?
             .into_iter()
@@ -399,105 +631,74 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
                 })
             })
             .collect();
-        preview.revision_preview = Some((comparison, changes));
-    }
-    let (comparison, changes) = preview
-        .revision_preview
+        Some((comparison, changes))
+    } else {
+        None
+    };
+    let (comparison, changes) = revision_preview
         .as_ref()
         .map(|(comparison, changes)| (comparison, changes.as_slice()))
         .unwrap_or((&job.comparison, &job.changes));
     let mut size = 0;
+    let mut files = BTreeMap::new();
     for change in changes {
         ensure!(
             generation.load(Ordering::Relaxed) == job.id,
             "render cancelled"
         );
-        let viewed = directory && job.filter.viewed.contains(&change.path);
-        let mut render = || -> Result<_> {
-            let old = job.repo.content(comparison, change, true)?;
-            let new = job.repo.content(comparison, change, false)?;
-            remaining.timeout_ms = config
-                .timeout_ms
-                .saturating_sub(started.elapsed().as_millis() as u64);
-            ensure!(
-                remaining.timeout_ms > 0,
-                "renderer timed out; increase renderer.timeout_ms or choose another renderer"
-            );
-            let text = render_pair(
-                &remaining,
-                change,
-                &old,
-                &new,
-                job.options,
-                generation,
-                job.id,
-            )?;
-            let line_counts = (
-                old.split_inclusive(|byte| *byte == b'\n').count(),
-                new.split_inclusive(|byte| *byte == b'\n').count(),
-            );
-            Ok((text, line_counts))
-        };
-        let (rendered, line_counts) = if viewed {
-            (Text::default(), (0, 0))
+        let key = (change.fingerprint(), job.options);
+        let file = if let Some(index) = cache.iter().position(|entry| entry.0 == key) {
+            let entry = cache.remove(index).expect("cache index exists");
+            let file = Arc::clone(&entry.1);
+            cache.push_back(entry);
+            file
         } else {
-            render().with_context(|| format!("rendering {}", display_path(&change.path)))?
+            let file = Arc::new(
+                render_file(config, job, comparison, change, started, generation)
+                    .with_context(|| format!("rendering {}", display_path(&change.path)))?,
+            );
+            let size = file.text_size
+                + key.0.len()
+                + std::mem::size_of::<FileDiff>()
+                + file
+                    .hunks
+                    .iter()
+                    .map(|hunk| std::mem::size_of_val(hunk) + hunk.location.path.len())
+                    .sum::<usize>()
+                + file
+                    .source_lines
+                    .iter()
+                    .map(|line| std::mem::size_of_val(line) + line.location.path.len())
+                    .sum::<usize>();
+            if size <= MAX_CACHE_BYTES {
+                cache.push_back((key, Arc::clone(&file), size));
+                let mut bytes: usize = cache.iter().map(|entry| entry.2).sum();
+                while bytes > MAX_CACHE_BYTES || cache.len() > 256 {
+                    bytes -= cache.pop_front().expect("cache contains bytes").2;
+                }
+            }
+            file
         };
-        let format = config.hunk_format.for_command(&config.command);
-        let mut hunks = hunks::parse(&rendered, change, format);
-        let mut source_lines = hunks::source_lines(&rendered, change, format, &hunks, line_counts);
-        if !directory {
-            preview.text = rendered;
-            preview.hunks = hunks;
-            preview.source_lines = source_lines;
-            return Ok(preview);
-        }
-        preview.file_headings.push(FileHeading {
-            row: preview.text.lines.len(),
-            path: change.path.clone(),
-        });
-        let (title, metadata) = change_heading(change);
-        let title_style = if viewed {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM)
-        } else {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        };
-        let mut section = Text::from(Line::from(vec![
-            Span::styled(title, title_style),
-            Span::styled(metadata, Style::default().fg(Color::DarkGray)),
-        ]));
-        let offset = preview.text.lines.len() + section.lines.len();
-        for hunk in &mut hunks {
-            hunk.rows.start += offset;
-            hunk.rows.end += offset;
-        }
-        preview.hunks.extend(hunks);
-        for line in &mut source_lines {
-            line.row += offset;
-        }
-        preview.source_lines.extend(source_lines);
-        section.lines.extend(rendered.lines);
-        size += text_size(&section);
+        size += file.text_size;
         ensure!(
-            size <= MAX_OUTPUT_BYTES as usize,
+            !directory || size <= MAX_OUTPUT_BYTES as usize,
             "renderer output exceeded 16 MiB"
         );
-        preview.text.lines.extend(section.lines);
+        files.insert(change.path.clone(), file);
+        if !directory {
+            break;
+        }
     }
-    if preview.text.lines.is_empty() && job.filter.revisions.is_some() {
-        preview.text = Text::raw("No changes to this file in the selected revision range");
-    }
-    Ok(preview)
+    Ok(RenderResult {
+        id: job.id,
+        files: Ok(files),
+        revision_preview,
+    })
 }
 
 pub struct RenderResult {
     pub id: u64,
-    pub text: std::result::Result<Text<'static>, String>,
-    pub file_headings: Vec<FileHeading>,
-    pub hunks: Vec<Hunk>,
-    pub source_lines: Vec<SourceLine>,
+    pub files: Result<FileDiffs, String>,
     pub revision_preview: Option<(Comparison, Vec<Change>)>,
 }
 
@@ -519,7 +720,7 @@ impl RenderWorker {
         let generation = Arc::new(AtomicU64::new(0));
         let current = Arc::clone(&generation);
         let thread = thread::spawn(move || {
-            let mut cache = VecDeque::<(String, Preview, usize)>::new();
+            let mut cache = FileCache::new();
             while let Ok(mut job) = jobs.recv() {
                 for newer in jobs.try_iter() {
                     job = newer;
@@ -527,64 +728,18 @@ impl RenderWorker {
                 if current.load(Ordering::Relaxed) != job.id {
                     continue;
                 }
-                let key = blake3::hash(
-                    &serde_json::to_vec(&(&job.path, &job.changes, &job.filter, job.options))
-                        .expect("render key is serializable"),
-                )
-                .to_hex()
-                .to_string();
-                let result = if let Some(index) = cache.iter().position(|entry| entry.0 == key) {
-                    let entry = cache.remove(index).expect("cache index exists");
-                    let text = entry.1.clone();
-                    cache.push_back(entry);
-                    Ok(text)
-                } else {
-                    render_job(&config, &job, &current).map_err(|error| format!("{error:#}"))
+                let result = match render_job(&config, &job, &current, &mut cache) {
+                    Ok(result) => result,
+                    Err(error) => RenderResult {
+                        id: job.id,
+                        files: Err(format!("{error:#}")),
+                        revision_preview: None,
+                    },
                 };
                 if current.load(Ordering::Relaxed) != job.id {
                     continue;
                 }
-                if let Ok(preview) = &result {
-                    let size = text_size(&preview.text)
-                        + preview
-                            .file_headings
-                            .iter()
-                            .map(|heading| std::mem::size_of_val(heading) + heading.path.len())
-                            .sum::<usize>()
-                        + preview
-                            .hunks
-                            .iter()
-                            .map(|hunk| std::mem::size_of_val(hunk) + hunk.location.path.len())
-                            .sum::<usize>()
-                        + preview
-                            .source_lines
-                            .iter()
-                            .map(|line| std::mem::size_of_val(line) + line.location.path.len())
-                            .sum::<usize>();
-                    if size <= MAX_CACHE_BYTES && !cache.iter().any(|entry| entry.0 == key) {
-                        cache.push_back((key, preview.clone(), size));
-                        while cache.len() > 16
-                            || cache.iter().map(|entry| entry.2).sum::<usize>() > MAX_CACHE_BYTES
-                        {
-                            cache.pop_front();
-                        }
-                    }
-                }
-                let (text, preview) = match result {
-                    Ok(mut preview) => (Ok(std::mem::take(&mut preview.text)), preview),
-                    Err(error) => (Err(error), Preview::default()),
-                };
-                if output
-                    .send(RenderResult {
-                        id: job.id,
-                        text,
-                        file_headings: preview.file_headings,
-                        hunks: preview.hunks,
-                        source_lines: preview.source_lines,
-                        revision_preview: preview.revision_preview,
-                    })
-                    .is_err()
-                {
+                if output.send(result).is_err() {
                     break;
                 }
             }
@@ -617,28 +772,6 @@ impl RenderWorker {
         options: RenderOptions,
         revisions: Option<(Revision, Revision)>,
     ) -> u64 {
-        self.request_preview(
-            repo,
-            comparison,
-            path,
-            changes,
-            options,
-            RenderFilter {
-                revisions,
-                ..RenderFilter::default()
-            },
-        )
-    }
-
-    pub fn request_preview(
-        &self,
-        repo: &Repository,
-        comparison: &Comparison,
-        path: &str,
-        changes: Vec<Change>,
-        options: RenderOptions,
-        filter: RenderFilter,
-    ) -> u64 {
         let id = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         let job = Job {
             id,
@@ -647,7 +780,7 @@ impl RenderWorker {
             path: path.to_owned(),
             changes,
             options,
-            filter,
+            revisions,
         };
         let _ = self.sender.as_ref().expect("worker is running").send(job);
         id
