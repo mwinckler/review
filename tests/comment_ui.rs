@@ -49,10 +49,9 @@ fn fixture() -> (tempfile::TempDir, Repository, App, Text<'static>) {
 }
 
 #[test]
-fn enter_highlights_one_line_and_navigation_moves_the_comment_target_without_extending_it() {
+fn diff_focus_highlights_one_line_and_navigation_moves_the_comment_target() {
     let (_root, repo, mut app, text) = fixture();
     key(&mut app, KeyCode::Tab);
-    key(&mut app, KeyCode::Enter);
     assert!(app.line_selection.is_some());
     key(&mut app, KeyCode::Char('l'));
     key(&mut app, KeyCode::Char('j'));
@@ -120,21 +119,15 @@ fn visual_ranges_start_at_the_highlighted_line_and_toggle_back_to_a_single_line(
     let target = app.line_selection.as_ref().unwrap().target();
     assert_eq!((target.start_line, target.end_line), (4, 4));
     key(&mut app, KeyCode::Esc);
-    assert!(app.line_selection.is_none());
+    assert_eq!(app.line_selection.as_ref().unwrap().target(), target);
 }
 
 #[test]
 fn starting_a_line_highlight_uses_the_visible_source_instead_of_an_offscreen_selected_hunk() {
     let (_root, _repo, mut app, _text) = fixture();
-    key(&mut app, KeyCode::Tab);
     app.hunk_selection = Some(app.hunks[0].location.clone());
     app.position().vertical = 6;
-    app.handle_key(
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-        2,
-        100,
-        100,
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), 2, 100, 100);
     let target = app.line_selection.as_ref().unwrap().target();
     assert_eq!(target.path, "src/main.rs");
     assert_eq!((target.start_line, target.end_line), (3, 3));
@@ -167,24 +160,22 @@ fn single_line_navigation_clamps_pages_extremes_and_side_changes_to_one_line() {
 }
 
 #[test]
-fn line_highlights_yield_to_hunk_navigation_search_and_pane_changes() {
+fn the_diff_cursor_follows_hunk_navigation_and_search_until_focus_leaves() {
     let (_root, _repo, mut app, text) = fixture();
     key(&mut app, KeyCode::Tab);
     key(&mut app, KeyCode::Enter);
     key(&mut app, KeyCode::Char(']'));
     key(&mut app, KeyCode::Char('h'));
     assert_eq!(app.selected_hunk(), Some(&app.hunks[0]));
-    assert!(app.line_selection.is_none());
-    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.line_selection.as_ref().unwrap().target().start_line, 1);
     key(&mut app, KeyCode::Char('/'));
     assert!(app.searching);
-    assert!(app.line_selection.is_none());
+    assert!(app.line_selection.is_some());
     app.diff_search = "second();".into();
     app.search_diff(&text, true);
     assert_eq!(app.position().vertical, 6);
     key(&mut app, KeyCode::Esc);
-    key(&mut app, KeyCode::Enter);
-    assert!(app.line_selection.is_some());
+    assert_eq!(app.line_selection.as_ref().unwrap().target().start_line, 3);
     key(&mut app, KeyCode::Tab);
     assert_eq!(app.focus, Focus::Tree);
     assert!(app.line_selection.is_none());
@@ -295,7 +286,9 @@ fn visual_ranges_stay_on_one_side_and_file_and_compose_the_exact_inclusive_lines
     }
     assert_eq!(app.line_selection.as_ref().unwrap().target().end_line, 1);
     key(&mut app, KeyCode::Esc);
-    assert!(app.line_selection.is_none());
+    let selection = app.line_selection.as_ref().unwrap();
+    assert!(!selection.extending);
+    assert_eq!(selection.anchor, selection.cursor);
 }
 
 #[test]

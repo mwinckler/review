@@ -402,11 +402,12 @@ Repository content and persistent editor snapshots are preserved.
 
 | Keys | Action |
 |---|---|
-| `j` / `k`, arrows | Move in the tree, scroll the diff, move a highlighted line, or select a comment thread. |
+| `j` / `k`, up/down arrows | Move in the tree, move the diff cursor, or select a comment thread. |
 | `Shift-j` / `Shift-k` | Scroll the diff down/up by one line from any pane, keeping pane focus. |
 | `Ctrl-n` / `Ctrl-p` | Next/previous visible tree row, keeping pane focus and layout |
-| `h` / `l` | Collapse/expand directories, scroll horizontally, or choose old/new side |
-| `Enter` | Toggle a directory, focus a file's diff, highlight a source line, or read a comment thread. |
+| `h` / `l` | Collapse or expand directories, or choose the old or new side of the diff. |
+| `Shift-h` / `Shift-l` | Scroll the diff horizontally. |
+| `Enter` | Toggle a directory, focus a file's diff, collapse a line range, or read a comment thread. |
 | `Tab` / `BackTab` | Cycle forward/backward through visible panes. |
 | `Ctrl-h` / `Ctrl-k`, `Ctrl-l` / `Ctrl-j` | Focus the previous or next pane. |
 | `Ctrl-Left` / `Ctrl-Up`, `Ctrl-Right` / `Ctrl-Down` | Shrink or grow the active split by two columns. |
@@ -420,7 +421,7 @@ Repository content and persistent editor snapshots are preserved.
 | `]u` / `[u` | Next/previous unviewed file |
 | `]h` / `[h` | Select and highlight the next/previous diff hunk |
 | `]Nh` / `[Nh` | Select hunk number `N` (1-based) |
-| `e` | Open the selected file or hunk in the editor, or edit a local comment in the comments pane. |
+| `e` | Open the selected file or diff line in the editor, or edit a local comment in the comments pane. |
 | `Y` | Copy the selected file or directory's absolute path to the clipboard |
 | `D` | Restore the selected file or highlighted lines from the review base. |
 | `c` | Compose a comment on the selected diff lines in the comments pane. |
@@ -495,8 +496,8 @@ Navigation centers the selected hunk within the available scroll range.
 Selection follows the same source location when resizing or switching layouts.
 `Esc` clears the hunk selection.
 
-Press `e` to open the selected hunk at its source line. With the diff pane focused,
-`e` also opens the nearest displayed hunk; from the file tree it opens the file.
+Press `e` to open the source line at the diff cursor, or the selected hunk when
+the renderer only maps hunks. From the file tree, `e` opens the selected file.
 The default command launches a new terminal window running `nvim`, using your
 normal Neovim/LazyVim configuration. It requires `xdg-terminal-exec` and `nvim`.
 
@@ -517,7 +518,7 @@ locations. For wrapper scripts, set `[renderer] hunk_format = "difftastic"` or
 In a local review, select a changed file and press `D` to restore it from the
 review base. Press `y` to confirm, or `n` / `Esc` to cancel.
 
-To restore part of a text file, focus the diff and press `Enter` to highlight a
+To restore part of a text file, focus the diff and move the cursor to a source
 line. Use `v` and `j` / `k` to extend a range, and `h` / `l` to choose the old or
 new side. Then press `D`, followed by `y`. A new-side selection removes added
 lines, and an old-side selection brings back deleted lines. When a changed
@@ -557,15 +558,14 @@ Press `Esc` to restore the previous pane and layout.
 ### Line comments
 
 Press `c` on a file, selected hunk, or displayed source line to compose a comment.
-To choose a single line, focus the diff with `Tab` or `Ctrl-l`, then press `Enter`.
-Use `j` / `k` or arrows to move through source rows in display order, switching
-sides as needed. Press `c` to comment on the highlighted line.
+Focus the diff with `Tab` or `Ctrl-l` to see the cursor on a source line.
+Use `j` / `k` or the up/down arrows to move it through source rows in display
+order, switching sides as needed. Press `c` to comment on the highlighted line.
 For a range, press `v` at the highlighted line, extend it with `j` / `k` or the page
-keys, then press `c`. Press `v` again or `Enter` to return to a single-line highlight
-at the current endpoint. Starting a highlight uses the currently visible source.
-`h` / `l` select the old/new side; `gg` / `G` move to the first/last mapped source
-line. A range belongs to one file and one side. `Esc` clears the line highlight or
-range.
+keys, then press `c`. Press `v` again, `Enter`, or `Esc` to return to a single-line
+highlight at the current endpoint.
+Use `h` / `l` to select the old or new side and `gg` / `G` to move to the first or
+last mapped source line. A range belongs to one file and one side.
 Difftastic and unified renderers support visual selection in file and folder
 previews, including inline and side-by-side layouts.
 

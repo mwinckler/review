@@ -515,10 +515,7 @@ impl App {
                     })
                 })
         } else if self.focus == Focus::Diff {
-            self.source_lines
-                .iter()
-                .find(|line| line.row >= position)
-                .or_else(|| self.source_lines.last())
+            self.source_at_or_after(position)
         } else {
             None
         };
@@ -536,35 +533,91 @@ impl App {
         })
     }
 
-    pub(crate) fn start_line_selection(&mut self, extending: bool, page: usize, lines: usize) {
+    fn source_at_or_after(&self, row: usize) -> Option<&SourceLine> {
+        let index = self.source_lines.partition_point(|line| line.row < row);
+        self.source_lines
+            .get(index)
+            .or_else(|| self.source_lines.last())
+    }
+
+    fn initial_line_selection(&self, page: usize) -> Option<LineSelection> {
+        let top = self
+            .review
+            .view
+            .positions
+            .get(&self.review.view.active)
+            .map_or(0, |position| position.vertical);
+        let first = self.source_at_or_after(top)?;
+        if (self.focus != Focus::Diff || self.hunk_selection.is_some())
+            && let Some(target) = self.comment_target()
+        {
+            let source = self
+                .source_lines
+                .iter()
+                .find(|line| {
+                    line.location.path == target.path
+                        && line.number(target.side) == Some(target.start_line)
+                        && (top..top + page).contains(&line.row)
+                })
+                .unwrap_or(first);
+            return LineSelection::at_source(source, target.side, false);
+        }
+        LineSelection::at_source(first, DiffSide::New, false)
+    }
+
+    pub(crate) fn ensure_diff_cursor(&mut self, page: usize) {
+        if self
+            .line_selection
+            .as_ref()
+            .and_then(|selection| selection.source_row(&self.source_lines))
+            .is_none()
+        {
+            self.line_selection = None;
+            self.line_selection = self.initial_line_selection(page);
+        }
+    }
+
+    pub(crate) fn select_diff_line_at(&mut self, row: usize) {
+        self.line_selection = self
+            .source_at_or_after(row)
+            .and_then(|source| LineSelection::at_source(source, DiffSide::New, false));
+    }
+
+    pub(crate) fn keep_cursor_in_viewport(&mut self, page: usize) {
+        let top = self.position().vertical;
+        let visible = top..top + page;
+        let selection = self.line_selection.as_ref();
+        if selection.is_some_and(|selection| selection.extending) {
+            return;
+        }
+        let row = selection.and_then(|selection| selection.source_row(&self.source_lines));
+        if row.is_some_and(|row| visible.contains(&row)) {
+            return;
+        }
+        let row = row.unwrap_or(top);
+        let start = self.source_lines.partition_point(|line| line.row < top);
+        if let Some(source) = self.source_lines[start..]
+            .iter()
+            .take_while(|line| visible.contains(&line.row))
+            .min_by_key(|line| line.row.abs_diff(row))
+        {
+            let side = selection.map_or(DiffSide::New, |selection| selection.side);
+            self.line_selection = LineSelection::at_source(source, side, false);
+        }
+    }
+
+    pub(crate) fn start_line_selection(&mut self, page: usize) {
         if self.rendering {
             self.message = "Wait for the diff to finish rendering".into();
             return;
         }
-        let Some(target) = self.comment_target() else {
-            self.message = "Select a file or mapped source line".into();
-            return;
-        };
-        let position = self.position().vertical;
-        let source = self
-            .source_lines
-            .iter()
-            .find(|line| {
-                line.location.path == target.path
-                    && line.number(target.side) == Some(target.start_line)
-                    && (position..position + page).contains(&line.row)
-            })
-            .or_else(|| self.source_lines.iter().find(|line| line.row >= position))
-            .or_else(|| self.source_lines.last());
-        let Some(selection) =
-            source.and_then(|source| LineSelection::at_source(source, target.side, extending))
-        else {
+        let Some(mut selection) = self.initial_line_selection(page) else {
             self.message = "Use c and the line-range fields with this renderer".into();
             return;
         };
+        selection.extending = true;
         self.line_selection = Some(selection);
         self.focus = Focus::Diff;
-        self.keep_line_selection_visible(page, lines);
     }
 
     pub fn keep_line_selection_visible(&mut self, page: usize, lines: usize) {
@@ -583,12 +636,7 @@ impl App {
         }
     }
 
-    pub(crate) fn handle_line_selection(
-        &mut self,
-        key: KeyEvent,
-        page: usize,
-        lines: usize,
-    ) -> bool {
+    pub(crate) fn handle_line_selection(&mut self, key: KeyEvent, page: usize) -> bool {
         let Some(selection) = &mut self.line_selection else {
             return false;
         };
@@ -640,9 +688,8 @@ impl App {
                 }
                 KeyCode::Char('v') => selection.extending = !selection.extending,
                 KeyCode::Enter => selection.extending = false,
-                KeyCode::Esc => {
-                    self.line_selection = None;
-                    return true;
+                KeyCode::Esc if selection.extending || selection.anchor != selection.cursor => {
+                    selection.extending = false;
                 }
                 KeyCode::Char('c') => {
                     self.comment_action = Some(CommentAction::Compose(selection.target()));
@@ -654,7 +701,6 @@ impl App {
         if !selection.extending {
             selection.anchor = selection.cursor;
         }
-        self.keep_line_selection_visible(page, lines);
         true
     }
 

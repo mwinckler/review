@@ -505,19 +505,23 @@ impl App {
         }
         self.review.view.diff_focused = self.focus == Focus::Diff;
         self.review.view.comments_focused = self.focus == Focus::Comments;
-        if self.focus == Focus::Comments {
-            self.keep_diff_selection_visible(page, diff_lines);
-        }
+        self.keep_diff_selection_visible(page, diff_lines);
     }
 
     pub fn keep_diff_selection_visible(&mut self, page: usize, diff_lines: usize) {
-        if !self.follow_diff_selection {
-            return;
-        }
-        if self.focus == Focus::Comments {
-            self.keep_thread_visible(page, diff_lines);
-        } else {
-            self.keep_line_selection_visible(page, diff_lines);
+        match self.focus {
+            Focus::Diff if !self.rendering => {
+                if self.follow_diff_selection {
+                    self.ensure_diff_cursor(page);
+                    self.keep_line_selection_visible(page, diff_lines);
+                } else {
+                    self.keep_cursor_in_viewport(page);
+                }
+            }
+            Focus::Comments if self.follow_diff_selection => {
+                self.keep_thread_visible(page, diff_lines);
+            }
+            _ => {}
         }
     }
 
@@ -748,6 +752,20 @@ impl App {
             return;
         }
         self.follow_diff_selection = true;
+        let horizontal_step = match (key.code, key.modifiers) {
+            (KeyCode::Char('H'), KeyModifiers::NONE)
+            | (KeyCode::Char('h' | 'H'), KeyModifiers::SHIFT) => Some(-4),
+            (KeyCode::Char('L'), KeyModifiers::NONE)
+            | (KeyCode::Char('l' | 'L'), KeyModifiers::SHIFT) => Some(4),
+            _ => None,
+        };
+        if self.focus == Focus::Diff
+            && let Some(step) = horizontal_step
+        {
+            self.scroll_diff_horizontally(step);
+            self.prefix = None;
+            return;
+        }
         if let Some((prefix, number)) = self.prefix.take().filter(|_| {
             !key.modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -794,7 +812,10 @@ impl App {
         }
         if key.code == KeyCode::Esc && self.revisions.is_some() {
             self.clear_revision_filter();
-        } else if self.focus == Focus::Diff && self.handle_line_selection(key, page, diff_lines) {
+        } else if self.focus == Focus::Diff
+            && !self.source_lines.is_empty()
+            && self.handle_line_selection(key, page)
+        {
             return;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -832,10 +853,8 @@ impl App {
                     self.message = "Select a file or mapped source line".into();
                 }
             }
-            KeyCode::Enter if self.focus == Focus::Diff => {
-                self.start_line_selection(false, page, diff_lines);
-            }
-            KeyCode::Char('v') => self.start_line_selection(true, page, diff_lines),
+            KeyCode::Enter if self.focus == Focus::Diff => {}
+            KeyCode::Char('v') => self.start_line_selection(page),
             KeyCode::Char('C') => {
                 self.open_comments_overview();
             }
@@ -1019,7 +1038,6 @@ impl App {
                     self.review.view.filter.clear();
                     self.rebuild();
                 } else {
-                    self.line_selection = None;
                     self.diff_search.clear();
                 }
             }
@@ -1057,7 +1075,7 @@ impl App {
             .as_ref()
             .filter(|_| self.focus == Focus::Diff)
             .map(LineSelection::target);
-        if self.rendering && lines.is_some() {
+        if self.rendering && self.focus == Focus::Diff {
             self.message = "Wait for the diff to finish rendering.".into();
             return;
         }
@@ -1228,7 +1246,12 @@ impl App {
         if self.diff_search.is_empty() || len == 0 {
             return;
         }
-        let start = self.position().vertical.min(len - 1);
+        let start = self
+            .line_selection
+            .as_ref()
+            .and_then(|selection| selection.source_row(&self.source_lines))
+            .unwrap_or_else(|| self.position().vertical)
+            .min(len - 1);
         let needle = self.diff_search.to_lowercase();
         for offset in 1..=len {
             let index = if forward {
@@ -1241,8 +1264,8 @@ impl App {
                 .to_lowercase()
                 .contains(&needle)
             {
-                self.line_selection = None;
                 self.position().vertical = index;
+                self.select_diff_line_at(index);
                 return;
             }
         }

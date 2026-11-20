@@ -655,16 +655,17 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         display_path(&app.message)
     } else if let Some(selection) = &app.line_selection {
         let target = selection.target();
-        let (range, movement) = if selection.extending {
+        let (range, movement, cancel) = if selection.extending {
             (
                 format!("{}-{}", target.start_line, target.end_line),
                 "j/k extend · v single",
+                " · Esc cancel range",
             )
         } else {
-            (target.start_line.to_string(), "j/k move · v range")
+            (target.start_line.to_string(), "j/k move · v range", "")
         };
         format!(
-            "{}:{range} ({}) · {movement} · h/l old/new · D restore · o thread · c comment · Esc cancel",
+            "{}:{range} ({}) · {movement} · h/l old/new · D restore · o thread · c comment{cancel}",
             display_path(&target.path),
             target.side.label()
         )
@@ -692,10 +693,11 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         );
         frame.render_widget(Clear, area);
         let mut text = String::from(concat!(
-            "j/k, arrows      Move, scroll, or select a comment thread.\n",
+            "j/k, up/down     Move the selection or diff cursor.\n",
             "Shift-j/k        Scroll the diff by one line from any pane.\n",
             "Ctrl-n/p         Select the next/previous tree row from any pane.\n",
-            "h/l              Collapse/expand / horizontal scroll / old/new side\n",
+            "h/l              Collapse/expand a directory or choose the diff side.\n",
+            "Shift-h/l        Scroll the diff horizontally.\n",
             "Tab, Ctrl-h/j/k/l Move between panes.\n",
             "Ctrl-arrows      Resize the active split.\n",
             "gg / G           First/last row or page\n",
@@ -708,10 +710,10 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "]u / [u          Next/previous unviewed file\n",
             "]h / [h          Select next/previous diff hunk\n",
             "]Nh / [Nh        Select hunk number N (1-based)\n",
-            "e                Open selected hunk/file in editor\n",
+            "e                Open the selected diff line or file in the editor.\n",
             "Y                Copy selected file/folder's full path\n",
             "D                Restore the selected file or lines.\n",
-            "Enter            Highlight a source line in the diff\n",
+            "Enter            Focus a file's diff or collapse a line range.\n",
             "c / v / C        Comment / select line range / comments\n",
             "t                Toggle the source-aligned comments pane.\n",
             "o / ]c / [c      Expand thread / next/previous thread\n",

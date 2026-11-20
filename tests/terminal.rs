@@ -167,7 +167,7 @@ fn single_line_highlights_and_ranges_save_comments_at_the_chosen_lines() {
         let mut terminal = Pty::spawn(command);
         terminal.wait_until(|text| text.contains("second();"));
         terminal.output.clear();
-        terminal.send(b"\t\rljjc");
+        terminal.send(b"\tljjc");
         terminal.wait_until(|text| text.contains("New line comment"));
         terminal.wait_until(|text| text.contains("println!"));
         terminal.send(b"\x1b[200~Chosen single line\x1b[201~\x13");
