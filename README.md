@@ -483,7 +483,7 @@ Repository content and persistent editor snapshots are preserved.
 | `n` / `Alt-n` | Go to the next or previous matching file or diff search result. |
 | `u` | Toggle the unviewed-only filter |
 | `i` | Toggle inline and side-by-side rendering |
-| `+` / `-` | Increase or decrease diff context by one line. |
+| `+` / `-` | Increase or decrease context for the selected diff file by one line. |
 | `z` | Toggle a full-width diff |
 | `Esc` | Clear file and revision filters, or cancel a search or Flash prompt. |
 | `r` | Refresh the comparison |
@@ -509,6 +509,8 @@ Focus the right pane with `Ctrl-l` or `Tab` to move the cursor or search the
 combined diff. Press `Space` to mark the file under the cursor viewed and
 collapse its diff to the filename heading. Press `Space` on that heading to
 mark the file unviewed and expand its diff.
+Press `+` or `-` to adjust context for the file under the diff cursor. That file's
+body shows a spinner at its existing height while the new diff renders.
 Viewed files and fully viewed folders appear slightly dimmed in the tree.
 Narrow terminals display the focused pane at full width.
 When the rendered diff is taller than its pane, a right-edge scrollbar shows your

@@ -27,14 +27,24 @@ pub struct ViewState {
     pub filter: String,
     pub unviewed_only: bool,
     pub inline: bool,
+    // Older sessions used one context setting for every file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diff_context: Option<u32>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub file_diff_contexts: BTreeMap<String, u32>,
     pub fullscreen: bool,
     pub tree_width: Option<u16>,
     pub comments_width: Option<u16>,
 }
 
 impl ViewState {
+    pub fn diff_context_for(&self, path: &str) -> Option<u32> {
+        self.file_diff_contexts
+            .get(path)
+            .copied()
+            .or(self.diff_context)
+    }
+
     pub fn tree_width(&self, terminal_width: u16) -> u16 {
         self.tree_width
             .unwrap_or((terminal_width / 3).clamp(24, 42))

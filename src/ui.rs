@@ -515,7 +515,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             .get(&app.review.view.active)
             .cloned()
             .unwrap_or_default();
-        if app.rendering {
+        if app.rendering && app.rendering_rows.is_empty() {
             position.horizontal = 0;
         }
         let selected = app.selected_hunk().map(|hunk| &hunk.rows);
@@ -526,6 +526,9 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 .skip(position.vertical)
                 .take(height)
                 .map(|(index, line)| {
+                    if app.is_rendering_row(index) {
+                        return Line::default();
+                    }
                     let mut line = line.clone();
                     if selected.is_some_and(|rows| rows.contains(&index)) {
                         let background = Color::Rgb(35, 45, 60);
@@ -545,6 +548,22 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             paragraph.scroll((0, position.horizontal))
         };
         frame.render_widget(paragraph, viewport);
+        for rows in &app.rendering_rows {
+            let start = rows.start.max(position.vertical);
+            let end = rows.end.min(position.vertical + height);
+            if start < end {
+                let y = viewport.y + (start - position.vertical) as u16;
+                const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+                let glyph = SPINNER[app.render_activity % SPINNER.len()];
+                frame.render_widget(
+                    Span::styled(
+                        format!("{glyph} Rendering…"),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Rect::new(viewport.x, y, viewport.width, 1),
+                );
+            }
+        }
         let first_heading = app
             .file_headings
             .partition_point(|heading| heading.row < position.vertical);
@@ -594,6 +613,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             !app.rendering
                 && source.row >= position.vertical
                 && source.row < position.vertical + height
+                && !app.is_rendering_row(source.row)
         }) {
             let y = viewport.y + (source.row - position.vertical) as u16;
             if let Some(selection) = &app.line_selection
@@ -782,7 +802,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "Shift-n/p        Go to the next or previous file in a folder diff.\n",
             "u                Toggle unviewed-only files\n",
             "i / z            Toggle inline / full-width diff\n",
-            "+ / -            Increase or decrease diff context.\n",
+            "+ / -            Change context for the selected diff file.\n",
             "r                Refresh revisions, keep matching progress\n",
             "Esc              Clear filters\n",
             "q / Ctrl-c       Save and quit; q stays in a focused input.\n",

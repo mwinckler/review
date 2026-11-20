@@ -548,8 +548,8 @@ fn install_diff_preview(
 ) -> (Text<'static>, usize) {
     app.hunks = preview.hunks;
     app.source_lines = preview.source_lines;
-    app.clear_file_headings();
-    app.set_file_headings(preview.file_headings);
+    app.rendering_rows = preview.rendering_rows;
+    app.set_file_headings(preview.file_headings, preview.text.lines.len());
     let position = app.position();
     position.vertical = position
         .vertical
@@ -574,6 +574,7 @@ fn run(
     let mut requested = None;
     let mut request_id = 0;
     let mut redraw = true;
+    let render_clock = Instant::now();
     let mut last_save = Instant::now();
     let updates = config.update_check.then(UpdateCheck::start).flatten();
     let refresher = app
@@ -613,10 +614,15 @@ fn run(
         let mut folder_changed = false;
         let mut new_folder = false;
         if redraw && !app.review.view.active.is_empty() {
+            let path = &app.review.view.active;
             let options = RenderOptions {
                 width,
                 inline: app.review.view.inline,
-                context: app.review.view.diff_context,
+                context: if path.ends_with('/') {
+                    None
+                } else {
+                    app.review.view.diff_context_for(path)
+                },
             };
             let key = (
                 app.review.view.active.clone(),
@@ -629,6 +635,14 @@ fn run(
                         && previous.1.inline == options.inline
                         && previous.2 == key.2
                 });
+                let in_place = same_preview
+                    && !key.0.ends_with('/')
+                    && !app.render_failed
+                    && (!app.rendering || !app.rendering_rows.is_empty())
+                    && !diff.lines.is_empty()
+                    && requested.as_ref().is_some_and(|previous| {
+                        previous.1.width == options.width && previous.1.context != options.context
+                    });
                 let changes = app.preview_changes().cloned().collect();
                 if key.0.ends_with('/') {
                     request_id = worker.cancel();
@@ -648,19 +662,25 @@ fn run(
                 }
                 app.rendering = folder.is_none();
                 app.render_failed = false;
-                app.hunks.clear();
-                app.clear_file_headings();
+                if in_place {
+                    app.rendering_rows = std::iter::once(0..diff.lines.len()).collect();
+                } else {
+                    app.rendering_rows.clear();
+                    app.hunks.clear();
+                    app.clear_file_headings();
+                    diff = Text::raw("Rendering…");
+                }
                 if !same_preview {
                     app.source_lines.clear();
                     app.revision_preview = None;
                 }
-                diff = Text::raw("Rendering…");
                 requested = Some(key);
             }
         } else if app.review.view.active.is_empty() {
             folder = None;
             app.rendering = false;
             app.render_failed = false;
+            app.rendering_rows.clear();
             app.hunks.clear();
             app.source_lines.clear();
             app.editor_requested = false;
@@ -678,6 +698,13 @@ fn run(
                 "0 files match the current filters. Press Esc to clear them."
             });
             diff_width = diff.width();
+        }
+        if redraw && let Some(folder) = &mut folder {
+            folder_changed |= folder.update_view(&app.review);
+            if folder_changed && folder.discard_superseded_request() {
+                request_id = worker.cancel();
+                app.rendering = false;
+            }
         }
         for result in worker.results.try_iter() {
             if result.id == request_id {
@@ -704,10 +731,16 @@ fn run(
             && let Some(folder) = &mut folder
             && let Some((path, options, _)) = &requested
         {
-            folder_changed |= folder.update_viewed(&app.review);
             let missing = folder.request_missing();
             if !missing.is_empty() {
-                request_id = worker.request(repo, &app.review.comparison, path, missing, *options);
+                request_id = worker.request_folder(
+                    repo,
+                    &app.review.comparison,
+                    path,
+                    missing,
+                    *options,
+                    folder.contexts(),
+                );
                 app.rendering |= new_folder;
             }
             if folder_changed && !app.rendering {
@@ -716,6 +749,11 @@ fn run(
         }
         redraw |= app.apply_hunk_navigation(diff_page, diff.lines.len());
         app.keep_diff_selection_visible(diff_page, diff.lines.len());
+        if !app.rendering_rows.is_empty() {
+            let activity = (render_clock.elapsed().as_millis() / 100) as usize;
+            redraw |= app.render_activity != activity;
+            app.render_activity = activity;
+        }
         for result in editor.results.try_iter() {
             app.message = match result {
                 Ok(location) => format!(
@@ -1026,7 +1064,8 @@ fn run(
             && requested.as_ref().is_some_and(|key| {
                 key.0 == app.review.view.active
                     && key.1.inline == app.review.view.inline
-                    && key.1.context == app.review.view.diff_context
+                    && (key.0.ends_with('/')
+                        || key.1.context == app.review.view.diff_context_for(&key.0))
                     && key.2 == app.revision_range()
             })
         {

@@ -107,6 +107,8 @@ pub struct App {
     pub copy_path_requested: bool,
     pub restore: Option<RestoreState>,
     pub rendering: bool,
+    pub rendering_rows: Vec<Range<usize>>,
+    pub render_activity: usize,
     pub render_failed: bool,
     pub session_dialog: Option<SessionDialog>,
     pub revision_dialog: Option<RevisionDialog>,
@@ -125,7 +127,7 @@ pub struct App {
     pub revisions: Option<RevisionSelection>,
     pub revision_preview: Option<(Comparison, Vec<Change>)>,
     hunk_actions: VecDeque<HunkNavigation>,
-    pending_heading: Option<String>,
+    pending_heading: Option<(String, usize)>,
     follow_diff_selection: bool,
     horizontal_scroll_limit: u16,
     prefix: Option<(char, Option<usize>)>,
@@ -166,6 +168,8 @@ impl App {
             copy_path_requested: false,
             restore: None,
             rendering: false,
+            rendering_rows: Vec::new(),
+            render_activity: 0,
             render_failed: false,
             session_dialog: None,
             revision_dialog: None,
@@ -280,6 +284,13 @@ impl App {
         self.focus == Focus::Diff && self.review.view.active.ends_with('/')
     }
 
+    pub(crate) fn is_rendering_row(&self, row: usize) -> bool {
+        let index = self.rendering_rows.partition_point(|rows| rows.end <= row);
+        self.rendering_rows
+            .get(index)
+            .is_some_and(|rows| rows.contains(&row))
+    }
+
     pub(crate) fn diff_cursor_row(&self) -> Option<usize> {
         self.directory_cursor.or_else(|| {
             self.line_selection
@@ -289,22 +300,33 @@ impl App {
     }
 
     pub fn clear_file_headings(&mut self) {
-        // Restore a selected heading by path after diff rows have shifted.
+        // Restore the cursor within the same file after diff rows have shifted.
         if let Some(row) = self.directory_cursor
             && let Some(heading) = self.file_heading_at(row)
-            && heading.row == row
         {
-            self.pending_heading = Some(heading.path.clone());
+            self.pending_heading = Some((heading.path.clone(), row - heading.row));
         }
         self.file_headings.clear();
         self.directory_cursor = None;
     }
 
-    pub fn set_file_headings(&mut self, headings: Vec<FileHeading>) {
-        if let Some(path) = self.pending_heading.take()
-            && let Some(heading) = headings.iter().find(|heading| heading.path == path)
-        {
-            self.directory_cursor = Some(heading.row);
+    pub fn set_file_headings(&mut self, headings: Vec<FileHeading>, lines: usize) {
+        let row_in_file = |path: &str, offset: usize| {
+            let index = headings.iter().position(|heading| heading.path == path)?;
+            let end = headings.get(index + 1).map_or(lines, |heading| heading.row);
+            Some((headings[index].row + offset).min(end.saturating_sub(1)))
+        };
+        let top = self.position().vertical;
+        let rebased_top = self
+            .file_heading_at(top)
+            .and_then(|heading| row_in_file(&heading.path, top - heading.row));
+        self.clear_file_headings();
+        self.directory_cursor = self
+            .pending_heading
+            .take()
+            .and_then(|(path, offset)| row_in_file(&path, offset));
+        if let Some(row) = rebased_top {
+            self.position().vertical = row;
         }
         self.file_headings = headings;
     }
@@ -390,6 +412,7 @@ impl App {
         self.hunks.clear();
         self.source_lines.clear();
         self.file_headings.clear();
+        self.rendering_rows.clear();
         self.directory_cursor = None;
         self.pending_heading = None;
         self.line_selection = None;
@@ -1093,21 +1116,7 @@ impl App {
                 self.review.view.inline = !self.review.view.inline;
             }
             KeyCode::Char('+' | '-') if !key.modifiers.contains(KeyModifiers::ALT) => {
-                if let Some(default) = self.default_diff_context {
-                    let current = self.review.view.diff_context.unwrap_or(default);
-                    let lines = if key.code == KeyCode::Char('+') {
-                        current.saturating_add(1)
-                    } else {
-                        current.saturating_sub(1)
-                    };
-                    if lines != current {
-                        self.review.view.diff_context = Some(lines);
-                    }
-                    self.message = format!("Diff context: {lines}");
-                } else {
-                    self.message =
-                        "Set {context} in renderer.command to adjust diff context.".into();
-                }
+                self.adjust_diff_context(key.code == KeyCode::Char('+'));
             }
             KeyCode::Char('z') => {
                 self.review.view.fullscreen = !self.review.view.fullscreen;
@@ -1157,6 +1166,41 @@ impl App {
                 self.rebuild();
             }
             _ => {}
+        }
+    }
+
+    fn adjust_diff_context(&mut self, increase: bool) {
+        let Some(default) = self.default_diff_context else {
+            self.message = "Set {context} in renderer.command to adjust diff context.".into();
+            return;
+        };
+        let path = if self.review.view.active.ends_with('/') {
+            let row = self
+                .diff_cursor_row()
+                .unwrap_or_else(|| self.position().vertical);
+            let Some(heading) = self.file_heading_at(row) else {
+                self.message = "Select a file after the diff finishes rendering.".into();
+                return;
+            };
+            heading.path.clone()
+        } else if self.active.is_some() {
+            self.review.view.active.clone()
+        } else {
+            self.message = "Select a changed file to adjust its diff context.".into();
+            return;
+        };
+        let view = &mut self.review.view;
+        let current = view.diff_context_for(&path).unwrap_or(default);
+        let lines = if increase {
+            current.saturating_add(1)
+        } else {
+            current.saturating_sub(1)
+        };
+        self.message = format!("Diff context: {lines} · {}", crate::ui::display_path(&path));
+        if lines == view.diff_context.unwrap_or(default) {
+            view.file_diff_contexts.remove(&path);
+        } else {
+            view.file_diff_contexts.insert(path, lines);
         }
     }
 
@@ -1407,10 +1451,11 @@ impl App {
             } else {
                 (start + len - offset) % len
             };
-            if text.lines[index]
-                .to_string()
-                .to_lowercase()
-                .contains(&needle)
+            if !self.is_rendering_row(index)
+                && text.lines[index]
+                    .to_string()
+                    .to_lowercase()
+                    .contains(&needle)
             {
                 self.position().vertical = index;
                 if !self.file_headings.is_empty() {
