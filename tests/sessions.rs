@@ -40,6 +40,7 @@ fn review() -> Review {
             head_ref: "@".into(),
             base_id: "base".into(),
             head_id: "head".into(),
+            working_tree: None,
             base_title: None,
             head_title: None,
             base_change_id: None,

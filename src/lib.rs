@@ -6,6 +6,7 @@ mod comments_pane;
 pub mod conductor;
 pub mod config;
 pub mod editor;
+mod git_index;
 mod git_restore;
 pub mod gitlab;
 pub mod gitlab_comments;

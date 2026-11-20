@@ -3,7 +3,7 @@ use std::{path::Path, process::Command};
 use anyhow::{Result, ensure};
 
 use crate::{
-    command,
+    command, git_index,
     restore::{PartialRestore, Restore},
     vcs::Repository,
 };
@@ -125,15 +125,8 @@ fn git(repo: &Repository) -> Command {
 }
 
 fn temporary_index(repo: &Repository, path: &Path) -> Command {
-    let mut command = git(repo);
-    command.env("GIT_INDEX_FILE", path).args([
-        "-c",
-        "core.splitIndex=false",
-        "-c",
-        "core.fsmonitor=false",
-        "-c",
-        "core.sparseCheckout=false",
-    ]);
+    let mut command = git_index::command(repo, path);
+    command.args(["--literal-pathspecs", "-c", "core.sparseCheckout=false"]);
     command
 }
 

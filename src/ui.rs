@@ -285,7 +285,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             .gitlab
             .as_ref()
             .map(|_| "head")
-            .unwrap_or(&comparison.head_ref),
+            .unwrap_or_else(|| comparison.head_label()),
         &comparison.head_id,
         comparison.head_change_id.as_deref(),
     );
@@ -1402,7 +1402,7 @@ fn draw_session_dialog(frame: &mut Frame, dialog: &SessionDialog) {
                 Span::raw(format!(
                     "  {} → {}  Viewed {}/{}",
                     display_path(&saved.review.comparison.base_ref),
-                    display_path(&saved.review.comparison.head_ref),
+                    display_path(saved.review.comparison.head_label()),
                     saved.review.viewed.len(),
                     saved.review.changes.len()
                 )),

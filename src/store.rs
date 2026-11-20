@@ -111,6 +111,10 @@ impl SessionStore {
         })
     }
 
+    pub fn git_objects(&self) -> Result<PathBuf> {
+        Ok(self.directory.canonicalize()?.join("git-objects"))
+    }
+
     pub fn last_opened(
         directory: &Path,
         repository: Option<&Path>,
@@ -429,12 +433,15 @@ impl SessionStore {
     }
 
     fn load(&self, path: &Path) -> Result<SavedSession> {
-        let session = SavedSession::read(path)?;
+        let mut session = SavedSession::read(path)?;
         ensure!(
             session.repository == self.repository.root
                 && session.backend == self.repository.backend,
             "session repository identity differs from the current repository"
         );
+        if let Some(snapshot) = &mut session.review.comparison.working_tree {
+            snapshot.objects = self.git_objects()?;
+        }
         Ok(session)
     }
 

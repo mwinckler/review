@@ -90,7 +90,12 @@ impl RefreshWorker {
                     restore.map(|action| action.apply(&repo).map_err(|error| format!("{error:#}")));
                 let polled = (|| -> anyhow::Result<_> {
                     let comparison = if let Some((base, head, mode)) = revisions {
-                        Some(repo.snapshot_revisions(&base, &head, mode)?)
+                        let comparison = repo.snapshot_revisions(&base, &head, mode)?;
+                        Some(if let Some(snapshot) = &observed.working_tree {
+                            repo.include_working_tree(comparison, &snapshot.objects)?
+                        } else {
+                            comparison
+                        })
                     } else if manual
                         || (repo.backend == Backend::Jj && matches!(restore, Some(Ok(()))))
                     {

@@ -42,6 +42,7 @@ fn review() -> Review {
             head_ref: "feature".into(),
             base_id: "aaa".into(),
             head_id: "bbb".into(),
+            working_tree: None,
             base_title: None,
             head_title: None,
             base_change_id: None,

@@ -57,6 +57,8 @@ pub struct Comparison {
     pub head_ref: String,
     pub base_id: String,
     pub head_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_tree: Option<WorkingTree>,
     #[serde(default)]
     pub base_title: Option<String>,
     #[serde(default)]
@@ -75,6 +77,29 @@ pub struct Comparison {
     pub file_commit_ids: Option<BTreeMap<String, Vec<String>>>,
     #[serde(default)]
     pub revisions: Option<BTreeMap<String, Revision>>,
+}
+
+impl Comparison {
+    pub fn head_label(&self) -> &str {
+        if self.working_tree.is_some() {
+            "working tree"
+        } else {
+            &self.head_ref
+        }
+    }
+
+    fn git_diff_head(&self) -> &str {
+        self.working_tree
+            .as_ref()
+            .map_or(&self.head_id, |snapshot| &snapshot.tree)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkingTree {
+    tree: String,
+    #[serde(skip)]
+    pub(crate) objects: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -584,25 +609,64 @@ impl Repository {
     }
 
     pub fn refresh(&self, comparison: &Comparison) -> Result<Comparison> {
-        self.snapshot_with_mode(
-            &comparison.base_ref,
-            &comparison.head_ref,
-            comparison.mode,
-            true,
-        )
+        self.complete_snapshot(self.resolve_refresh(comparison)?)
     }
 
     pub fn refresh_if_changed(&self, comparison: &Comparison) -> Result<Option<Comparison>> {
-        let updated = self.resolve_snapshot(
+        let updated = self.resolve_refresh(comparison)?;
+        if updated.base_id == comparison.base_id
+            && updated.head_id == comparison.head_id
+            && updated.working_tree == comparison.working_tree
+        {
+            return Ok(None);
+        }
+        self.complete_snapshot(updated).map(Some)
+    }
+
+    fn resolve_refresh(&self, comparison: &Comparison) -> Result<Comparison> {
+        let mut updated = self.resolve_snapshot(
             &comparison.base_ref,
             &comparison.head_ref,
             comparison.mode,
             true,
         )?;
-        if updated.base_id == comparison.base_id && updated.head_id == comparison.head_id {
-            return Ok(None);
+        if let Some(snapshot) = &comparison.working_tree {
+            self.capture_working_tree(&mut updated, &snapshot.objects)?;
         }
-        self.complete_snapshot(updated).map(Some)
+        Ok(updated)
+    }
+
+    pub fn include_working_tree(
+        &self,
+        mut comparison: Comparison,
+        objects: &Path,
+    ) -> Result<Comparison> {
+        self.capture_working_tree(&mut comparison, objects)?;
+        comparison.file_line_counts = None;
+        comparison.line_counts = None;
+        self.fill_line_counts(&mut comparison)?;
+        Ok(comparison)
+    }
+
+    fn capture_working_tree(&self, comparison: &mut Comparison, objects: &Path) -> Result<()> {
+        ensure!(
+            self.backend == Backend::Git,
+            "--working-tree requires the Git backend."
+        );
+        ensure!(
+            comparison.head_id == self.resolve("HEAD", false)?,
+            "--working-tree requires the comparison head to be the checked-out Git commit."
+        );
+        let tree = crate::git_index::working_tree(self, objects)?;
+        ensure!(
+            comparison.head_id == self.resolve("HEAD", false)?,
+            "Git HEAD moved while capturing the working tree. Retry the comparison."
+        );
+        comparison.working_tree = Some(WorkingTree {
+            tree,
+            objects: objects.to_owned(),
+        });
+        Ok(())
     }
 
     fn snapshot_with_mode(
@@ -657,6 +721,7 @@ impl Repository {
             head_ref: head.to_owned(),
             base_id,
             head_id,
+            working_tree: None,
             base_title: (base_ref == "empty tree").then(String::new),
             head_title: None,
             base_change_id: None,
@@ -839,8 +904,13 @@ impl Repository {
             parents: self.revision_parents(head)?,
             title: comparison.head_title.clone(),
         };
+        let committed = Comparison {
+            base_id: comparison.base_id.clone(),
+            head_id: comparison.head_id.clone(),
+            ..Comparison::default()
+        };
         comparison.file_commit_ids = Some(
-            self.changes(comparison)?
+            self.changes(&committed)?
                 .into_iter()
                 .map(|change| (change.path, vec![id.clone()]))
                 .collect(),
@@ -937,7 +1007,7 @@ impl Repository {
     pub fn changes(&self, comparison: &Comparison) -> Result<Vec<Change>> {
         let mut changes = match self.backend {
             Backend::Git => {
-                let output = self.run(
+                let output = self.run_with_working_tree(
                     &[
                         "diff",
                         "--raw",
@@ -947,10 +1017,10 @@ impl Repository {
                         "--no-ext-diff",
                         "--no-textconv",
                         &comparison.base_id,
-                        &comparison.head_id,
+                        comparison.git_diff_head(),
                         "--",
                     ],
-                    false,
+                    comparison,
                 )?;
                 parse_git_changes(&output)?
             }
@@ -1003,7 +1073,7 @@ impl Repository {
                 "--no-ext-diff",
                 "--no-textconv",
                 &comparison.base_id,
-                &comparison.head_id,
+                comparison.git_diff_head(),
                 "--",
             ],
             Backend::Jj => &[
@@ -1015,7 +1085,7 @@ impl Repository {
                 "--stat",
             ],
         };
-        let output = String::from_utf8(self.run(args, false)?)?;
+        let output = String::from_utf8(self.run_with_working_tree(args, comparison)?)?;
         let mut counts = LineCounts::default();
         for field in output.lines().last().unwrap_or_default().split(',') {
             let count = if field.ends_with("(+)") {
@@ -1040,7 +1110,7 @@ impl Repository {
         comparison: &Comparison,
     ) -> Result<BTreeMap<String, LineCounts>> {
         let output = match self.backend {
-            Backend::Git => self.run(
+            Backend::Git => self.run_with_working_tree(
                 &[
                     "diff",
                     "--numstat",
@@ -1049,10 +1119,10 @@ impl Repository {
                     "--no-ext-diff",
                     "--no-textconv",
                     &comparison.base_id,
-                    &comparison.head_id,
+                    comparison.git_diff_head(),
                     "--",
                 ],
-                false,
+                comparison,
             )?,
             Backend::Jj => {
                 let changes = self.changes(comparison)?;
@@ -1118,7 +1188,9 @@ impl Repository {
             return Ok(format!("Submodule commit {}\n", entry.object_id).into_bytes());
         }
         match self.backend {
-            Backend::Git => self.run(&["cat-file", "blob", &entry.object_id], false),
+            Backend::Git => {
+                self.run_with_working_tree(&["cat-file", "blob", &entry.object_id], comparison)
+            }
             Backend::Jj => {
                 let revision = if old {
                     &comparison.base_id
@@ -1224,7 +1296,22 @@ impl Repository {
     }
 
     fn run(&self, args: &[&str], snapshot: bool) -> Result<Vec<u8>> {
-        let mut command = self.command(snapshot);
+        Self::run_command(self.command(snapshot), args)
+    }
+
+    fn run_with_working_tree(&self, args: &[&str], comparison: &Comparison) -> Result<Vec<u8>> {
+        let mut command = self.command(false);
+        if let Some(snapshot) = &comparison.working_tree {
+            ensure!(
+                snapshot.objects.is_absolute(),
+                "Open the saved review from its state directory to read its working-tree snapshot."
+            );
+            crate::git_index::add_object_alternate(&mut command, &snapshot.objects)?;
+        }
+        Self::run_command(command, args)
+    }
+
+    fn run_command(mut command: Command, args: &[&str]) -> Result<Vec<u8>> {
         let program = command.get_program().to_string_lossy().into_owned();
         let output = crate::command::launch(command.args(args), None, |command| command.output())?;
         ensure!(

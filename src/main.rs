@@ -81,6 +81,9 @@ struct Cli {
     /// Head revision (defaults to HEAD for Git, @ for Jujutsu)
     #[arg(long, requires = "base")]
     head: Option<String>,
+    /// Include the Git working tree, with unstaged edits and untracked files.
+    #[arg(long, conflicts_with_all = ["resume", "list", "rename", "forget_selection"])]
+    working_tree: bool,
     /// Resume by short ID (such as r3) or unique prefix; omit to resume the latest
     #[arg(short = 'r', long, value_name = "ID", num_args = 0..=1, default_missing_value = "latest", conflicts_with = "base")]
     resume: Option<String>,
@@ -161,6 +164,7 @@ fn main() -> Result<()> {
         && (cli.comparison.is_some()
             || cli.base.is_some()
             || cli.head.is_some()
+            || cli.working_tree
             || cli.resume.is_some()
             || cli.list
             || !cli.rename.is_empty()
@@ -229,6 +233,10 @@ fn main() -> Result<()> {
     } else {
         (Repository::discover(&cli.repo, cli.backend)?, None)
     };
+    ensure!(
+        !cli.working_tree || repo.backend == Backend::Git,
+        "--working-tree requires the Git backend; use --backend git in a colocated workspace."
+    );
     let store = SessionStore::new(&state_dir, &repo)?;
     if let [id, name] = cli.rename.as_slice() {
         let saved = store.rename(id, name)?;
@@ -313,7 +321,7 @@ fn main() -> Result<()> {
                 id,
                 opened,
                 ui::display_path(&saved.review.comparison.base_ref),
-                ui::display_path(&saved.review.comparison.head_ref),
+                ui::display_path(saved.review.comparison.head_label()),
                 saved.review.viewed.len(),
                 saved.review.changes.len()
             );
@@ -333,6 +341,10 @@ fn main() -> Result<()> {
         (None, Some(id)) => store.find(id)?,
         (None, None) => None,
     });
+    ensure!(
+        !cli.working_tree || resume_id.is_none(),
+        "--working-tree starts a new review. Use a revision range to disambiguate it from a session ID."
+    );
     ensure!(
         io::stdin().is_terminal() && io::stdout().is_terminal(),
         "review needs an interactive terminal"
@@ -367,6 +379,11 @@ fn main() -> Result<()> {
                 repo.snapshot(&base, head)?
             } else {
                 repo.snapshot_default()?
+            };
+            let comparison = if cli.working_tree {
+                repo.include_working_tree(comparison, &store.git_objects()?)?
+            } else {
+                comparison
             };
             let changes = repo.changes(&comparison)?;
             Review::new(comparison, changes)

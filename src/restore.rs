@@ -47,6 +47,10 @@ impl Restore {
     ) -> Result<Self> {
         ensure!(review.gitlab.is_none(), "Restore requires a local review.");
         ensure!(
+            review.comparison.working_tree.is_none(),
+            "Use Git to restore files in a working-tree review."
+        );
+        ensure!(
             backend != Backend::Jj || review.comparison.head_ref == "@",
             "Jujutsu restore requires a review with @ as the head."
         );

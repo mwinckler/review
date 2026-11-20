@@ -77,6 +77,12 @@ review --backend git 'HEAD~3..@'
 # Git: review the current branch against its merge base with master
 review --base master
 
+# Git: include working-tree changes in the review against master
+review --backend git --base master --working-tree
+
+# Git: review only local changes since the checked-out commit
+review --backend git --working-tree 'HEAD..'
+
 # Git merge-base shorthand
 review --backend git master...feature/my-change
 
@@ -112,6 +118,14 @@ uses the merge base with `master`.
 
 Use `--base` with an optional `--head` to compare from their unique merge base.
 Git's positional `BASE...HEAD` uses the same merge-base behavior.
+
+For a local Git review, add `--working-tree` to compare against the current files
+instead of just the checked-out commit. This includes staged and unstaged changes
+as they appear on disk, along with untracked files that Git does not ignore.
+Use a comparison whose head is the checked-out commit. The option carries over
+when you resume. Review keeps snapshot contents in its state directory and
+leaves the Git index and working files untouched. Use Git to restore files
+from a working-tree review.
 
 The nearest repository is detected automatically from the current directory,
 with Jujutsu preferred in a colocated workspace. The header displays the resolved
@@ -149,8 +163,8 @@ message for each endpoint. Press `Esc` or select another file to restore the ful
 comparison.
 
 Reviews check the selected revisions in the background about once per second.
-Jujutsu `@` follows saved working-copy edits; Git comparisons follow commits as
-`HEAD` or branches advance. File trees, file and directory previews, header IDs and
+Jujutsu `@` and Git `--working-tree` follow saved edits. Git revision comparisons
+follow commits as `HEAD` or branches advance. File trees, file and directory previews, header IDs and
 titles, and line totals reload together. Updates save automatically, preserving
 selection, pane focus, and scroll positions for unchanged diffs.
 
