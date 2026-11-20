@@ -618,11 +618,7 @@ fn run(
             }
         }
         redraw |= app.apply_hunk_navigation(diff_page, diff.lines.len());
-        if app.focus == Focus::Comments {
-            app.keep_thread_visible(diff_page, diff.lines.len());
-        } else {
-            app.keep_line_selection_visible(diff_page, diff.lines.len());
-        }
+        app.keep_diff_selection_visible(diff_page, diff.lines.len());
         for result in editor.results.try_iter() {
             app.message = match result {
                 Ok(location) => format!(

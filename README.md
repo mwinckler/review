@@ -380,6 +380,7 @@ Repository content and persistent editor snapshots are preserved.
 | Keys | Action |
 |---|---|
 | `j` / `k`, arrows | Move in the tree, scroll the diff, move a highlighted line, or select a comment thread. |
+| `Shift-j` / `Shift-k` | Scroll the diff down/up by one line from any pane, keeping pane focus. |
 | `Ctrl-n` / `Ctrl-p` | Next/previous visible tree row, keeping pane focus and layout |
 | `h` / `l` | Collapse/expand directories, scroll horizontally, or choose old/new side |
 | `Enter` | Toggle a directory, focus a file's diff, highlight a source line, or read a comment thread. |
@@ -620,8 +621,8 @@ timeout_ms = 30000
 command = ["xdg-terminal-exec", "--", "nvim", "+{line}", "{read_only}", "--", "{file}"]
 
 [keybindings]
-J = "next_file"
-K = "previous_file"
+"Alt-f" = "next_file"
+"Alt-b" = "previous_file"
 V = "toggle_viewed"
 "Alt-j" = "next_unviewed"
 ```
@@ -655,9 +656,9 @@ directory preview.
 Binary changes, renames, symlinks, executable-bit changes, submodule pointers,
 and Jujutsu conflict contents remain visible through file metadata and diffs.
 
-Key aliases supplement the defaults in navigation mode; comment dialogs, search and Flash prompts
-use typed characters for their own input. Keys may be a character, a named key
-(`Space`, `Enter`, `Tab`, `BackTab`, `Esc`, `Backspace`, arrows, `PageUp`,
+Key aliases override matching defaults in navigation mode. Comment dialogs, search,
+and Flash prompts use typed characters for their own input. Keys may be a character,
+a named key (`Space`, `Enter`, `Tab`, `BackTab`, `Esc`, `Backspace`, arrows, `PageUp`,
 `PageDown`, `Home`, `End`), or a `Ctrl-`/`Alt-` combination. Use uppercase
 characters for shifted letters.
 The quit shortcuts take precedence over key aliases.

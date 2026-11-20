@@ -118,6 +118,7 @@ pub struct App {
     pub revisions: Option<RevisionSelection>,
     pub revision_preview: Option<(Comparison, Vec<Change>)>,
     hunk_actions: VecDeque<HunkNavigation>,
+    follow_diff_selection: bool,
     horizontal_scroll_limit: u16,
     prefix: Option<(char, Option<usize>)>,
     search_original: String,
@@ -170,6 +171,7 @@ impl App {
             revisions: None,
             revision_preview: None,
             hunk_actions: VecDeque::new(),
+            follow_diff_selection: true,
             horizontal_scroll_limit: 0,
             prefix: None,
             search_original: String::new(),
@@ -323,6 +325,7 @@ impl App {
         self.hunks.clear();
         self.source_lines.clear();
         self.line_selection = None;
+        self.follow_diff_selection = true;
         self.hunk_selection = None;
         self.thread = None;
         self.editor_requested = false;
@@ -498,12 +501,24 @@ impl App {
         self.review.view.diff_focused = self.focus == Focus::Diff;
         self.review.view.comments_focused = self.focus == Focus::Comments;
         if self.focus == Focus::Comments {
+            self.keep_diff_selection_visible(page, diff_lines);
+        }
+    }
+
+    pub fn keep_diff_selection_visible(&mut self, page: usize, diff_lines: usize) {
+        if !self.follow_diff_selection {
+            return;
+        }
+        if self.focus == Focus::Comments {
             self.keep_thread_visible(page, diff_lines);
+        } else {
+            self.keep_line_selection_visible(page, diff_lines);
         }
     }
 
     pub(crate) fn set_focus(&mut self, focus: Focus) {
         self.focus = focus;
+        self.follow_diff_selection = true;
         self.review.view.fullscreen = false;
         self.review.view.diff_focused = focus == Focus::Diff;
         self.review.view.comments_focused = focus == Focus::Comments;
@@ -704,6 +719,21 @@ impl App {
             }
             return;
         }
+        let diff_scroll_step = match (key.code, key.modifiers) {
+            (KeyCode::Char('J'), KeyModifiers::NONE)
+            | (KeyCode::Char('j' | 'J'), KeyModifiers::SHIFT) => Some(1),
+            (KeyCode::Char('K'), KeyModifiers::NONE)
+            | (KeyCode::Char('k' | 'K'), KeyModifiers::SHIFT) => Some(-1),
+            _ => None,
+        };
+        if let Some(step) = diff_scroll_step {
+            let banner = usize::from(self.focus == Focus::Tree && self.revisions.is_some());
+            self.scroll_diff(step, page.saturating_sub(banner).max(1), diff_lines);
+            self.follow_diff_selection = false;
+            self.prefix = None;
+            return;
+        }
+        self.follow_diff_selection = true;
         if let Some((prefix, number)) = self.prefix.take().filter(|_| {
             !key.modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)

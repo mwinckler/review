@@ -680,7 +680,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     crate::thread::draw(frame, app, panes.comments, panes.footer);
     if app.help {
         let width = frame.area().width.min(74);
-        let height = frame.area().height.min(37);
+        let height = frame.area().height.min(38);
         let area = Rect::new(
             frame.area().x + (frame.area().width - width) / 2,
             frame.area().y + (frame.area().height - height) / 2,
@@ -690,6 +690,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         frame.render_widget(Clear, area);
         let mut text = String::from(concat!(
             "j/k, arrows      Move, scroll, or select a comment thread.\n",
+            "Shift-j/k        Scroll the diff by one line from any pane.\n",
             "Ctrl-n/p         Select the next/previous tree row from any pane.\n",
             "h/l              Collapse/expand / horizontal scroll / old/new side\n",
             "Tab, Ctrl-h/j/k/l Move between panes.\n",

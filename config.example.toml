@@ -13,7 +13,7 @@ command = ["xdg-terminal-exec", "--", "nvim", "+{line}", "{read_only}", "--", "{
 
 # Navigation-mode aliases. See README.md for all actions and key names.
 [keybindings]
-J = "next_file"
-K = "previous_file"
+"Alt-f" = "next_file"
+"Alt-b" = "previous_file"
 V = "toggle_viewed"
 "Alt-j" = "next_unviewed"
