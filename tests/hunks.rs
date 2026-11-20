@@ -292,6 +292,12 @@ fn directory_results_and_cached_results_keep_hunk_paths_and_row_offsets() {
             .iter()
             .find(|hunk| hunk.location.path == "src/main.rs")
             .unwrap();
+        let heading = preview
+            .file_headings
+            .iter()
+            .find(|heading| heading.path == "src/main.rs")
+            .unwrap();
+        assert_eq!(hunk.rows.start, heading.row);
         assert_eq!(hunk.location.new_line, Some(1));
         assert!(
             text.lines[hunk.rows.start]

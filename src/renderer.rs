@@ -395,29 +395,37 @@ impl DiffPreview {
         self.text.lines.push(line);
     }
 
-    fn append_heading(&mut self, change: &Change, viewed: bool) {
+    fn append_heading(&mut self, change: &Change, file: Option<&FileDiff>, viewed: bool) {
         self.file_headings.push(FileHeading {
             row: self.text.lines.len(),
             path: change.path.clone(),
         });
-        let (title, metadata) = change_heading(change);
-        let modifier = if viewed {
-            Modifier::DIM
-        } else {
-            Modifier::BOLD
-        };
-        self.append_line(Line::from(vec![
-            Span::styled(
-                title,
-                Style::default().fg(Color::Cyan).add_modifier(modifier),
-            ),
-            Span::styled(metadata, Style::default().fg(Color::DarkGray)),
-        ]));
+        let mut line = file
+            .and_then(|file| file.heading.clone())
+            .unwrap_or_else(|| {
+                let (title, metadata) = change_heading(change);
+                Line::from(vec![
+                    Span::styled(title, heading_style()),
+                    heading_metadata(metadata),
+                ])
+            });
+        if viewed {
+            for span in &mut line.spans {
+                span.style = span
+                    .style
+                    .remove_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::DIM);
+            }
+        }
+        self.append_line(line);
     }
+
     fn append_diff(&mut self, file: &FileDiff) {
-        let offset = self.text.lines.len();
+        // A shared heading already occupies the renderer's first row.
+        let first = usize::from(file.heading.is_some());
+        let offset = self.text.lines.len() - first;
         self.width = self.width.max(file.width);
-        self.text.lines.extend_from_slice(&file.text.lines);
+        self.text.lines.extend_from_slice(&file.text.lines[first..]);
         self.hunks
             .extend(file.hunks.iter().cloned().map(|mut hunk| {
                 hunk.rows.start += offset;
@@ -452,6 +460,7 @@ impl DiffPreview {
 
 pub struct FileDiff {
     text: Text<'static>,
+    heading: Option<Line<'static>>,
     width: usize,
     hunks: Vec<Hunk>,
     source_lines: Vec<SourceLine>,
@@ -605,7 +614,8 @@ impl FolderPreview {
         let mut preview = DiffPreview::default();
         for change in &self.changes {
             let viewed = self.viewed.contains(&change.path);
-            preview.append_heading(change, viewed);
+            let file = self.files.get(&change.path);
+            preview.append_heading(change, file.map(Arc::as_ref), viewed);
             if viewed {
                 continue;
             }
@@ -613,7 +623,6 @@ impl FolderPreview {
             if let Some(error) = self.errors.get(&change.path) {
                 preview.append_line(Line::raw(display_path(error)));
             } else {
-                let file = self.files.get(&change.path);
                 if let Some(file) = file {
                     preview.append_diff(file);
                 }
@@ -628,6 +637,33 @@ impl FolderPreview {
         }
         preview
     }
+}
+
+fn heading_style() -> Style {
+    Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn heading_metadata(metadata: String) -> Span<'static> {
+    Span::styled(metadata, Style::default().fg(Color::DarkGray))
+}
+
+fn difftastic_heading(text: &Text<'static>, change: &Change) -> Option<Line<'static>> {
+    let line = text.lines.first()?;
+    let text = line.to_string();
+    let (path, _) = hunks::difftastic_title(&text)?;
+    let shown = display_path(&change.path);
+    if path.is_empty() || (path != shown && shown.rsplit('/').next() != Some(path)) {
+        return None;
+    }
+    let (title, metadata) = change_heading(change);
+    let prefix = title.strip_suffix(' ')?.strip_suffix(path)?;
+    let mut line = line.clone();
+    line.spans
+        .insert(0, Span::styled(prefix.to_owned(), heading_style()));
+    line.spans.push(heading_metadata(metadata));
+    Some(line)
 }
 
 fn render_file(
@@ -657,10 +693,16 @@ fn render_file(
     let format = config.hunk_format.for_command(&config.command);
     let hunks = hunks::parse(&text, change, format);
     let source_lines = hunks::source_lines(&text, change, format, &hunks, line_counts);
+    let heading = if matches!(format, HunkFormat::Difftastic) {
+        difftastic_heading(&text, change)
+    } else {
+        None
+    };
     let text_size = text_size(&text);
     let width = text.width();
     Ok(FileDiff {
         text,
+        heading,
         width,
         hunks,
         source_lines,

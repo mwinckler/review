@@ -258,7 +258,7 @@ fn unified(text: &Text<'_>, change: &Change) -> Vec<Hunk> {
     hunks
 }
 
-fn title(line: &str) -> Option<(&str, &str)> {
+pub(crate) fn difftastic_title(line: &str) -> Option<(&str, &str)> {
     let (prefix, language) = line.rsplit_once(" --- ")?;
     if language.is_empty() {
         return None;
@@ -349,13 +349,15 @@ fn gutters(line: &Line<'_>) -> Vec<Gutter> {
 
 fn difftastic(text: &Text<'_>, change: &Change) -> Vec<Hunk> {
     let lines: Vec<_> = text.lines.iter().map(ToString::to_string).collect();
-    let Some((path, language)) = lines.iter().find_map(|line| title(line)) else {
+    let Some((path, language)) = lines.iter().find_map(|line| difftastic_title(line)) else {
         return Vec::new();
     };
     let starts: Vec<_> = lines
         .iter()
         .enumerate()
-        .filter_map(|(index, line)| (title(line) == Some((path, language))).then_some(index))
+        .filter_map(|(index, line)| {
+            (difftastic_title(line) == Some((path, language))).then_some(index)
+        })
         .collect();
     let mut hunks = Vec::new();
     for (index, start) in starts.iter().copied().enumerate() {
