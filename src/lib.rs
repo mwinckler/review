@@ -8,6 +8,7 @@ pub mod config;
 pub mod editor;
 mod git_index;
 mod git_restore;
+mod git_watch;
 pub mod gitlab;
 pub mod gitlab_comments;
 pub mod gitlab_review;

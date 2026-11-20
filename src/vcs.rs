@@ -609,12 +609,22 @@ impl Repository {
     }
 
     pub fn refresh(&self, comparison: &Comparison) -> Result<Comparison> {
-        self.complete_snapshot(self.resolve_refresh(comparison)?)
+        self.complete_snapshot(self.resolve_refresh(comparison, &mut Default::default())?)
     }
 
     pub fn refresh_if_changed(&self, comparison: &Comparison) -> Result<Option<Comparison>> {
-        let updated = self.resolve_refresh(comparison)?;
-        if updated.base_id == comparison.base_id
+        self.refresh_snapshot(comparison, &mut Default::default(), false)
+    }
+
+    pub(crate) fn refresh_snapshot(
+        &self,
+        comparison: &Comparison,
+        index: &mut crate::git_index::SnapshotIndex,
+        force: bool,
+    ) -> Result<Option<Comparison>> {
+        let updated = self.resolve_refresh(comparison, index)?;
+        if !force
+            && updated.base_id == comparison.base_id
             && updated.head_id == comparison.head_id
             && updated.working_tree == comparison.working_tree
         {
@@ -623,7 +633,11 @@ impl Repository {
         self.complete_snapshot(updated).map(Some)
     }
 
-    fn resolve_refresh(&self, comparison: &Comparison) -> Result<Comparison> {
+    fn resolve_refresh(
+        &self,
+        comparison: &Comparison,
+        index: &mut crate::git_index::SnapshotIndex,
+    ) -> Result<Comparison> {
         let mut updated = self.resolve_snapshot(
             &comparison.base_ref,
             &comparison.head_ref,
@@ -631,24 +645,38 @@ impl Repository {
             true,
         )?;
         if let Some(snapshot) = &comparison.working_tree {
-            self.capture_working_tree(&mut updated, &snapshot.objects)?;
+            self.capture_working_tree(&mut updated, &snapshot.objects, index)?;
         }
         Ok(updated)
     }
 
     pub fn include_working_tree(
         &self,
-        mut comparison: Comparison,
+        comparison: Comparison,
         objects: &Path,
     ) -> Result<Comparison> {
-        self.capture_working_tree(&mut comparison, objects)?;
+        self.include_working_tree_with_index(comparison, objects, &mut Default::default())
+    }
+
+    pub(crate) fn include_working_tree_with_index(
+        &self,
+        mut comparison: Comparison,
+        objects: &Path,
+        index: &mut crate::git_index::SnapshotIndex,
+    ) -> Result<Comparison> {
+        self.capture_working_tree(&mut comparison, objects, index)?;
         comparison.file_line_counts = None;
         comparison.line_counts = None;
         self.fill_line_counts(&mut comparison)?;
         Ok(comparison)
     }
 
-    fn capture_working_tree(&self, comparison: &mut Comparison, objects: &Path) -> Result<()> {
+    fn capture_working_tree(
+        &self,
+        comparison: &mut Comparison,
+        objects: &Path,
+        index: &mut crate::git_index::SnapshotIndex,
+    ) -> Result<()> {
         ensure!(
             self.backend == Backend::Git,
             "--working-tree requires the Git backend."
@@ -657,7 +685,7 @@ impl Repository {
             comparison.head_id == self.resolve("HEAD", false)?,
             "--working-tree requires the comparison head to be the checked-out Git commit."
         );
-        let tree = crate::git_index::working_tree(self, objects)?;
+        let tree = index.capture(self, objects, &comparison.head_id)?;
         ensure!(
             comparison.head_id == self.resolve("HEAD", false)?,
             "Git HEAD moved while capturing the working tree. Retry the comparison."

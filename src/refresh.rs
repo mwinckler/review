@@ -1,17 +1,20 @@
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
     thread::{self, JoinHandle},
     time::Duration,
 };
 
 use crate::{
+    git_index::SnapshotIndex,
+    git_watch::{Scan, WorktreeWatch},
     restore::Restore,
     vcs::{Backend, Change, Comparison, ComparisonMode, Repository},
 };
 
 enum Request {
     Refresh,
+    Filesystem,
     Compare {
         base: String,
         head: String,
@@ -20,6 +23,13 @@ enum Request {
     },
     Restore(Box<Restore>),
     Stop,
+}
+
+fn watch_worktree(repo: &Repository, objects: &Path, sender: &Sender<Request>) -> WorktreeWatch {
+    let sender = sender.clone();
+    WorktreeWatch::new(repo, objects, move || {
+        let _ = sender.send(Request::Filesystem);
+    })
 }
 
 #[derive(Debug)]
@@ -42,9 +52,14 @@ impl RefreshWorker {
         let (output, results) = mpsc::channel();
         let (restored, restores) = mpsc::channel();
         let mut last_error = None;
+        let mut index = SnapshotIndex::default();
+        let mut watcher = comparison
+            .working_tree
+            .as_ref()
+            .map(|snapshot| watch_worktree(repo, &snapshot.objects, &sender));
         // Establish the live baseline before showing the review, preserving a
         // resumed session's pins until a subsequent repository change.
-        let mut observed = match repo.refresh_if_changed(comparison) {
+        let mut observed = match repo.refresh_snapshot(comparison, &mut index, false) {
             Ok(updated) => updated.unwrap_or_else(|| comparison.clone()),
             Err(error) => {
                 let error = format!("{error:#}");
@@ -58,9 +73,13 @@ impl RefreshWorker {
             }
         };
         let repo = repo.clone();
+        let wake = sender.clone();
         let thread = thread::spawn(move || {
             'watch: loop {
-                let first = match requests.recv_timeout(Duration::from_secs(1)) {
+                let wait = watcher
+                    .as_ref()
+                    .map_or(Duration::from_secs(1), WorktreeWatch::wait);
+                let first = match requests.recv_timeout(wait) {
                     Ok(request) => Some(request),
                     Err(RecvTimeoutError::Timeout) => None,
                     Err(RecvTimeoutError::Disconnected) => {
@@ -75,6 +94,7 @@ impl RefreshWorker {
                         Request::Refresh => {
                             manual = true;
                         }
+                        Request::Filesystem => {}
                         Request::Compare {
                             base,
                             head,
@@ -93,22 +113,38 @@ impl RefreshWorker {
                 }
                 let revised = revisions.is_some();
                 manual |= revised;
+                if !revised && let Some(watcher) = &mut watcher {
+                    match watcher.take_due(manual || restore.is_some()) {
+                        None => {
+                            continue;
+                        }
+                        Some(Scan::RebuildIndex) => {
+                            index = SnapshotIndex::default();
+                        }
+                        Some(Scan::ReuseIndex) => {}
+                    }
+                }
                 let restore =
                     restore.map(|action| action.apply(&repo).map_err(|error| format!("{error:#}")));
+                let mut replacement = None;
                 let polled = (|| -> anyhow::Result<_> {
                     let comparison = if let Some((base, head, mode, working_tree)) = revisions {
                         let comparison = repo.snapshot_revisions(&base, &head, mode)?;
-                        Some(if let Some(objects) = working_tree {
-                            repo.include_working_tree(comparison, &objects)?
+                        let mut index = SnapshotIndex::default();
+                        let watcher = working_tree
+                            .as_deref()
+                            .map(|objects| watch_worktree(&repo, objects, &wake));
+                        let comparison = if let Some(objects) = working_tree {
+                            repo.include_working_tree_with_index(comparison, &objects, &mut index)?
                         } else {
                             comparison
-                        })
-                    } else if manual
-                        || (repo.backend == Backend::Jj && matches!(restore, Some(Ok(()))))
-                    {
-                        Some(repo.refresh(&observed)?)
+                        };
+                        replacement = Some((watcher, index));
+                        Some(comparison)
                     } else {
-                        repo.refresh_if_changed(&observed)?
+                        let force = manual
+                            || repo.backend == Backend::Jj && matches!(restore, Some(Ok(())));
+                        repo.refresh_snapshot(&observed, &mut index, force)?
                     };
                     let Some(comparison) =
                         comparison.or_else(|| last_error.as_ref().map(|_| observed.clone()))
@@ -120,6 +156,10 @@ impl RefreshWorker {
                 })();
                 let snapshot = match polled {
                     Ok(Some((comparison, changes))) => {
+                        if let Some((new_watcher, new_index)) = replacement {
+                            watcher = new_watcher;
+                            index = new_index;
+                        }
                         observed = comparison.clone();
                         last_error = None;
                         Some(Ok((comparison, changes)))

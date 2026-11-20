@@ -164,9 +164,11 @@ scrolling. Each revision includes the first line of its commit message, such as
 message for each endpoint. Press `Esc` or select another file to restore the full
 comparison.
 
-Reviews check the selected revisions in the background about once per second.
-Jujutsu `@` and Git `--working-tree` follow saved edits. Git revision comparisons
-follow commits as `HEAD` or branches advance. File trees, file and directory previews, header IDs and
+Jujutsu and Git commit reviews check the selected revisions about once per
+second. Git `--working-tree` watches for filesystem changes, groups bursts of
+saves, and reuses a private index to snapshot changed files. It also rescans
+periodically as a fallback. Press `r` to refresh immediately.
+File trees, file and directory previews, header IDs and
 titles, and line totals reload together. Updates save automatically, preserving
 selection, pane focus, and scroll positions for unchanged diffs.
 
