@@ -632,6 +632,21 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         }
     }
     crate::comments_pane::draw(frame, app, panes.comments);
+    let update_notice = || {
+        app.update_available
+            .as_ref()
+            .map(|version| format!("Run `review update` to install {version}."))
+    };
+    let message_with_update = || {
+        let mut message = display_path(&app.message);
+        if let Some(notice) = update_notice()
+            && Span::raw(message.as_str()).width() + 3 + notice.len() <= panes.footer.width as usize
+        {
+            message.push_str(" · ");
+            message.push_str(&notice);
+        }
+        message
+    };
     let footer = if matches!(
         app.restore,
         Some(RestoreState::Apply(_) | RestoreState::Applying)
@@ -653,9 +668,11 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         "Use Ctrl-h/j/k/l to change panes, Ctrl-s to save, or Ctrl-q to discard.".into()
     } else if app.focus == Focus::Comments {
         if app.message.is_empty() {
-            "Use j/k to select a thread, Enter to read it, or t to hide this pane.".into()
+            update_notice().unwrap_or_else(|| {
+                "Use j/k to select a thread, Enter to read it, or t to hide this pane.".into()
+            })
         } else {
-            display_path(&app.message)
+            message_with_update()
         }
     } else if app.searching {
         let value = if app.focus == Focus::Tree {
@@ -665,7 +682,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         };
         format!("/{}▏", display_path(value))
     } else if !app.message.is_empty() {
-        display_path(&app.message)
+        message_with_update()
     } else if let Some(selection) = &app.line_selection {
         let target = selection.target();
         let (range, movement, cancel) = if selection.extending {
@@ -688,7 +705,9 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             display_path(&app.review.view.filter)
         )
     } else {
-        "Press Space to mark viewed, t for threads, c to comment, or ? for help.".into()
+        update_notice().unwrap_or_else(|| {
+            "Press Space to mark viewed, t for threads, c to comment, or ? for help.".into()
+        })
     };
     frame.render_widget(
         Paragraph::new(footer).style(Style::default().fg(Color::Cyan)),

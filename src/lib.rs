@@ -25,5 +25,6 @@ pub mod store;
 pub mod thread;
 pub mod tree;
 pub mod ui;
+pub mod update;
 pub mod vcs;
 mod vim;

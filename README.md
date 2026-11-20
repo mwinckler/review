@@ -21,8 +21,33 @@ you use and make their executables available on `PATH`:
 | Line-level restores and source-line mapping | Git. Jujutsu line restores also use a POSIX shell and standard system utilities. |
 
 ```sh
-cargo install --path .
+cargo install --locked --path .
 ```
+
+## Update Review
+
+```sh
+review update --check  # Compare the installed version with the latest stable release.
+review update          # Build and install that release with Cargo.
+```
+
+Run either command from any directory. Updates come from stable `vX.Y.Z` tags
+in [Review's upstream repository](https://github.com/mwinckler/review) and
+require Git. To install an update, put Cargo and a compatible Rust toolchain on
+`PATH`. Review uses the existing Cargo install root, including a custom
+`--root`. If you installed Review through a package manager, upgrade it through
+that manager.
+
+For a fresh Cargo install, substitute a published release tag for `vX.Y.Z`:
+
+```sh
+cargo install --locked --git https://github.com/mwinckler/review.git --tag vX.Y.Z review
+```
+
+When you open an interactive review, Review checks upstream in the background
+at most once a day and shows newly available versions in the footer. Set
+`update_check = false` at the top of `config.toml` to turn off automatic checks.
+Use `review update --check` for an immediate check.
 
 ## Start a review
 
@@ -709,3 +734,13 @@ Integration tests use temporary repositories created through Jujutsu and require
 Git, `jj`, `difft`, standard `diff`/`sleep`/`cat` tools, and a POSIX shell.
 Unix PTY tests cover the application, autosave, resumed file and directory
 previews, key aliases, and terminal restoration.
+
+To publish a stable release, push a `vX.Y.Z` tag pointing to the release commit
+on `master`. The tag must match the version in `Cargo.toml` and `Cargo.lock`.
+Use a new version and tag for each release. For example, after putting the
+`0.9.0` release commit at `master`, run:
+
+```sh
+jj tag set v0.9.0 -r master
+jj git push --bookmark master --tag v0.9.0
+```

@@ -1,3 +1,6 @@
+# Check for a new Review release when opening an interactive review.
+update_check = true
+
 # Default Difftastic renderer, using its Git-compatible invocation for path labels.
 [renderer]
 command = [

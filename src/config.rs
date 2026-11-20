@@ -11,14 +11,27 @@ use serde::Deserialize;
 
 use crate::{editor::EditorConfig, renderer::RendererConfig};
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub renderer: RendererConfig,
     pub editor: EditorConfig,
+    pub update_check: bool,
     pub keybindings: BTreeMap<String, String>,
     #[serde(skip)]
     bindings: HashMap<(KeyCode, KeyModifiers), Vec<KeyEvent>>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            renderer: RendererConfig::default(),
+            editor: EditorConfig::default(),
+            update_check: true,
+            keybindings: BTreeMap::new(),
+            bindings: HashMap::new(),
+        }
+    }
 }
 
 impl Config {

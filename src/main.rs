@@ -31,6 +31,7 @@ use review::{
     state::Review,
     store::{SavedSession, SessionLock, SessionStore},
     ui,
+    update::{self, UpdateCheck},
     vcs::{Backend, Repository},
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -115,6 +116,12 @@ enum Commands {
     Last,
     /// Select a GitLab merge request and prepare its source branch for review
     Gitlab(GitLabArgs),
+    /// Install the latest stable Review release from upstream.
+    Update {
+        /// Report available updates.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -160,6 +167,9 @@ fn main() -> Result<()> {
             || cli.yes)
     {
         Cli::command().error(clap::error::ErrorKind::ArgumentConflict, "Startup commands cannot be used with local comparison or session-management options").exit();
+    }
+    if let Some(Commands::Update { check }) = &cli.command {
+        return update::run(*check);
     }
     if let Some(Commands::Gitlab(args)) = &cli.command
         && let Some(GitLabCommand::Login { web, device }) = args.command
@@ -523,6 +533,7 @@ fn run(
     let mut request_id = 0;
     let mut redraw = true;
     let mut last_save = Instant::now();
+    let updates = config.update_check.then(UpdateCheck::start).flatten();
     let refresher = app
         .review
         .gitlab
@@ -660,6 +671,10 @@ fn run(
                 Ok(()) => "Conductor workspace is ready.".into(),
                 Err(error) => format!("{error:#}"),
             };
+            redraw = true;
+        }
+        if let Some(version) = updates.as_ref().and_then(UpdateCheck::take_available) {
+            app.update_available = Some(version);
             redraw = true;
         }
         if redraw {

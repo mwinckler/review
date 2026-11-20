@@ -20,6 +20,7 @@ fn missing(program: &OsStr, setting: Option<&str>) -> anyhow::Error {
             " Run `review gitlab login` afterward. See https://docs.gitlab.com/cli/.",
         ),
         Some("git") => ("Install Git".into(), " See https://git-scm.com/install/."),
+        Some("cargo") => ("Install Rust and Cargo".into(), " See https://rustup.rs/."),
         Some("jj") => (
             "Install Jujutsu 0.46 or newer".into(),
             " See https://docs.jj-vcs.dev/latest/install-and-setup/.",
@@ -108,6 +109,15 @@ pub(crate) fn require(program: &str, directory: &Path, setting: Option<&str>) ->
 
 /// Capture external API/transport commands without pipe deadlocks or terminal prompts.
 pub(crate) fn output(command: &mut Command, input: Option<&[u8]>) -> Result<Output> {
+    output_with_timeout(command, input, Duration::from_secs(90), || false)
+}
+
+pub(crate) fn output_with_timeout(
+    command: &mut Command,
+    input: Option<&[u8]>,
+    timeout: Duration,
+    cancelled: impl Fn() -> bool,
+) -> Result<Output> {
     const LIMIT: u64 = 32 * 1024 * 1024;
     let mut stdout = tempfile::tempfile()?;
     let mut stderr = tempfile::tempfile()?;
@@ -129,9 +139,11 @@ pub(crate) fn output(command: &mut Command, input: Option<&[u8]>) -> Result<Outp
     let started = Instant::now();
     let status = (|| -> Result<_> {
         loop {
+            ensure!(!cancelled(), "command cancelled");
             ensure!(
-                started.elapsed() < Duration::from_secs(90),
-                "command timed out after 90 seconds"
+                started.elapsed() < timeout,
+                "command timed out after {} seconds",
+                timeout.as_secs()
             );
             ensure!(
                 stdout.metadata()?.len() + stderr.metadata()?.len() <= LIMIT,
