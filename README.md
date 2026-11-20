@@ -558,9 +558,9 @@ Press `Esc` to restore the previous pane and layout.
 ### Line comments
 
 Press `c` on a file, selected hunk, or displayed source line to compose a comment.
-Focus the diff with `Tab` or `Ctrl-l` to see the cursor on a source line.
-Use `j` / `k` or the up/down arrows to move it through source rows in display
-order, switching sides as needed. Press `c` to comment on the highlighted line.
+Focus the diff with `Tab` or `Ctrl-l` to see the cursor span both sides of the diff.
+Use `j` / `k` or the up/down arrows to move it one display row at a time, including
+wrapped rows. Press `c` to comment on the source line at the cursor.
 For a range, press `v` at the highlighted line, extend it with `j` / `k` or the page
 keys, then press `c`. Press `v` again, `Enter`, or `Esc` to return to a single-line
 highlight at the current endpoint.

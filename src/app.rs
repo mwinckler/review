@@ -1249,7 +1249,7 @@ impl App {
         let start = self
             .line_selection
             .as_ref()
-            .and_then(|selection| selection.source_row(&self.source_lines))
+            .and_then(|selection| selection.cursor_row(&self.source_lines))
             .unwrap_or_else(|| self.position().vertical)
             .min(len - 1);
         let needle = self.diff_search.to_lowercase();

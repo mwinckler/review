@@ -545,11 +545,27 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             paragraph.scroll((0, position.horizontal))
         };
         frame.render_widget(paragraph, viewport);
-        let single_selection_row = app
-            .line_selection
-            .as_ref()
-            .filter(|selection| selection.anchor == selection.cursor)
-            .and_then(|selection| selection.source_row(&app.source_lines));
+        let selection_style = Style::default().bg(Color::Rgb(55, 50, 25));
+        if !app.rendering
+            && let Some(row) = app
+                .line_selection
+                .as_ref()
+                .filter(|selection| {
+                    app.focus == Focus::Diff || selection.anchor == selection.cursor
+                })
+                .and_then(|selection| selection.cursor_row(&app.source_lines))
+                .filter(|row| (position.vertical..position.vertical + height).contains(row))
+        {
+            frame.buffer_mut().set_style(
+                Rect::new(
+                    viewport.x,
+                    viewport.y + (row - position.vertical) as u16,
+                    viewport.width,
+                    1,
+                ),
+                selection_style,
+            );
+        }
         for source in app.source_lines.iter().filter(|source| {
             !app.rendering
                 && source.row >= position.vertical
@@ -557,11 +573,8 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         }) {
             let y = viewport.y + (source.row - position.vertical) as u16;
             if let Some(selection) = &app.line_selection
-                && if selection.anchor == selection.cursor {
-                    single_selection_row == Some(source.row)
-                } else {
-                    selection.contains(source)
-                }
+                && selection.anchor != selection.cursor
+                && selection.contains(source)
             {
                 let (start, end) = match (source.split_column, selection.side) {
                     (Some(split), DiffSide::Old) => (0, split),
@@ -584,7 +597,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                         end.saturating_sub(start) as u16,
                         1,
                     ),
-                    Style::default().bg(Color::Rgb(55, 50, 25)),
+                    selection_style,
                 );
             }
             let has_comment = comments.iter().any(|(_, target)| {

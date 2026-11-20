@@ -69,32 +69,44 @@ impl LineSelection {
         })
     }
 
-    fn source_index(&self, sources: &[SourceLine]) -> Option<usize> {
+    fn source_at_row(sources: &[SourceLine], row: usize) -> Option<&SourceLine> {
+        let index = sources.partition_point(|source| source.row <= row);
+        sources.get(index.checked_sub(1)?)
+    }
+
+    pub(crate) fn cursor_row(&self, sources: &[SourceLine]) -> Option<usize> {
         let matches = |source: &SourceLine| {
             source.location.path == self.path && source.number(self.side) == Some(self.cursor)
         };
-        // Keep the exact rendered occurrence, but resolve by source location after reflow.
+        // Unmapped display rows use the preceding source line for line actions.
+        // Resolve by source location after reflow.
         self.row
-            .and_then(|row| sources.binary_search_by_key(&row, |source| source.row).ok())
-            .filter(|&index| matches(&sources[index]))
-            .or_else(|| sources.iter().position(matches))
+            .filter(|&row| Self::source_at_row(sources, row).is_some_and(matches))
+            .or_else(|| {
+                sources
+                    .iter()
+                    .find(|source| matches(source))
+                    .map(|source| source.row)
+            })
     }
 
-    pub(crate) fn source_row(&self, sources: &[SourceLine]) -> Option<usize> {
-        self.source_index(sources).map(|index| sources[index].row)
-    }
-
-    fn move_cursor(&mut self, sources: &[SourceLine], motion: LineMotion) {
+    fn move_cursor(&mut self, sources: &[SourceLine], motion: LineMotion, last_row: usize) {
         if !self.extending {
-            let Some(last) = sources.len().checked_sub(1) else {
+            let (Some(first), Some(last)) = (sources.first(), sources.last()) else {
                 return;
             };
-            let current = self.source_index(sources).or_else(|| {
-                self.row
-                    .map(|row| sources.partition_point(|source| source.row < row).min(last))
-            });
-            let index = motion.index(current.unwrap_or(0), last);
-            if let Some(next) = Self::at_source(&sources[index], self.side, false) {
+            let current = self.cursor_row(sources).or(self.row).unwrap_or(first.row);
+            let row = match motion {
+                LineMotion::Relative(amount) => current
+                    .saturating_add_signed(amount)
+                    .clamp(first.row, last_row.max(last.row)),
+                LineMotion::First => first.row,
+                LineMotion::Last => last.row,
+            };
+            if let Some(source) = Self::source_at_row(sources, row)
+                && let Some(mut next) = Self::at_source(source, self.side, false)
+            {
+                next.row = Some(row);
                 *self = next;
             }
             return;
@@ -569,7 +581,7 @@ impl App {
         if self
             .line_selection
             .as_ref()
-            .and_then(|selection| selection.source_row(&self.source_lines))
+            .and_then(|selection| selection.cursor_row(&self.source_lines))
             .is_none()
         {
             self.line_selection = None;
@@ -590,7 +602,7 @@ impl App {
         if selection.is_some_and(|selection| selection.extending) {
             return;
         }
-        let row = selection.and_then(|selection| selection.source_row(&self.source_lines));
+        let row = selection.and_then(|selection| selection.cursor_row(&self.source_lines));
         if row.is_some_and(|row| visible.contains(&row)) {
             return;
         }
@@ -624,7 +636,10 @@ impl App {
         let Some(selection) = &mut self.line_selection else {
             return;
         };
-        if let Some(row) = selection.source_row(&self.source_lines) {
+        if !self.rendering && selection.row.is_some_and(|row| row >= lines) {
+            selection.row = None;
+        }
+        if let Some(row) = selection.cursor_row(&self.source_lines) {
             selection.row = Some(row);
             let position = self.position();
             if row < position.vertical {
@@ -640,6 +655,10 @@ impl App {
         let Some(selection) = &mut self.line_selection else {
             return false;
         };
+        let last_row = self
+            .hunks
+            .last()
+            .map_or(0, |hunk| hunk.rows.end.saturating_sub(1));
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         let amount = match (key.code, control) {
             (KeyCode::Char('j') | KeyCode::Down, false) => Some(1),
@@ -651,7 +670,7 @@ impl App {
             _ => None,
         };
         if let Some(amount) = amount {
-            selection.move_cursor(&self.source_lines, LineMotion::Relative(amount));
+            selection.move_cursor(&self.source_lines, LineMotion::Relative(amount), last_row);
         } else {
             if key
                 .modifiers
@@ -661,10 +680,10 @@ impl App {
             }
             match key.code {
                 KeyCode::Char('g') | KeyCode::Home => {
-                    selection.move_cursor(&self.source_lines, LineMotion::First);
+                    selection.move_cursor(&self.source_lines, LineMotion::First, last_row);
                 }
                 KeyCode::Char('G') | KeyCode::End => {
-                    selection.move_cursor(&self.source_lines, LineMotion::Last);
+                    selection.move_cursor(&self.source_lines, LineMotion::Last, last_row);
                 }
                 KeyCode::Char('h' | 'l') | KeyCode::Left | KeyCode::Right => {
                     let side = if matches!(key.code, KeyCode::Char('h') | KeyCode::Left) {
@@ -672,17 +691,21 @@ impl App {
                     } else {
                         DiffSide::New
                     };
-                    let row = selection.source_row(&self.source_lines).unwrap_or(0);
+                    let row = selection.cursor_row(&self.source_lines).unwrap_or(0);
+                    let current = LineSelection::source_at_row(&self.source_lines, row);
                     if let Some(source) = self
                         .source_lines
                         .iter()
                         .filter(|line| {
                             line.location.path == selection.path && line.number(side).is_some()
                         })
-                        .min_by_key(|line| line.row.abs_diff(row))
-                        && let Some(next) =
+                        .min_by_key(|line| line.row.abs_diff(current.map_or(row, |line| line.row)))
+                        && let Some(mut next) =
                             LineSelection::at_source(source, side, selection.extending)
                     {
+                        if current == Some(source) {
+                            next.row = Some(row);
+                        }
                         *selection = next;
                     }
                 }
