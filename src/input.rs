@@ -15,6 +15,31 @@ pub(crate) fn sanitize(value: &str) -> String {
         .collect()
 }
 
+pub(crate) fn insert_single_line(text: &mut String, cursor: &mut usize, value: &str) {
+    let value: String = value
+        .replace("\r\n", " ")
+        .replace(['\r', '\n', '\t', '\u{2028}', '\u{2029}'], " ")
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .collect();
+    text.insert_str(*cursor, &value);
+    *cursor += value.len();
+}
+
+pub(crate) fn single_line(text: &mut String, cursor: &mut usize, key: KeyEvent) {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('u') {
+        text.clear();
+        *cursor = 0;
+    } else if !key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        && !edit(text, cursor, key.code)
+        && let KeyCode::Char(ch) = key.code
+    {
+        insert_single_line(text, cursor, &ch.to_string());
+    }
+}
+
 pub(crate) fn multiline(text: &mut String, cursor: &mut usize, key: KeyEvent) {
     if edit(text, cursor, key.code) {
         return;

@@ -25,34 +25,11 @@ pub struct RenamePrompt {
 
 impl RenamePrompt {
     fn insert(&mut self, text: &str) {
-        let text: String = text
-            .replace("\r\n", " ")
-            .replace(['\r', '\n', '\t', '\u{2028}', '\u{2029}'], " ")
-            .chars()
-            .filter(|ch| !ch.is_control())
-            .collect();
-        self.value.insert_str(self.cursor, &text);
-        self.cursor += text.len();
+        input::insert_single_line(&mut self.value, &mut self.cursor, text);
     }
 
     fn input(&mut self, key: KeyEvent) {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('u') {
-            self.value.clear();
-            self.cursor = 0;
-            return;
-        }
-        if key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        {
-            return;
-        }
-        if input::edit(&mut self.value, &mut self.cursor, key.code) {
-            return;
-        }
-        if let KeyCode::Char(ch) = key.code {
-            self.insert(&ch.to_string());
-        }
+        input::single_line(&mut self.value, &mut self.cursor, key);
     }
 }
 

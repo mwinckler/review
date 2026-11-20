@@ -680,7 +680,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     crate::thread::draw(frame, app, panes.comments, panes.footer);
     if app.help {
         let width = frame.area().width.min(74);
-        let height = frame.area().height.min(38);
+        let height = frame.area().height.min(39);
         let area = Rect::new(
             frame.area().x + (frame.area().width - width) / 2,
             frame.area().y + (frame.area().height - height) / 2,
@@ -716,6 +716,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "/                Filter filenames / search diff\n",
             "s                Flash jump in the tree from either pane\n",
             "S                Manage / rename / forget review sessions\n",
+            "B                Edit the base and head of a local review.\n",
             "n / N            Next/previous search match\n",
             "u                Toggle unviewed-only files\n",
             "i / z            Toggle inline / full-width diff\n",
@@ -740,6 +741,9 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     }
     if let Some(dialog) = &app.session_dialog {
         draw_session_dialog(frame, dialog);
+    }
+    if let Some(dialog) = &app.revision_dialog {
+        dialog.draw(frame);
     }
     if let Some(dialog) = &app.comment_dialog {
         draw_comment_dialog(frame, app, dialog);
@@ -1370,24 +1374,7 @@ fn draw_session_dialog(frame: &mut Frame, dialog: &SessionDialog) {
     }
     if let Some(prompt) = &dialog.renaming {
         let prefix = format!("Rename {}: ", display_path(&prompt.id));
-        let column = Span::raw(format!(
-            "{prefix}{}",
-            display_path(&prompt.value[..prompt.cursor])
-        ))
-        .width();
-        let mut value = prompt.value.clone();
-        value.insert(prompt.cursor, '▏');
-        frame.render_widget(
-            Paragraph::new(format!("{prefix}{}", display_path(&value)))
-                .scroll((
-                    0,
-                    column
-                        .saturating_sub(rename.width.saturating_sub(1) as usize)
-                        .min(u16::MAX as usize) as u16,
-                ))
-                .style(Style::default().fg(Color::Cyan)),
-            rename,
-        );
+        draw_single_line_field(frame, rename, &prefix, &prompt.value, Some(prompt.cursor));
         frame.render_widget(
             Paragraph::new(display_path(&dialog.message)).style(Style::default().fg(Color::Yellow)),
             message,
@@ -1423,6 +1410,34 @@ fn draw_session_dialog(frame: &mut Frame, dialog: &SessionDialog) {
             controls,
         );
     }
+}
+
+pub(crate) fn draw_single_line_field(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    value: &str,
+    cursor: Option<usize>,
+) {
+    let mut text = value.to_owned();
+    let (scroll, style) = if let Some(cursor) = cursor {
+        let column = Span::raw(label).width() + Span::raw(display_path(&text[..cursor])).width();
+        text.insert(cursor, '▏');
+        (
+            column
+                .saturating_sub(area.width.saturating_sub(1) as usize)
+                .min(u16::MAX as usize) as u16,
+            Style::default().fg(Color::Cyan),
+        )
+    } else {
+        (0, Style::default())
+    };
+    frame.render_widget(
+        Paragraph::new(format!("{label}{}", display_path(&text)))
+            .scroll((0, scroll))
+            .style(style),
+        area,
+    );
 }
 
 fn border(focused: bool) -> Style {

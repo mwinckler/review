@@ -10,6 +10,7 @@ use crate::{
     gitlab_worker::GitLabJob,
     hunks::{Hunk, HunkLocation, SourceLine},
     restore::{Restore, RestoreState},
+    revision_dialog::RevisionDialog,
     session_dialog::{SessionAction, SessionDialog},
     state::{Position, Review},
     tree::{self, Row},
@@ -105,6 +106,7 @@ pub struct App {
     pub restore: Option<RestoreState>,
     pub rendering: bool,
     pub session_dialog: Option<SessionDialog>,
+    pub revision_dialog: Option<RevisionDialog>,
     pub session_action: Option<SessionAction>,
     pub source_lines: Vec<SourceLine>,
     pub line_selection: Option<LineSelection>,
@@ -158,6 +160,7 @@ impl App {
             restore: None,
             rendering: false,
             session_dialog: None,
+            revision_dialog: None,
             session_action: None,
             source_lines: Vec::new(),
             line_selection: None,
@@ -615,6 +618,9 @@ impl App {
         if let Some(dialog) = &self.session_dialog {
             return dialog.renaming.is_some();
         }
+        if let Some(dialog) = &self.revision_dialog {
+            return !dialog.pending;
+        }
         if self.comments_overview_open() || self.help {
             return false;
         }
@@ -657,6 +663,12 @@ impl App {
         }
         if let Some(dialog) = &mut self.session_dialog {
             self.session_action = dialog.handle_key(key, page);
+            return;
+        }
+        if let Some(dialog) = &mut self.revision_dialog {
+            if !dialog.handle_key(key) {
+                self.revision_dialog = None;
+            }
             return;
         }
         if self.comments_overview_open() {
@@ -827,6 +839,14 @@ impl App {
             }
             KeyCode::Char('S') => {
                 self.session_action = Some(SessionAction::Open);
+            }
+            KeyCode::Char('B') if !key.modifiers.contains(KeyModifiers::ALT) => {
+                if self.review.gitlab.is_some() {
+                    self.message =
+                        "Press r to load the latest GitLab merge request revisions.".into();
+                } else if !self.resume_comment_draft() {
+                    self.revision_dialog = Some(RevisionDialog::new(&self.review.comparison));
+                }
             }
             KeyCode::Char('P') => {
                 self.open_submission();

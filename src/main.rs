@@ -525,7 +525,14 @@ fn run(
         .gitlab
         .is_none()
         .then(|| RefreshWorker::new(repo, &app.review.comparison));
-    while !app.quit || app.network_busy || matches!(app.restore, Some(RestoreState::Applying)) {
+    while !app.quit
+        || app.network_busy
+        || matches!(app.restore, Some(RestoreState::Applying))
+        || app
+            .revision_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.pending)
+    {
         let size = terminal.size()?;
         let panes = ui::panes(Rect::new(0, 0, size.width, size.height), app);
         let diff_viewport_width = panes.diff.width.saturating_sub(2);
@@ -670,6 +677,7 @@ fn run(
                         || app.searching
                         || app.flash.is_some()
                         || app.session_dialog.is_some()
+                        || app.revision_dialog.is_some()
                         || app.comments_overview_open()
                         || app.comment_editor_active()
                         || app.restore.is_some()
@@ -682,6 +690,7 @@ fn run(
                     for key in keys {
                         let search = app.focus == Focus::Diff
                             && app.session_dialog.is_none()
+                            && app.revision_dialog.is_none()
                             && app.restore.is_none()
                             && !app.comments_overview_open()
                             && !app.searching
@@ -705,6 +714,7 @@ fn run(
                         app.handle_key(key, input_page, diff.lines.len(), size.width);
                         force_save |= key.code == KeyCode::Char(' ')
                             && app.session_dialog.is_none()
+                            && app.revision_dialog.is_none()
                             && app.restore.is_none()
                             && !app.comment_editor_active()
                             && !app.comments_overview_open();
@@ -722,7 +732,10 @@ fn run(
                     redraw = true;
                 }
                 Event::Paste(text) => {
-                    if let Some(dialog) = &mut app.session_dialog {
+                    if let Some(dialog) = &mut app.revision_dialog {
+                        dialog.paste(&text);
+                        redraw = true;
+                    } else if let Some(dialog) = &mut app.session_dialog {
                         dialog.paste(&text);
                         redraw = true;
                     } else if app.focus == Focus::Comments
@@ -861,6 +874,16 @@ fn run(
                     };
                 }
             }
+            redraw = true;
+        }
+        if let Some(dialog) = &mut app.revision_dialog
+            && let Some(edit) = dialog.take_request()
+            && let Err(error) = refresher
+                .as_ref()
+                .context("Changing revisions requires a local review.")
+                .and_then(|worker| worker.compare(edit.base, edit.head, edit.mode))
+        {
+            dialog.fail(format!("{error:#}"));
             redraw = true;
         }
         let mut gitlab_job = app.submission_action.take();
@@ -1003,7 +1026,10 @@ fn run(
                     let previous_preview: Vec<_> = app.preview_changes().cloned().collect();
                     let invalidated = app.review.reconcile(comparison, changes);
                     app.rebuild();
-                    let action = if result.manual {
+                    let action = if result.revised {
+                        app.revision_dialog = None;
+                        "Review revisions updated"
+                    } else if result.manual {
                         "Snapshots refreshed"
                     } else {
                         "Changes reloaded"
@@ -1024,6 +1050,11 @@ fn run(
                     app.dirty = true;
                     force_save = true;
                 }
+                Err(error) if result.revised => {
+                    if let Some(dialog) = &mut app.revision_dialog {
+                        dialog.fail(error);
+                    }
+                }
                 Err(error) => {
                     let action = if result.manual {
                         "Refresh failed"
@@ -1034,6 +1065,13 @@ fn run(
                     refresh_error = Some(error);
                 }
             }
+            redraw = true;
+        }
+        if refresher.as_ref().is_some_and(RefreshWorker::has_stopped)
+            && let Some(dialog) = &mut app.revision_dialog
+            && dialog.pending
+        {
+            dialog.fail("The repository worker has stopped.".into());
             redraw = true;
         }
         if let Some(result) = restored {

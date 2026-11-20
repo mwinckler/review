@@ -166,6 +166,7 @@ fn action_keys(action: &str) -> Option<&'static [&'static str]> {
         "search" => &["/"],
         "flash" => &["s"],
         "manage_sessions" => &["S"],
+        "edit_revisions" => &["B"],
         "next_match" => &["n"],
         "previous_match" => &["N"],
         "refresh" => &["r"],

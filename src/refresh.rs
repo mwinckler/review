@@ -6,11 +6,16 @@ use std::{
 
 use crate::{
     restore::Restore,
-    vcs::{Backend, Change, Comparison, Repository},
+    vcs::{Backend, Change, Comparison, ComparisonMode, Repository},
 };
 
 enum Request {
     Refresh,
+    Compare {
+        base: String,
+        head: String,
+        mode: ComparisonMode,
+    },
     Restore(Box<Restore>),
     Stop,
 }
@@ -18,6 +23,7 @@ enum Request {
 #[derive(Debug)]
 pub struct RefreshResult {
     pub manual: bool,
+    pub revised: bool,
     pub snapshot: Result<(Comparison, Vec<Change>), String>,
 }
 
@@ -43,6 +49,7 @@ impl RefreshWorker {
                 last_error = Some(error.clone());
                 let _ = output.send(RefreshResult {
                     manual: false,
+                    revised: false,
                     snapshot: Err(error),
                 });
                 comparison.clone()
@@ -60,10 +67,14 @@ impl RefreshWorker {
                 };
                 let mut manual = false;
                 let mut restore = None;
+                let mut revisions = None;
                 for request in first.into_iter().chain(requests.try_iter()) {
                     match request {
                         Request::Refresh => {
                             manual = true;
+                        }
+                        Request::Compare { base, head, mode } => {
+                            revisions = Some((base, head, mode));
                         }
                         Request::Restore(action) => {
                             restore = Some(action);
@@ -73,10 +84,14 @@ impl RefreshWorker {
                         }
                     }
                 }
+                let revised = revisions.is_some();
+                manual |= revised;
                 let restore =
                     restore.map(|action| action.apply(&repo).map_err(|error| format!("{error:#}")));
                 let polled = (|| -> anyhow::Result<_> {
-                    let comparison = if manual
+                    let comparison = if let Some((base, head, mode)) = revisions {
+                        Some(repo.snapshot_revisions(&base, &head, mode)?)
+                    } else if manual
                         || (repo.backend == Backend::Jj && matches!(restore, Some(Ok(()))))
                     {
                         Some(repo.refresh(&observed)?)
@@ -100,7 +115,9 @@ impl RefreshWorker {
                     Ok(None) => None,
                     Err(error) => {
                         let error = format!("{error:#}");
-                        if !manual && last_error.as_ref() == Some(&error) {
+                        if revised {
+                            Some(Err(error))
+                        } else if !manual && last_error.as_ref() == Some(&error) {
                             None
                         } else {
                             last_error = Some(error.clone());
@@ -109,7 +126,13 @@ impl RefreshWorker {
                     }
                 };
                 if let Some(snapshot) = snapshot
-                    && output.send(RefreshResult { manual, snapshot }).is_err()
+                    && output
+                        .send(RefreshResult {
+                            manual,
+                            revised,
+                            snapshot,
+                        })
+                        .is_err()
                 {
                     break;
                 }
@@ -130,6 +153,16 @@ impl RefreshWorker {
 
     pub fn request(&self) {
         let _ = self.sender.send(Request::Refresh);
+    }
+
+    pub fn compare(&self, base: String, head: String, mode: ComparisonMode) -> anyhow::Result<()> {
+        self.sender
+            .send(Request::Compare { base, head, mode })
+            .map_err(|_| anyhow::anyhow!("The repository worker has stopped."))
+    }
+
+    pub fn has_stopped(&self) -> bool {
+        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
     }
 
     pub fn restore(&self, action: Restore) -> anyhow::Result<()> {

@@ -18,6 +18,7 @@ mod markdown;
 pub mod refresh;
 pub mod renderer;
 pub mod restore;
+pub mod revision_dialog;
 pub mod session_dialog;
 pub mod state;
 pub mod store;

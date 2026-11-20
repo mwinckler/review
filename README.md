@@ -118,6 +118,14 @@ Jujutsu `@` follows saved working-copy edits; Git comparisons follow commits as
 titles, and line totals reload together. Updates save automatically, preserving
 selection, pane focus, and scroll positions for unchanged diffs.
 
+In a local review, press `B` to edit the comparison in the current session.
+Use `Tab` to switch between the base and head, `Ctrl-o` to cycle through direct,
+merge-base, and single-revision comparisons, and `Enter` to apply. Each field
+accepts the backend's revision syntax; an empty field uses `HEAD` or `@`.
+Use `Ctrl-u` to clear a field or `Esc` to cancel. Applying preserves comments,
+viewed markers for matching changes, and scroll positions for unchanged diffs.
+For GitLab merge requests, press `r` to load the latest MR revisions.
+
 Jujutsu checks snapshot the working copy through `jj`, then read file contents at
 fixed revisions.
 
@@ -416,6 +424,7 @@ Repository content and persistent editor snapshots are preserved.
 | `/` | Filter filenames in the tree; search text in the diff |
 | `s` | Flash jump to a visible tree entry from either pane |
 | `S` | Manage, rename, and forget saved sessions with multiselect |
+| `B` | Edit the comparison revisions for a local review. |
 | `n` / `N` | Next/previous matching file or diff search result |
 | `u` | Toggle the unviewed-only filter |
 | `i` | Toggle inline and side-by-side rendering |
@@ -675,7 +684,7 @@ Actions: `up`, `down`, `left`, `right`, `focus_tree`, `focus_diff`, `first`, `la
 `manage_comments`, `toggle_comments`, `submit_review`, `toggle_viewed`,
 `toggle_unviewed`, `toggle_inline`, `increase_diff_context`,
 `decrease_diff_context`, `toggle_fullscreen`, `search`, `flash`,
-`manage_sessions`,
+`manage_sessions`, `edit_revisions`,
 `next_match`, `previous_match`, `refresh`, `clear_filters`, `help`, `quit`.
 
 ## Development

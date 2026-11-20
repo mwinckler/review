@@ -427,7 +427,6 @@ impl Repository {
             !expression.is_empty(),
             "comparison expression cannot be empty"
         );
-        let current = self.backend.current_revision();
         let (base, head, mode) = match range_separator(expression, self.backend)? {
             Some((index, length)) => {
                 ensure!(
@@ -447,6 +446,16 @@ impl Repository {
             None if self.is_branch(expression)? => (expression, "", ComparisonMode::Direct),
             None => ("", expression, ComparisonMode::SingleRevision),
         };
+        self.snapshot_revisions(base, head, mode)
+    }
+
+    pub(crate) fn snapshot_revisions(
+        &self,
+        base: &str,
+        head: &str,
+        mode: ComparisonMode,
+    ) -> Result<Comparison> {
+        let current = self.backend.current_revision();
         self.snapshot_with_mode(
             if base.is_empty() { current } else { base },
             if head.is_empty() { current } else { head },
