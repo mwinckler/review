@@ -28,15 +28,17 @@ cargo install --locked --path .
 
 ```sh
 review update --check  # Compare the installed version with the latest stable release.
+review update --notes  # Read the latest stable release notes without installing it.
 review update          # Build and install that release with Cargo.
 ```
 
-Run either command from any directory. Updates come from stable `vX.Y.Z` tags
+Run these commands from any directory. Updates come from stable `vX.Y.Z` tags
 in [Review's upstream repository](https://github.com/mwinckler/review) and
 require Git. To install an update, put Cargo and a compatible Rust toolchain on
 `PATH`. Review uses the existing Cargo install root, including a custom
 `--root`. If you installed Review through a package manager, upgrade it through
-that manager.
+that manager. `--notes` uses `curl` to read the GitHub Release for the tag and
+prints its web link.
 
 For a fresh Cargo install, substitute a published release tag for `vX.Y.Z`:
 
@@ -735,12 +737,20 @@ Git, `jj`, `difft`, standard `diff`/`sleep`/`cat` tools, and a POSIX shell.
 Unix PTY tests cover the application, autosave, resumed file and directory
 previews, key aliases, and terminal restoration.
 
-To publish a stable release, push a `vX.Y.Z` tag pointing to the release commit
-on `master`. The tag must match the version in `Cargo.toml` and `Cargo.lock`.
-Use a new version and tag for each release. For example, after putting the
-`0.9.0` release commit at `master`, run:
+### Publish a release
+
+Set the new version in `Cargo.toml` and `Cargo.lock` and put the release commit
+on `master`. The publisher requires Python 3.11 or newer, Jujutsu with tag push
+support, and an authenticated GitHub CLI (`gh`). Push `master` to `origin` before
+publishing. For the first release, pass the curated Markdown notes:
 
 ```sh
-jj tag set v0.9.0 -r master
-jj git push --bookmark master --tag v0.9.0
+scripts/publish-release.py 0.10.0 --notes-file release-notes/v0.10.0.md --dry-run
+scripts/publish-release.py 0.10.0 --notes-file release-notes/v0.10.0.md
 ```
+
+The script pushes the `vX.Y.Z` tag and creates its GitHub Release. For subsequent
+releases, omit `--notes-file` to generate notes from the commit summaries since
+the previous stable tag. Run `--dry-run` to preview the notes using the locally
+known upstream tags. If GitHub Release creation fails after the tag is pushed,
+rerun the same command while `master` still points to that release commit.

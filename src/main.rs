@@ -116,11 +116,14 @@ enum Commands {
     Last,
     /// Select a GitLab merge request and prepare its source branch for review
     Gitlab(GitLabArgs),
-    /// Install the latest stable Review release from upstream.
+    /// Check for, read about, or install the latest stable release.
     Update {
         /// Report available updates.
         #[arg(long)]
         check: bool,
+        /// Show the latest stable release notes.
+        #[arg(long, conflicts_with = "check")]
+        notes: bool,
     },
 }
 
@@ -168,8 +171,8 @@ fn main() -> Result<()> {
     {
         Cli::command().error(clap::error::ErrorKind::ArgumentConflict, "Startup commands cannot be used with local comparison or session-management options").exit();
     }
-    if let Some(Commands::Update { check }) = &cli.command {
-        return update::run(*check);
+    if let Some(Commands::Update { check, notes }) = &cli.command {
+        return update::run(*check, *notes);
     }
     if let Some(Commands::Gitlab(args)) = &cli.command
         && let Some(GitLabCommand::Login { web, device }) = args.command

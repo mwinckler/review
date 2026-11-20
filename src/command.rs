@@ -21,6 +21,7 @@ fn missing(program: &OsStr, setting: Option<&str>) -> anyhow::Error {
         ),
         Some("git") => ("Install Git".into(), " See https://git-scm.com/install/."),
         Some("cargo") => ("Install Rust and Cargo".into(), " See https://rustup.rs/."),
+        Some("curl") => ("Install curl".into(), " See https://curl.se/download.html."),
         Some("jj") => (
             "Install Jujutsu 0.46 or newer".into(),
             " See https://docs.jj-vcs.dev/latest/install-and-setup/.",

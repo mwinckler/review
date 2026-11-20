@@ -18,24 +18,28 @@ use fs2::FileExt;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use crate::command;
+use crate::{command, ui};
 
 const UPSTREAM: &str = env!("CARGO_PKG_REPOSITORY");
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
 const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-pub fn run(check: bool) -> Result<()> {
+pub fn run(check: bool, notes: bool) -> Result<()> {
     let Some(latest) = latest_release(&|| false)? else {
         println!("No stable releases are published. You are running Review {CURRENT}.");
         return Ok(());
     };
+    if notes {
+        return show_notes(&latest);
+    }
     if !is_newer(&latest) {
         println!("Review {CURRENT} is up to date. The latest stable release is {latest}.");
         return Ok(());
     }
     if check {
         println!("Review {CURRENT} is installed. Run `review update` to install {latest}.");
+        println!("Run `review update --notes` to read the release notes.");
         return Ok(());
     }
 
@@ -63,6 +67,58 @@ pub fn run(check: bool) -> Result<()> {
     );
     println!("Updated Review to {latest}.");
     Ok(())
+}
+
+fn show_notes(version: &Version) -> Result<()> {
+    let repository = UPSTREAM.trim_end_matches(".git");
+    let web = format!("{repository}/releases/tag/v{version}");
+    let body = fetch_notes(repository, version)
+        .with_context(|| format!("Could not show the notes for Review {version}. See {web}."))?;
+    println!("Release notes for Review {version}: {web}\n");
+    for line in body.trim().lines() {
+        println!("{}", ui::display_path(line));
+    }
+    Ok(())
+}
+
+fn fetch_notes(repository: &str, version: &Version) -> Result<String> {
+    #[derive(Deserialize)]
+    struct Release {
+        body: Option<String>,
+    }
+
+    let slug = repository
+        .strip_prefix("https://github.com/")
+        .context("Expected a GitHub repository URL.")?;
+    let api = format!("https://api.github.com/repos/{slug}/releases/tags/v{version}");
+    let output = command::output_with_timeout(
+        Command::new("curl").args([
+            "--disable",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            &TIMEOUT.as_secs().to_string(),
+            "--header",
+            "Accept: application/vnd.github+json",
+            "--url",
+            &api,
+        ]),
+        None,
+        TIMEOUT,
+        || false,
+    )?;
+    ensure!(
+        output.status.success(),
+        "GitHub's release request failed ({}): {}",
+        output.status,
+        ui::display_path(String::from_utf8_lossy(&output.stderr).trim())
+    );
+    let release: Release = serde_json::from_slice(&output.stdout)?;
+    release
+        .body
+        .filter(|body| !body.trim().is_empty())
+        .context("GitHub returned an empty release description.")
 }
 
 fn stable_version(value: &str) -> Option<Version> {
