@@ -339,7 +339,7 @@ operation before quitting so submission checkpoints stay consistent.
 ```sh
 review last                  # Open the most recently opened review
 review --resume              # Resume the most recently saved session
-review --list                # List saved sessions for this repository/backend
+review list                  # List saved sessions for this repository/backend
 review r3                    # Resume a particular saved review.
 review --resume r3           # Resume a particular session
 review --rename r3 "API review" # Give a saved session a display name
@@ -363,15 +363,15 @@ and deleted sessions' numbers become reusable after seven days. New reviews reus
 the lowest eligible number before allocating a fresh one. After reuse, the ID
 identifies the new review. The `r` prefix keeps these IDs distinct from older hash
 IDs. Existing saved IDs and unique prefixes remain valid.
-On a terminal, `review --list` highlights each session's shortest unique prefix in
+On a terminal, `review list` highlights each session's shortest unique prefix in
 bold magenta. Ambiguous prefixes report the matching IDs so you can choose a longer
 prefix. Piped listings use plain IDs; `NO_COLOR=1` also selects plain terminal output.
 
-Each `review --list` entry includes its last-opened datetime in UTC, for example
+Each `review list` entry includes its last-opened datetime in UTC, for example
 `Opened 2026-10-28T08:30:00Z`. Creating or resuming a review records this time.
 Older sessions use their last saved time until their next resume.
 
-Session names appear beside their stable IDs in `--list`, the TUI header, and the
+Session names appear beside their stable IDs in `review list`, the TUI header, and the
 session dialog. `review --rename <ID> <NAME>` accepts a full ID or unique prefix
 and renames a closed session. Use `review --rename r3 ""` to clear its name.
 Renaming preserves the session's review data, last-opened time, and listing order.
@@ -408,20 +408,20 @@ review --forget r3             # Forget one session by ID or unique prefix
 review --forget r3 r7          # Forget several sessions
 review --forget-all            # Forget every closed session in this repository/backend
 review --forget-all --yes      # Confirm immediately, suitable for scripts
-review --cleanup              # Forget closed reviews last opened over a week ago
-review --cleanup --yes        # Confirm stale-review cleanup immediately
+review cleanup                 # Forget closed reviews last opened over a week ago
+review cleanup --yes           # Confirm stale-review cleanup immediately
 ```
 
 The CLI asks for confirmation; `-y` / `--yes` confirms explicitly for automation.
 All requested IDs and session locks are checked before deletion. Open sessions
 are protected, and `--forget-all` selects closed sessions.
 
-`--prune` is an alias for `--cleanup`.
+`review prune` is an alias for `review cleanup`.
 
-`--cleanup` selects this repository/backend's closed sessions whose last-opened
+`review cleanup` selects this repository/backend's closed sessions whose last-opened
 time is strictly more than seven days ago. Older sessions use their last saved
 time. Cleanup asks for confirmation and rechecks the selected sessions' age and
-locks before deletion. Use `--cleanup --yes` for automation. Deleted numbers follow
+locks before deletion. Use `review cleanup --yes` for automation. Deleted numbers follow
 the same seven-day reuse cooldown as manually forgotten sessions.
 
 Press `S` from either pane to open the session dialog. It shows session IDs, names,

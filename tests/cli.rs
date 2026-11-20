@@ -35,7 +35,7 @@ fn lists_saved_sessions_without_a_terminal() {
     let repo_dir = common::fixture();
     let state = tempfile::tempdir().unwrap();
     let output = cli(repo_dir.path(), state.path())
-        .arg("--list")
+        .arg("list")
         .output()
         .unwrap();
     assert!(
@@ -50,7 +50,7 @@ fn lists_saved_sessions_without_a_terminal() {
     let (saved, lock) = store.create(Review::new(comparison, changes)).unwrap();
     drop(lock);
     let output = cli(repo_dir.path(), state.path())
-        .arg("--list")
+        .arg("list")
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -93,7 +93,7 @@ fn session_list_shows_last_opened_datetimes_in_utc_and_falls_back_for_legacy_ses
     }
     let output = cli(root.path(), state.path())
         .env("TZ", "Pacific/Honolulu")
-        .arg("--list")
+        .arg("list")
         .output()
         .unwrap();
     assert!(
@@ -128,7 +128,7 @@ fn short_session_numbers_are_listed_resumable_and_accepted_when_forgetting() {
         assert_eq!(saved.id, format!("r{number}"));
     }
     let output = cli(repo_dir.path(), state.path())
-        .arg("--list")
+        .arg("list")
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -379,14 +379,14 @@ fn cleanup_removes_only_stale_closed_reviews_and_preserves_repository_scoping_an
         others.push(other);
     }
     let output = cli(root.path(), state.path())
-        .arg("--cleanup")
+        .arg("cleanup")
         .output()
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("--yes"));
     assert_eq!(store.list().unwrap().len(), 6);
     let output = cli(root.path(), state.path())
-        .args(["--cleanup", "--yes"])
+        .args(["cleanup", "--yes"])
         .output()
         .unwrap();
     assert!(
@@ -424,14 +424,14 @@ fn cleanup_without_stale_reviews_succeeds_without_a_terminal_or_confirmation() {
     let comparison = repo.snapshot_expression("HEAD~1..HEAD").unwrap();
     let changes = repo.changes(&comparison).unwrap();
     let store = SessionStore::new(state.path(), &repo).unwrap();
-    for create in [false, true] {
+    for (command, create) in [("cleanup", false), ("prune", true)] {
         if create {
             store
                 .create(Review::new(comparison.clone(), changes.clone()))
                 .unwrap();
         }
         let output = cli(root.path(), state.path())
-            .arg("--cleanup")
+            .arg(command)
             .output()
             .unwrap();
         assert!(
@@ -446,20 +446,20 @@ fn cleanup_without_stale_reviews_succeeds_without_a_terminal_or_confirmation() {
 #[test]
 fn forgetting_flags_conflict_with_other_session_and_comparison_modes() {
     for args in [
-        vec!["--forget", "a", "--list"],
+        vec!["list", "--forget", "a"],
         vec!["--forget", "a", "--resume"],
         vec!["--forget", "a", "--base", "master"],
         vec!["HEAD~1..HEAD", "--forget", "a"],
         vec!["--forget-all", "--forget", "a"],
-        vec!["--forget-all", "--list"],
+        vec!["--forget-all", "list"],
         vec!["--yes"],
         vec!["--forget"],
-        vec!["--cleanup", "--forget", "a"],
-        vec!["--cleanup", "--forget-all"],
-        vec!["--cleanup", "--list"],
-        vec!["--cleanup", "--resume"],
-        vec!["--cleanup", "--base", "master"],
-        vec!["HEAD~1..HEAD", "--cleanup"],
+        vec!["cleanup", "--forget", "a"],
+        vec!["cleanup", "--forget-all"],
+        vec!["cleanup", "list"],
+        vec!["cleanup", "--resume"],
+        vec!["cleanup", "--base", "master"],
+        vec!["HEAD~1..HEAD", "cleanup"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_review"))
             .args(&args)
@@ -477,7 +477,7 @@ fn positional_comparisons_conflict_with_other_comparison_and_session_options() {
         &["main..feature", "--head", "feature"],
         &["main..feature", "--resume"],
         &["--resume", "latest", "main..feature"],
-        &["main..feature", "--list"],
+        &["main..feature", "list"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_review"))
             .args(args)
@@ -521,10 +521,7 @@ fn rename_is_noninteractive_lists_names_and_preserves_saved_session_data() {
     let mut expected = before;
     expected["name"] = "API review λ".into();
     assert_eq!(renamed, expected);
-    let output = cli(root.path(), state.path())
-        .arg("--list")
-        .output()
-        .unwrap();
+    let output = cli(root.path(), state.path()).arg("list").output().unwrap();
     assert!(output.status.success());
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(
@@ -615,14 +612,14 @@ fn rename_requires_one_id_and_name_and_conflicts_with_other_modes() {
         vec!["--rename"],
         vec!["--rename", "r1"],
         vec!["--rename", "r1", "name", "--rename", "r2", "other"],
-        vec!["--rename", "r1", "name", "--list"],
+        vec!["--rename", "r1", "name", "list"],
         vec!["--rename", "r1", "name", "--resume"],
         vec!["--rename", "r1", "name", "--base", "master"],
         vec!["--rename", "r1", "name", "--head", "feature"],
         vec!["--rename", "r1", "name", "HEAD~1..HEAD"],
         vec!["--rename", "r1", "name", "--forget", "r2"],
         vec!["--rename", "r1", "name", "--forget-all"],
-        vec!["--rename", "r1", "name", "--cleanup"],
+        vec!["--rename", "r1", "name", "cleanup"],
         vec!["--rename", "r1", "name", "--yes"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_review"))

@@ -382,7 +382,7 @@ impl SessionStore {
         validate_id(prefix)?;
         self.find(prefix)?.with_context(|| {
             format!(
-                "No saved review matches session ID {prefix:?}. Use review --list to see saved sessions"
+                "No saved review matches session ID {prefix:?}. Use review list to see saved sessions"
             )
         })
     }
@@ -411,7 +411,7 @@ impl SessionStore {
             [id] => Ok(Some(id.clone())),
             [] => Ok(None),
             _ => bail!(
-                "Ambiguous session ID prefix {prefix:?}: {}. Use a longer prefix from review --list",
+                "Ambiguous session ID prefix {prefix:?}: {}. Use a longer prefix from review list",
                 matches.join(", ")
             ),
         }

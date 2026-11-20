@@ -680,7 +680,7 @@ fn ambiguous_unknown_and_invalid_prefixes_report_errors_without_creating_files()
     assert!(error.contains("Ambiguous session ID prefix"), "{error}");
     assert!(error.contains("abc123000001"), "{error}");
     assert!(error.contains("abc9ff000002"), "{error}");
-    assert!(error.contains("review --list"), "{error}");
+    assert!(error.contains("review list"), "{error}");
     let error = store.open("ff").err().unwrap().to_string();
     assert!(error.contains("No saved review matches"), "{error}");
     assert!(error.contains("ff"), "{error}");

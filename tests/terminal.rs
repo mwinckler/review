@@ -319,7 +319,7 @@ fn session_list_highlights_unique_prefixes_and_resume_accepts_them() {
         command
     };
     let mut list = command();
-    list.arg("--list");
+    list.arg("list");
     let mut terminal = Pty::spawn(list);
     assert!(terminal.finish().success());
     terminal.pump();
@@ -338,7 +338,7 @@ fn session_list_highlights_unique_prefixes_and_resume_accepts_them() {
         );
     }
     let mut list = command();
-    list.arg("--list").env("NO_COLOR", "1");
+    list.arg("list").env("NO_COLOR", "1");
     let mut terminal = Pty::spawn(list);
     assert!(terminal.finish().success());
     terminal.pump();
@@ -619,7 +619,7 @@ fn command_line_cleanup_confirms_and_rechecks_reviews_resumed_while_prompting() 
         command.current_dir(fixture.path()).args([
             "--backend",
             "git",
-            "--cleanup",
+            "cleanup",
             "--state-dir",
             state.path().to_str().unwrap(),
         ]);

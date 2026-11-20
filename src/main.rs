@@ -53,7 +53,7 @@ impl Drop for InputModes {
     version,
     about = "Review revision comparisons with a file tree, difft, and Vim keys",
     subcommand_precedence_over_arg = true,
-    group(clap::ArgGroup::new("forget_selection").args(["forget", "forget_all", "cleanup"]))
+    group(clap::ArgGroup::new("forget_selection").args(["forget", "forget_all"]))
 )]
 struct Cli {
     #[command(subcommand)]
@@ -67,7 +67,7 @@ struct Cli {
     /// Omitted endpoints and @ select HEAD (Git) or the working copy (Jujutsu).
     /// Git also accepts BASE...HEAD for a merge-base comparison.
     /// With no revision arguments, compare against the nearest local branch or bookmark in first-parent history.
-    #[arg(value_name = "REVSET|ID", conflicts_with_all = ["base", "head", "resume", "list", "forget_selection"])]
+    #[arg(value_name = "REVSET|ID", conflicts_with_all = ["base", "head", "resume", "forget_selection"])]
     comparison: Option<String>,
     /// Repository directory (defaults to the current directory)
     #[arg(short = 'C', long, default_value = ".", global = true)]
@@ -82,26 +82,20 @@ struct Cli {
     #[arg(long, requires = "base")]
     head: Option<String>,
     /// Include the Git working tree, with unstaged edits and untracked files.
-    #[arg(long, conflicts_with_all = ["resume", "list", "rename", "forget_selection"])]
+    #[arg(long, conflicts_with_all = ["resume", "rename", "forget_selection"])]
     working_tree: bool,
     /// Resume by short ID (such as r3) or unique prefix; omit to resume the latest
     #[arg(short = 'r', long, value_name = "ID", num_args = 0..=1, default_missing_value = "latest", conflicts_with = "base")]
     resume: Option<String>,
-    /// List this repository's saved review sessions
-    #[arg(long, conflicts_with_all = ["base", "resume"])]
-    list: bool,
     /// Set a session's display name by ID or unique prefix; an empty name clears it
-    #[arg(long, num_args = 2, value_names = ["ID", "NAME"], action = clap::ArgAction::Set, conflicts_with_all = ["comparison", "base", "head", "resume", "list", "forget_selection", "yes"])]
+    #[arg(long, num_args = 2, value_names = ["ID", "NAME"], action = clap::ArgAction::Set, conflicts_with_all = ["comparison", "base", "head", "resume", "forget_selection", "yes"])]
     rename: Vec<String>,
     /// Permanently forget saved sessions by full ID or unique prefix
-    #[arg(long, value_name = "ID", num_args = 1.., conflicts_with_all = ["base", "head", "resume", "list"])]
+    #[arg(long, value_name = "ID", num_args = 1.., conflicts_with_all = ["base", "head", "resume"])]
     forget: Vec<String>,
     /// Permanently forget all closed sessions for this repository/backend
-    #[arg(long, conflicts_with_all = ["base", "head", "resume", "list"])]
+    #[arg(long, conflicts_with_all = ["base", "head", "resume"])]
     forget_all: bool,
-    /// Permanently forget closed reviews last opened more than a week ago
-    #[arg(long, visible_alias = "prune", conflicts_with_all = ["base", "head", "resume", "list"])]
-    cleanup: bool,
     /// Confirm forgetting sessions without prompting
     #[arg(short = 'y', long, requires = "forget_selection")]
     yes: bool,
@@ -117,6 +111,15 @@ struct Cli {
 enum Commands {
     /// Open the most recently opened review for this repository, or overall outside a repository
     Last,
+    /// List this repository's saved review sessions
+    List,
+    /// Permanently forget closed reviews last opened more than a week ago
+    #[command(visible_alias = "prune")]
+    Cleanup {
+        /// Confirm cleanup without prompting.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
     /// Select a GitLab merge request and prepare its source branch for review
     Gitlab(GitLabArgs),
     /// Check for, read about, or install the latest stable release.
@@ -166,11 +169,9 @@ fn main() -> Result<()> {
             || cli.head.is_some()
             || cli.working_tree
             || cli.resume.is_some()
-            || cli.list
             || !cli.rename.is_empty()
             || !cli.forget.is_empty()
             || cli.forget_all
-            || cli.cleanup
             || cli.yes)
     {
         Cli::command().error(clap::error::ErrorKind::ArgumentConflict, "Startup commands cannot be used with local comparison or session-management options").exit();
@@ -243,9 +244,13 @@ fn main() -> Result<()> {
         println!("Renamed session {}.", ui::display_path(&saved.label()));
         return Ok(());
     }
-    if cli.cleanup || cli.forget_all || !cli.forget.is_empty() {
+    let cleanup = match &cli.command {
+        Some(Commands::Cleanup { yes }) => Some(*yes),
+        _ => None,
+    };
+    if cleanup.is_some() || cli.forget_all || !cli.forget.is_empty() {
         let mut ids = BTreeSet::new();
-        if cli.cleanup {
+        if cleanup.is_some() {
             ids.extend(store.cleanup_candidates()?);
         } else if cli.forget_all {
             for saved in store.list()? {
@@ -259,14 +264,14 @@ fn main() -> Result<()> {
             }
         }
         if ids.is_empty() {
-            if cli.cleanup {
+            if cleanup.is_some() {
                 println!("No stale review sessions to clean up.");
             } else {
                 println!("No closed review sessions to forget.");
             }
             return Ok(());
         }
-        if !cli.yes {
+        if !cleanup.unwrap_or(cli.yes) {
             ensure!(
                 io::stdin().is_terminal() && io::stdout().is_terminal(),
                 "Forgetting sessions requires confirmation; pass --yes to confirm without a terminal"
@@ -286,7 +291,7 @@ fn main() -> Result<()> {
             }
         }
         let ids: Vec<_> = ids.into_iter().collect();
-        let count = if cli.cleanup {
+        let count = if cleanup.is_some() {
             store.cleanup(&ids)?
         } else {
             store.forget(&ids)?
@@ -297,7 +302,7 @@ fn main() -> Result<()> {
         );
         return Ok(());
     }
-    if cli.list {
+    if matches!(cli.command, Some(Commands::List)) {
         let sessions = store.list()?;
         let color = io::stdout().is_terminal() && !Colored::ansi_color_disabled();
         for saved in &sessions {
