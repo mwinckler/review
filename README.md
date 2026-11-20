@@ -458,7 +458,7 @@ Repository content and persistent editor snapshots are preserved.
 | `gg` / `G`, `Home` / `End` | First/last row or page |
 | `Ctrl-d/u` | Scroll the diff by half a page from either pane, keeping pane focus. |
 | `Ctrl-f/b`, `PageDown/Up` | Scroll the focused pane by a full page. |
-| `Space` | Toggle viewed status for a file or folder. In a folder diff, toggle the file under the cursor. |
+| `Space` | Toggle viewed status. In a folder diff, marking viewed collapses the file and advances to the next heading. |
 | `,` / `.` | Select the previous/next revision that changed the file. |
 | `Shift-,` / `Shift-.` (`<` / `>`) | Extend the selected revision range. |
 | `]f` / `[f` | Next/previous file, expanding its parents |
@@ -509,8 +509,9 @@ descendants, including collapsed and filtered-out files. The horizontal rule use
 Difftastic's first filename line when available.
 Focus the right pane with `Ctrl-l` or `Tab` to move the cursor or search the
 combined diff. Press `Space` to mark the file under the cursor viewed and
-collapse its diff to the filename heading. Press `Space` on that heading to
-mark the file unviewed and expand its diff.
+collapse its diff to the filename heading. The cursor moves to the next file
+heading, or stays on the last file. Press `Space` on a viewed heading to mark its
+file unviewed and expand its diff.
 Press `+` or `-` to adjust context for the file under the diff cursor. That file's
 body shows a spinner at its existing height while the new diff renders.
 Viewed files and fully viewed folders appear slightly dimmed in the tree.

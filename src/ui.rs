@@ -780,7 +780,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "gg / G           First/last row or page\n",
             "Ctrl-d/u         Scroll the diff by half a page from either pane.\n",
             "Ctrl-f/b         Scroll the focused pane by a full page.\n",
-            "Space            Toggle viewed; in a folder diff, collapse/expand a file.\n",
+            "Space            Mark viewed and advance, or unmark and expand a file.\n",
             ", / .            Select the previous/next file revision.\n",
             "< / >            Extend the selected revision range.\n",
             "]f / [f          Next/previous file\n",

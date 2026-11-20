@@ -1260,10 +1260,14 @@ impl App {
         else {
             return;
         };
-        self.directory_cursor = Some(heading.row);
+        let start = heading.row;
         self.line_selection = None;
         self.hunk_selection = None;
         self.review.toggle_viewed(index);
+        self.directory_cursor = Some(start);
+        if self.review.is_viewed(&self.review.changes[index]) {
+            self.jump_diff_file(true);
+        }
         self.rebuild();
     }
 
