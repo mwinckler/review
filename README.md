@@ -447,6 +447,7 @@ Repository content and persistent editor snapshots are preserved.
 |---|---|
 | `j` / `k`, up/down arrows | Move in the tree, move the diff cursor, or select a comment thread. |
 | `Shift-j` / `Shift-k` | Scroll the diff down/up by one line from any pane, keeping pane focus. |
+| `Ctrl-e` / `Ctrl-y` | Scroll the diff down/up by one line without moving the cursor. |
 | `Ctrl-n` / `Ctrl-p` | Next/previous visible tree row, keeping pane focus and layout |
 | `h` / `l` | Collapse or expand directories, or choose the old or new side of the diff. |
 | `Shift-h` / `Shift-l` | Scroll the diff horizontally. |

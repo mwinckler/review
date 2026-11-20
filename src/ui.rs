@@ -771,6 +771,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         let mut text = String::from(concat!(
             "j/k, up/down     Move the selection or diff cursor.\n",
             "Shift-j/k        Scroll the diff by one line from any pane.\n",
+            "Ctrl-e/y         Scroll the diff down/up without moving the cursor.\n",
             "Ctrl-n/p         Select the next/previous tree row from any pane.\n",
             "h/l              Collapse/expand a directory or choose the diff side.\n",
             "Shift-h/l        Scroll the diff horizontally.\n",

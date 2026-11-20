@@ -32,6 +32,12 @@ enum HunkNavigation {
     Number(usize),
 }
 
+enum DiffScrollMode {
+    FollowCursor,
+    KeepCursorVisible,
+    Independent,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RevisionSelection {
     pub anchor: usize,
@@ -128,7 +134,7 @@ pub struct App {
     pub revision_preview: Option<(Comparison, Vec<Change>)>,
     hunk_actions: VecDeque<HunkNavigation>,
     pending_heading: Option<(String, usize)>,
-    follow_diff_selection: bool,
+    diff_scroll_mode: DiffScrollMode,
     horizontal_scroll_limit: u16,
     prefix: Option<(char, Option<usize>)>,
     search_original: String,
@@ -189,7 +195,7 @@ impl App {
             revision_preview: None,
             hunk_actions: VecDeque::new(),
             pending_heading: None,
-            follow_diff_selection: true,
+            diff_scroll_mode: DiffScrollMode::FollowCursor,
             horizontal_scroll_limit: 0,
             prefix: None,
             search_original: String::new(),
@@ -416,7 +422,7 @@ impl App {
         self.directory_cursor = None;
         self.pending_heading = None;
         self.line_selection = None;
-        self.follow_diff_selection = true;
+        self.diff_scroll_mode = DiffScrollMode::FollowCursor;
         self.hunk_selection = None;
         self.thread = None;
         self.editor_requested = false;
@@ -608,15 +614,15 @@ impl App {
 
     pub fn keep_diff_selection_visible(&mut self, page: usize, diff_lines: usize) {
         match self.focus {
-            Focus::Diff if !self.rendering => {
-                if self.follow_diff_selection {
+            Focus::Diff if !self.rendering => match self.diff_scroll_mode {
+                DiffScrollMode::FollowCursor => {
                     self.ensure_diff_cursor(page);
                     self.keep_line_selection_visible(page, diff_lines);
-                } else {
-                    self.keep_cursor_in_viewport(page, diff_lines);
                 }
-            }
-            Focus::Comments if self.follow_diff_selection => {
+                DiffScrollMode::KeepCursorVisible => self.keep_cursor_in_viewport(page, diff_lines),
+                DiffScrollMode::Independent => {}
+            },
+            Focus::Comments if matches!(self.diff_scroll_mode, DiffScrollMode::FollowCursor) => {
                 self.keep_thread_visible(page, diff_lines);
             }
             _ => {}
@@ -625,7 +631,7 @@ impl App {
 
     pub(crate) fn set_focus(&mut self, focus: Focus) {
         self.focus = focus;
-        self.follow_diff_selection = true;
+        self.diff_scroll_mode = DiffScrollMode::FollowCursor;
         self.review.view.fullscreen = false;
         self.review.view.diff_focused = focus == Focus::Diff;
         self.review.view.comments_focused = focus == Focus::Comments;
@@ -835,21 +841,27 @@ impl App {
             }
             return;
         }
-        let diff_scroll_step = match (key.code, key.modifiers) {
+        let scroll = match (key.code, key.modifiers) {
             (KeyCode::Char('J'), KeyModifiers::NONE)
-            | (KeyCode::Char('j' | 'J'), KeyModifiers::SHIFT) => Some(1),
+            | (KeyCode::Char('j' | 'J'), KeyModifiers::SHIFT) => {
+                Some((1, DiffScrollMode::KeepCursorVisible))
+            }
             (KeyCode::Char('K'), KeyModifiers::NONE)
-            | (KeyCode::Char('k' | 'K'), KeyModifiers::SHIFT) => Some(-1),
+            | (KeyCode::Char('k' | 'K'), KeyModifiers::SHIFT) => {
+                Some((-1, DiffScrollMode::KeepCursorVisible))
+            }
+            (KeyCode::Char('e'), KeyModifiers::CONTROL) => Some((1, DiffScrollMode::Independent)),
+            (KeyCode::Char('y'), KeyModifiers::CONTROL) => Some((-1, DiffScrollMode::Independent)),
             _ => None,
         };
-        if let Some(step) = diff_scroll_step {
+        if let Some((step, mode)) = scroll {
             let banner = usize::from(self.focus == Focus::Tree && self.revisions.is_some());
             self.scroll_diff(step, page.saturating_sub(banner).max(1), diff_lines);
-            self.follow_diff_selection = false;
+            self.diff_scroll_mode = mode;
             self.prefix = None;
             return;
         }
-        self.follow_diff_selection = true;
+        self.diff_scroll_mode = DiffScrollMode::FollowCursor;
         let horizontal_step = match (key.code, key.modifiers) {
             (KeyCode::Char('H'), KeyModifiers::NONE)
             | (KeyCode::Char('h' | 'H'), KeyModifiers::SHIFT) => Some(-4),
