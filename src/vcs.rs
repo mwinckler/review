@@ -18,6 +18,15 @@ pub enum Backend {
     Jj,
 }
 
+impl Backend {
+    pub fn current_revision(self) -> &'static str {
+        match self {
+            Self::Git => "HEAD",
+            Self::Jj => "@",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     pub object_id: String,
@@ -397,6 +406,17 @@ impl Repository {
         self.snapshot_with_mode(base, head, ComparisonMode::MergeBase, true)
     }
 
+    pub fn snapshot_default(&self) -> Result<Comparison> {
+        let head = self.backend.current_revision();
+        let head_id = self.resolve(head, true)?;
+        let parent = self.nearest_local_parent(&head_id)?;
+        let (base, mode) = match parent.as_deref() {
+            Some(base) => (base, ComparisonMode::Direct),
+            None => ("master", ComparisonMode::MergeBase),
+        };
+        self.complete_snapshot(self.compare_to_head(base, head, head_id, mode)?)
+    }
+
     pub(crate) fn snapshot_commits(&self, base_id: &str, head_id: &str) -> Result<Comparison> {
         self.snapshot_with_mode(base_id, head_id, ComparisonMode::Direct, false)
     }
@@ -407,10 +427,7 @@ impl Repository {
             !expression.is_empty(),
             "comparison expression cannot be empty"
         );
-        let current = match self.backend {
-            Backend::Git => "HEAD",
-            Backend::Jj => "@",
-        };
+        let current = self.backend.current_revision();
         let (base, head, mode) = match range_separator(expression, self.backend)? {
             Some((index, length)) => {
                 ensure!(
@@ -438,24 +455,99 @@ impl Repository {
         )
     }
 
+    fn nearest_local_parent(&self, head: &str) -> Result<Option<String>> {
+        let (output, separator, prefix) = match self.backend {
+            Backend::Git => (
+                self.run(
+                    &[
+                        "log",
+                        "--first-parent",
+                        "--simplify-by-decoration",
+                        "--decorate=full",
+                        "--decorate-refs=refs/heads/",
+                        "--no-color",
+                        "--no-show-signature",
+                        "--no-notes",
+                        "--format=%H%x00%D",
+                        head,
+                        "--",
+                    ],
+                    false,
+                )?,
+                ", ",
+                "refs/heads/",
+            ),
+            Backend::Jj => (
+                self.run(
+                    &[
+                        "log",
+                        "--no-graph",
+                        "-r",
+                        &format!("first_ancestors(first_parent(commit_id({head}))) & bookmarks()"),
+                        "-T",
+                        r#"commit_id ++ "\0" ++ local_bookmarks.filter(|b| !b.conflict()).map(|b| b.name()).join("\0") ++ "\n""#,
+                    ],
+                    false,
+                )?,
+                "\0",
+                "",
+            ),
+        };
+        for line in String::from_utf8(output)?.lines() {
+            let Some((id, names)) = line.split_once('\0') else {
+                continue;
+            };
+            if id == head {
+                continue;
+            }
+            let Some(name) = names
+                .split(separator)
+                .filter_map(|name| name.strip_prefix(prefix))
+                .filter(|name| !name.is_empty())
+                .min_by_key(|name| (*name != "master", *name))
+            else {
+                continue;
+            };
+            let base = match self.backend {
+                Backend::Git => {
+                    let reference = format!("{prefix}{name}");
+                    if self.git_symbolic_ref(name) == format!("{reference}\n").as_bytes() {
+                        name.to_owned()
+                    } else {
+                        reference
+                    }
+                }
+                Backend::Jj if self.resolve(name, false).ok().as_deref() != Some(id) => {
+                    format!("bookmarks(exact:{name})")
+                }
+                _ => name.to_owned(),
+            };
+            return Ok(Some(base));
+        }
+        Ok(None)
+    }
+
+    fn git_symbolic_ref(&self, expression: &str) -> Vec<u8> {
+        self.run(
+            &[
+                "rev-parse",
+                "--symbolic-full-name",
+                "--verify",
+                "--end-of-options",
+                expression,
+            ],
+            false,
+        )
+        .unwrap_or_default()
+    }
+
     fn is_branch(&self, expression: &str) -> Result<bool> {
         match self.backend {
             Backend::Git => {
                 if matches!(expression, "HEAD" | "@") {
                     return Ok(false);
                 }
-                let reference = self
-                    .run(
-                        &[
-                            "rev-parse",
-                            "--symbolic-full-name",
-                            "--verify",
-                            "--end-of-options",
-                            expression,
-                        ],
-                        false,
-                    )
-                    .unwrap_or_default();
+                let reference = self.git_symbolic_ref(expression);
                 Ok(
                     reference.starts_with(b"refs/heads/")
                         || reference.starts_with(b"refs/remotes/"),
@@ -489,7 +581,7 @@ impl Repository {
     }
 
     pub fn refresh_if_changed(&self, comparison: &Comparison) -> Result<Option<Comparison>> {
-        let mut updated = self.resolve_snapshot(
+        let updated = self.resolve_snapshot(
             &comparison.base_ref,
             &comparison.head_ref,
             comparison.mode,
@@ -498,11 +590,7 @@ impl Repository {
         if updated.base_id == comparison.base_id && updated.head_id == comparison.head_id {
             return Ok(None);
         }
-        self.fill_change_ids(&mut updated)?;
-        self.fill_commit_titles(&mut updated)?;
-        self.fill_line_counts(&mut updated)?;
-        self.fill_file_commit_ids(&mut updated)?;
-        Ok(Some(updated))
+        self.complete_snapshot(updated).map(Some)
     }
 
     fn snapshot_with_mode(
@@ -512,7 +600,10 @@ impl Repository {
         mode: ComparisonMode,
         snapshot_working_copy: bool,
     ) -> Result<Comparison> {
-        let mut comparison = self.resolve_snapshot(base, head, mode, snapshot_working_copy)?;
+        self.complete_snapshot(self.resolve_snapshot(base, head, mode, snapshot_working_copy)?)
+    }
+
+    fn complete_snapshot(&self, mut comparison: Comparison) -> Result<Comparison> {
         self.fill_change_ids(&mut comparison)?;
         self.fill_commit_titles(&mut comparison)?;
         self.fill_line_counts(&mut comparison)?;
@@ -528,6 +619,16 @@ impl Repository {
         snapshot_working_copy: bool,
     ) -> Result<Comparison> {
         let head_id = self.resolve(head, snapshot_working_copy)?;
+        self.compare_to_head(base, head, head_id, mode)
+    }
+
+    fn compare_to_head(
+        &self,
+        base: &str,
+        head: &str,
+        head_id: String,
+        mode: ComparisonMode,
+    ) -> Result<Comparison> {
         let (base_ref, base_id) = match mode {
             ComparisonMode::Direct => (base, self.resolve(base, false)?),
             ComparisonMode::MergeBase => {

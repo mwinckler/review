@@ -65,6 +65,7 @@ struct Cli {
     /// Endpoints accept the selected backend's single-revision expressions.
     /// Omitted endpoints and @ select HEAD (Git) or the working copy (Jujutsu).
     /// Git also accepts BASE...HEAD for a merge-base comparison.
+    /// With no revision arguments, compare against the nearest local branch or bookmark in first-parent history.
     #[arg(value_name = "REVSET|ID", conflicts_with_all = ["base", "head", "resume", "list", "forget_selection"])]
     comparison: Option<String>,
     /// Repository directory (defaults to the current directory)
@@ -73,7 +74,7 @@ struct Cli {
     /// Override automatic repository detection
     #[arg(long, value_enum, global = true)]
     backend: Option<Backend>,
-    /// Compare from the merge base of this revision (defaults to master)
+    /// Compare from the merge base of this revision.
     #[arg(long)]
     base: Option<String>,
     /// Head revision (defaults to HEAD for Git, @ for Jujutsu)
@@ -342,12 +343,14 @@ fn main() -> Result<()> {
         } else {
             let comparison = if let Some(expression) = cli.comparison {
                 repo.snapshot_expression(&expression)?
+            } else if let Some(base) = cli.base {
+                let head = cli
+                    .head
+                    .as_deref()
+                    .unwrap_or(repo.backend.current_revision());
+                repo.snapshot(&base, head)?
             } else {
-                let head = cli.head.as_deref().unwrap_or(match repo.backend {
-                    Backend::Git => "HEAD",
-                    Backend::Jj => "@",
-                });
-                repo.snapshot(cli.base.as_deref().unwrap_or("master"), head)?
+                repo.snapshot_default()?
             };
             let changes = repo.changes(&comparison)?;
             Review::new(comparison, changes)

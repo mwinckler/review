@@ -1291,10 +1291,8 @@ fn terminal_flash_pane_shortcuts_and_tree_resizing_work_together() {
 fn exercise_default_launch(backend: Backend) {
     let fixture = common::fixture();
     let state = tempfile::tempdir().unwrap();
-    common::jj(
-        fixture.path(),
-        &["bookmark", "create", "master", "-r", "main"],
-    );
+    common::jj(fixture.path(), &["bookmark", "rename", "main", "master"]);
+    common::jj(fixture.path(), &["bookmark", "delete", "feature"]);
     if backend == Backend::Git {
         fs::rename(fixture.path().join(".jj"), state.path().join("jj")).unwrap();
     }
@@ -1305,7 +1303,7 @@ fn exercise_default_launch(backend: Backend) {
         Backend::Git => "HEAD",
         Backend::Jj => "@",
     };
-    let expected = repo.snapshot("master", head).unwrap();
+    let expected = repo.snapshot_expression("master..").unwrap();
     let command = || {
         let mut command = Command::new(env!("CARGO_BIN_EXE_review"));
         command

@@ -18,7 +18,7 @@ cargo install --path .
 ## Start a review
 
 ```sh
-# Review the current directory's repository against master
+# Review the current changes against the nearest named parent
 review
 
 # Compare two change/commit IDs, branches, or bookmarks directly
@@ -67,10 +67,15 @@ to the empty tree for an initial commit. Each endpoint accepts the selected
 backend's revision syntax and resolves to one revision. Quote expressions
 containing shell metacharacters.
 
-Bare `review` defaults to `--base master`. Use `--base` with an optional `--head`
-to compare from their unique merge base; Git's positional `BASE...HEAD` uses the
-same merge-base behavior. This focuses the review on changes made on the head
-branch since the histories diverged.
+Bare `review` walks back from Git `HEAD` or Jujutsu `@` along the first-parent
+history to find the nearest ancestor with a local branch or bookmark. It compares
+those snapshots directly: if that parent is `my-feature`, it runs the equivalent
+of `review my-feature..`. When several names point to the same ancestor, `master`
+takes precedence, then alphabetical order. If there is no named parent, Review
+uses the merge base with `master`.
+
+Use `--base` with an optional `--head` to compare from their unique merge base.
+Git's positional `BASE...HEAD` uses the same merge-base behavior.
 
 The nearest repository is detected automatically from the current directory,
 with Jujutsu preferred in a colocated workspace. The header displays the resolved
