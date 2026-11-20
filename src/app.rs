@@ -290,6 +290,10 @@ impl App {
         self.focus == Focus::Diff && self.review.view.active.ends_with('/')
     }
 
+    pub fn waiting_for_preview(&self) -> bool {
+        self.rendering && self.rendering_rows.is_empty()
+    }
+
     pub(crate) fn is_rendering_row(&self, row: usize) -> bool {
         let index = self.rendering_rows.partition_point(|rows| rows.end <= row);
         self.rendering_rows

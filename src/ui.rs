@@ -199,6 +199,36 @@ fn line_count_spans(counts: Option<LineCounts>) -> Vec<Span<'static>> {
     }
 }
 
+fn draw_render_throbber(frame: &mut Frame, viewport: Rect, phase: usize) {
+    let height = viewport.height.min(2);
+    let area = Rect::new(
+        viewport.x,
+        viewport.y + (viewport.height - height) / 2,
+        viewport.width,
+        height,
+    );
+    let label = Line::from("Calculating diff...").centered();
+    if height < 2 {
+        frame.render_widget(label, area);
+        return;
+    }
+    const DOTS: [&str; 5] = ["● ", "● ", "● ", "● ", "●"];
+    let dots = Line::from(
+        DOTS.into_iter()
+            .enumerate()
+            .map(|(index, dot)| {
+                let color = if index == phase % DOTS.len() {
+                    Color::Cyan
+                } else {
+                    Color::DarkGray
+                };
+                Span::styled(dot, Style::default().fg(color))
+            })
+            .collect::<Vec<_>>(),
+    );
+    frame.render_widget(Paragraph::new(vec![dots.centered(), label]), area);
+}
+
 pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
     let panes = panes(frame.area(), app);
     let comments: Vec<_> = app
@@ -507,17 +537,15 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 filter,
             );
         }
+        let waiting = app.waiting_for_preview();
         let height = viewport.height as usize;
-        let mut position = app
+        let position = app
             .review
             .view
             .positions
             .get(&app.review.view.active)
             .cloned()
             .unwrap_or_default();
-        if app.rendering && app.rendering_rows.is_empty() {
-            position.horizontal = 0;
-        }
         let selected = app.selected_hunk().map(|hunk| &hunk.rows);
         let visible = Text::from(
             diff.lines
@@ -547,7 +575,11 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         } else {
             paragraph.scroll((0, position.horizontal))
         };
-        frame.render_widget(paragraph, viewport);
+        if waiting {
+            draw_render_throbber(frame, viewport, app.render_activity);
+        } else {
+            frame.render_widget(paragraph, viewport);
+        }
         for rows in &app.rendering_rows {
             let start = rows.start.max(position.vertical);
             let end = rows.end.min(position.vertical + height);
@@ -659,7 +691,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                 );
             }
         }
-        if !viewport.is_empty() && diff.lines.len() > height {
+        if !waiting && !viewport.is_empty() && diff.lines.len() > height {
             // ScrollbarState counts the possible top-row positions.
             let mut scrollbar = ScrollbarState::new(diff.lines.len() - height + 1)
                 .position(position.vertical)

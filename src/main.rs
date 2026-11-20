@@ -668,7 +668,7 @@ fn run(
                     app.rendering_rows.clear();
                     app.hunks.clear();
                     app.clear_file_headings();
-                    diff = Text::raw("Rendering…");
+                    diff = Text::default();
                 }
                 if !same_preview {
                     app.source_lines.clear();
@@ -749,7 +749,7 @@ fn run(
         }
         redraw |= app.apply_hunk_navigation(diff_page, diff.lines.len());
         app.keep_diff_selection_visible(diff_page, diff.lines.len());
-        if !app.rendering_rows.is_empty() {
+        if app.waiting_for_preview() || !app.rendering_rows.is_empty() {
             let activity = (render_clock.elapsed().as_millis() / 100) as usize;
             redraw |= app.render_activity != activity;
             app.render_activity = activity;
