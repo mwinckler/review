@@ -32,16 +32,25 @@ pub fn visible_range(rows: usize, selection: usize, height: usize) -> Range<usiz
 }
 
 pub fn rows(review: &Review) -> Vec<Row> {
+    rows_with_directory(review, None)
+}
+
+pub(crate) fn rows_with_directory(review: &Review, retained_directory: Option<&str>) -> Vec<Row> {
     let mut entries = BTreeMap::<String, Row>::new();
     let mut visible_directories = BTreeSet::new();
     let filter = review.view.filter.to_lowercase();
     for (index, change) in review.changes.iter().enumerate() {
         let viewed = usize::from(review.is_viewed(change));
-        let visible = change.path.to_lowercase().contains(&filter)
-            && (!review.view.unviewed_only || viewed == 0);
+        let matches = change.path.to_lowercase().contains(&filter);
+        let visible = matches && (!review.view.unviewed_only || viewed == 0);
         for (depth, (offset, _)) in change.path.match_indices('/').enumerate() {
             let path = &change.path[..=offset];
-            if visible {
+            if visible
+                || matches
+                    && retained_directory.is_some_and(|directory| {
+                        directory.starts_with(path) && change.path.starts_with(directory)
+                    })
+            {
                 visible_directories.insert(path);
             }
             let row = entries.entry(path.to_owned()).or_insert_with(|| Row {

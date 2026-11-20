@@ -9,6 +9,7 @@ use crate::{
     gitlab_ui::SubmissionDialog,
     gitlab_worker::GitLabJob,
     hunks::{Hunk, HunkLocation, SourceLine},
+    renderer::FileHeading,
     restore::{Restore, RestoreState},
     revision_dialog::RevisionDialog,
     session_dialog::{SessionAction, SessionDialog},
@@ -111,6 +112,8 @@ pub struct App {
     pub revision_dialog: Option<RevisionDialog>,
     pub session_action: Option<SessionAction>,
     pub source_lines: Vec<SourceLine>,
+    pub file_headings: Vec<FileHeading>,
+    pub(crate) directory_cursor: Option<usize>,
     pub line_selection: Option<LineSelection>,
     pub comment_dialog: Option<CommentDialog>,
     pub comment_action: Option<CommentAction>,
@@ -122,6 +125,7 @@ pub struct App {
     pub revisions: Option<RevisionSelection>,
     pub revision_preview: Option<(Comparison, Vec<Change>)>,
     hunk_actions: VecDeque<HunkNavigation>,
+    pending_heading: Option<String>,
     follow_diff_selection: bool,
     horizontal_scroll_limit: u16,
     prefix: Option<(char, Option<usize>)>,
@@ -167,6 +171,8 @@ impl App {
             revision_dialog: None,
             session_action: None,
             source_lines: Vec::new(),
+            file_headings: Vec::new(),
+            directory_cursor: None,
             line_selection: None,
             comment_dialog: None,
             comment_action: None,
@@ -178,6 +184,7 @@ impl App {
             revisions: None,
             revision_preview: None,
             hunk_actions: VecDeque::new(),
+            pending_heading: None,
             follow_diff_selection: true,
             horizontal_scroll_limit: 0,
             prefix: None,
@@ -188,7 +195,11 @@ impl App {
     }
 
     pub fn rebuild(&mut self) {
-        self.rows = tree::rows(&self.review);
+        let selected = self.review.view.selected.as_str();
+        // Keep the headings reachable when the last matching file is marked viewed.
+        let retained_directory =
+            (self.focus == Focus::Diff && selected.ends_with('/')).then_some(selected);
+        self.rows = tree::rows_with_directory(&self.review, retained_directory);
         let selection = self
             .rows
             .iter()
@@ -249,6 +260,42 @@ impl App {
         self.review.changes.iter().filter(move |change| {
             change.path == *path || (path.ends_with('/') && change.path.starts_with(path))
         })
+    }
+
+    pub(crate) fn file_heading_at(&self, row: usize) -> Option<&FileHeading> {
+        let index = self
+            .file_headings
+            .partition_point(|heading| heading.row <= row);
+        self.file_headings.get(index.checked_sub(1)?)
+    }
+
+    pub(crate) fn diff_cursor_row(&self) -> Option<usize> {
+        self.directory_cursor.or_else(|| {
+            self.line_selection
+                .as_ref()
+                .and_then(|selection| selection.cursor_row(&self.source_lines))
+        })
+    }
+
+    pub fn clear_file_headings(&mut self) {
+        // Restore a selected heading by path after diff rows have shifted.
+        if let Some(row) = self.directory_cursor
+            && let Some(heading) = self.file_heading_at(row)
+            && heading.row == row
+        {
+            self.pending_heading = Some(heading.path.clone());
+        }
+        self.file_headings.clear();
+        self.directory_cursor = None;
+    }
+
+    pub fn set_file_headings(&mut self, headings: Vec<FileHeading>) {
+        if let Some(path) = self.pending_heading.take()
+            && let Some(heading) = headings.iter().find(|heading| heading.path == path)
+        {
+            self.directory_cursor = Some(heading.row);
+        }
+        self.file_headings = headings;
     }
 
     pub fn revision_ids(&self) -> &[String] {
@@ -331,6 +378,9 @@ impl App {
         self.revision_preview = None;
         self.hunks.clear();
         self.source_lines.clear();
+        self.file_headings.clear();
+        self.directory_cursor = None;
+        self.pending_heading = None;
         self.line_selection = None;
         self.follow_diff_selection = true;
         self.hunk_selection = None;
@@ -398,6 +448,12 @@ impl App {
         if let Some(hunk) = self.selected_hunk() {
             return Some(hunk.location.clone());
         }
+        if self.focus == Focus::Diff
+            && let Some(row) = self.directory_cursor
+            && let Some(heading) = self.file_heading_at(row)
+        {
+            return self.file_location(&heading.path);
+        }
         if self.focus == Focus::Diff {
             let position = self
                 .review
@@ -415,9 +471,13 @@ impl App {
                 return Some(hunk.location.clone());
             }
         }
+        self.file_location(&self.review.view.active)
+    }
+
+    fn file_location(&self, path: &str) -> Option<HunkLocation> {
         self.diff_changes()
             .iter()
-            .find(|change| change.path == self.review.view.active)
+            .find(|change| change.path == path)
             .map(|change| HunkLocation {
                 path: change.path.clone(),
                 old_line: (!change.old.kind.is_empty()).then_some(1),
@@ -477,6 +537,7 @@ impl App {
         };
         let hunk = &self.hunks[index];
         self.line_selection = None;
+        self.directory_cursor = (!self.file_headings.is_empty()).then_some(hunk.rows.start);
         let center = hunk.rows.start + hunk.rows.len() / 2;
         let location = hunk.location.clone();
         self.message = format!(
@@ -504,6 +565,7 @@ impl App {
         self.handle_input(key, page, diff_lines, terminal_width);
         if self.focus == Focus::Tree {
             self.line_selection = None;
+            self.directory_cursor = None;
         }
         self.review.view.diff_focused = self.focus == Focus::Diff;
         self.review.view.comments_focused = self.focus == Focus::Comments;
@@ -517,7 +579,7 @@ impl App {
                     self.ensure_diff_cursor(page);
                     self.keep_line_selection_visible(page, diff_lines);
                 } else {
-                    self.keep_cursor_in_viewport(page);
+                    self.keep_cursor_in_viewport(page, diff_lines);
                 }
             }
             Focus::Comments if self.follow_diff_selection => {
@@ -814,10 +876,7 @@ impl App {
         }
         if key.code == KeyCode::Esc && self.revisions.is_some() {
             self.clear_revision_filter();
-        } else if self.focus == Focus::Diff
-            && !self.source_lines.is_empty()
-            && self.handle_line_selection(key, page)
-        {
+        } else if self.focus == Focus::Diff && self.handle_line_selection(key, page, diff_lines) {
             return;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -963,6 +1022,10 @@ impl App {
                 }
             }
             KeyCode::Char(' ') => {
+                if self.focus == Focus::Diff && self.review.view.active.ends_with('/') {
+                    self.toggle_viewed_in_directory();
+                    return;
+                }
                 let file = if self.focus == Focus::Diff {
                     self.active
                 } else {
@@ -1067,6 +1130,32 @@ impl App {
         }
     }
 
+    fn toggle_viewed_in_directory(&mut self) {
+        if self.rendering {
+            self.message = "Wait for the diff to finish rendering.".into();
+            return;
+        }
+        let row = self
+            .diff_cursor_row()
+            .unwrap_or_else(|| self.position().vertical);
+        let Some(heading) = self.file_heading_at(row) else {
+            return;
+        };
+        let Some(index) = self
+            .review
+            .changes
+            .iter()
+            .position(|change| change.path == heading.path)
+        else {
+            return;
+        };
+        self.directory_cursor = Some(heading.row);
+        self.line_selection = None;
+        self.hunk_selection = None;
+        self.review.toggle_viewed(index);
+        self.rebuild();
+    }
+
     fn confirm_restore(&mut self) {
         if self.revisions.is_some() {
             self.message = "Press Esc to return to the full comparison before restoring.".into();
@@ -1096,6 +1185,10 @@ impl App {
             self.select(position);
         } else {
             self.position().vertical = position;
+            if self.focus == Focus::Diff && !self.file_headings.is_empty() {
+                self.hunk_selection = None;
+                self.select_diff_line_at(position);
+            }
         }
     }
 
@@ -1249,9 +1342,7 @@ impl App {
             return;
         }
         let start = self
-            .line_selection
-            .as_ref()
-            .and_then(|selection| selection.cursor_row(&self.source_lines))
+            .diff_cursor_row()
             .unwrap_or_else(|| self.position().vertical)
             .min(len - 1);
         let needle = self.diff_search.to_lowercase();
@@ -1267,6 +1358,9 @@ impl App {
                 .contains(&needle)
             {
                 self.position().vertical = index;
+                if !self.file_headings.is_empty() {
+                    self.hunk_selection = None;
+                }
                 self.select_diff_line_at(index);
                 return;
             }

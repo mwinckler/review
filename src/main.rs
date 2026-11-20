@@ -25,7 +25,7 @@ use review::{
     gitlab_ui::{self, Pick},
     gitlab_worker::{GitLabJob, GitLabOutcome, GitLabWorker},
     refresh::RefreshWorker,
-    renderer::{RenderOptions, RenderWorker},
+    renderer::{RenderFilter, RenderOptions, RenderWorker},
     restore::RestoreState,
     session_dialog::{SessionAction, SessionDialog},
     state::Review,
@@ -571,24 +571,31 @@ fn run(
         } else {
             diff_page
         };
-        if !app.review.view.active.is_empty() {
+        if redraw && !app.review.view.active.is_empty() {
             let options = RenderOptions {
                 width,
                 inline: app.review.view.inline,
                 context: app.review.view.diff_context,
             };
-            let key = (
-                app.review.view.active.clone(),
-                options,
-                app.revision_range(),
-            );
+            let filter = RenderFilter {
+                revisions: app.revision_range(),
+                viewed: if app.review.view.active.ends_with('/') && !app.review.viewed.is_empty() {
+                    app.preview_changes()
+                        .filter(|change| app.review.is_viewed(change))
+                        .map(|change| change.path.clone())
+                        .collect()
+                } else {
+                    BTreeSet::new()
+                },
+            };
+            let key = (app.review.view.active.clone(), options, filter);
             if requested.as_ref() != Some(&key) {
                 let same_preview = requested.as_ref().is_some_and(|previous| {
                     previous.0 == key.0
                         && previous.1.inline == options.inline
                         && previous.2 == key.2
                 });
-                request_id = worker.request_revisions(
+                request_id = worker.request_preview(
                     repo,
                     &app.review.comparison,
                     &app.review.view.active,
@@ -600,6 +607,7 @@ fn run(
                 app.rendering = true;
                 app.render_failed = false;
                 app.hunks.clear();
+                app.clear_file_headings();
                 if !same_preview {
                     app.source_lines.clear();
                     app.revision_preview = None;
@@ -607,7 +615,7 @@ fn run(
                 diff = Text::raw("Rendering…");
                 redraw = true;
             }
-        } else {
+        } else if app.review.view.active.is_empty() {
             app.rendering = false;
             app.render_failed = false;
             app.hunks.clear();
@@ -633,6 +641,7 @@ fn run(
                 app.rendering = false;
                 app.hunks = result.hunks;
                 app.source_lines = result.source_lines;
+                app.set_file_headings(result.file_headings);
                 app.revision_preview = result.revision_preview;
                 app.render_failed = result.text.is_err();
                 diff = match result.text {
@@ -945,7 +954,7 @@ fn run(
                 key.0 == app.review.view.active
                     && key.1.inline == app.review.view.inline
                     && key.1.context == app.review.view.diff_context
-                    && key.2 == app.revision_range()
+                    && key.2.revisions == app.revision_range()
             })
         {
             app.editor_requested = false;

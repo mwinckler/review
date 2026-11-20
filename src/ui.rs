@@ -545,15 +545,39 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             paragraph.scroll((0, position.horizontal))
         };
         frame.render_widget(paragraph, viewport);
+        let first_heading = app
+            .file_headings
+            .partition_point(|heading| heading.row < position.vertical);
+        for heading in app.file_headings[first_heading..]
+            .iter()
+            .take_while(|heading| heading.row < position.vertical + height)
+        {
+            if let Some(line) = diff.lines.get(heading.row) {
+                let row = heading.row - position.vertical;
+                let start = line.width().saturating_sub(position.horizontal as usize);
+                if start < viewport.width as usize {
+                    let width = viewport.width - start as u16;
+                    frame.render_widget(
+                        Span::styled(
+                            "─".repeat(width as usize),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Rect::new(viewport.x + start as u16, viewport.y + row as u16, width, 1),
+                    );
+                }
+            }
+        }
         let selection_style = Style::default().bg(Color::Rgb(55, 50, 25));
         if !app.rendering
             && let Some(row) = app
-                .line_selection
-                .as_ref()
-                .filter(|selection| {
-                    app.focus == Focus::Diff || selection.anchor == selection.cursor
+                .diff_cursor_row()
+                .filter(|_| {
+                    app.focus == Focus::Diff
+                        || app
+                            .line_selection
+                            .as_ref()
+                            .is_some_and(|selection| selection.anchor == selection.cursor)
                 })
-                .and_then(|selection| selection.cursor_row(&app.source_lines))
                 .filter(|row| (position.vertical..position.vertical + height).contains(row))
         {
             frame.buffer_mut().set_style(
@@ -735,7 +759,7 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
             "gg / G           First/last row or page\n",
             "Ctrl-d/u         Scroll the diff by half a page from either pane.\n",
             "Ctrl-f/b         Scroll the focused pane by a full page.\n",
-            "Space            Toggle viewed status for a file or folder.\n",
+            "Space            Toggle viewed; in a folder diff, collapse/expand a file.\n",
             ", / .            Select the previous/next file revision.\n",
             "< / >            Extend the selected revision range.\n",
             "]f / [f          Next/previous file\n",

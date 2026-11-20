@@ -715,9 +715,6 @@ fn exercise_hunk_editor(backend: Backend, difftastic: bool) {
     let comparison = repo.snapshot_expression("before..after").unwrap();
     let changes = repo.changes(&comparison).unwrap();
     let mut review = Review::new(comparison, changes);
-    for index in 0..review.changes.len() {
-        review.toggle_viewed(index);
-    }
     review.view.selected = "src/".into();
     let viewed = review.viewed.clone();
     let state = tempfile::tempdir().unwrap();
@@ -946,13 +943,7 @@ fn exercise_automatic_refresh(backend: Backend, head: &str) {
             &saved.id,
         ]);
     let mut terminal = Pty::spawn(command);
-    terminal.wait_until(|text| {
-        if head == "@" {
-            text.contains("Unviewed files") && text.contains("complete")
-        } else {
-            text.contains("println")
-        }
-    });
+    terminal.wait_until(|text| text.contains("src/main.rs"));
     terminal.output.clear();
     if head != "@" {
         common::jj(fixture.path(), &["new", "feature"]);
@@ -1030,7 +1021,7 @@ fn exercise_automatic_refresh(backend: Backend, head: &str) {
             original.comparison.head_change_id
         );
     }
-    terminal.send(b" ");
+    terminal.send(b"\t ");
     terminal.wait_until(|_| store.list().unwrap()[0].review.viewed.len() == updated.changes.len());
     if head == "@" {
         fs::remove_file(fixture.path().join("src/main.rs")).unwrap();

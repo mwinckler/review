@@ -690,25 +690,6 @@ fn space_on_a_nested_folder_marks_only_its_descendants() {
 }
 
 #[test]
-fn space_in_a_directory_diff_marks_all_descendants_viewed() {
-    let mut app = App::new(review());
-    key(&mut app, KeyCode::Char(']'));
-    key(&mut app, KeyCode::Char('f'));
-    key(&mut app, KeyCode::Char('h'));
-    assert_eq!(app.review.view.selected, "src/");
-    key(&mut app, KeyCode::Tab);
-
-    key(&mut app, KeyCode::Char(' '));
-    assert!(app.review.is_viewed(&app.review.changes[1]));
-    assert!(app.review.is_viewed(&app.review.changes[2]));
-    assert!(!app.review.is_viewed(&app.review.changes[0]));
-    assert_eq!(app.review.view.active, "src/");
-
-    key(&mut app, KeyCode::Char(' '));
-    assert!(app.review.viewed.is_empty());
-}
-
-#[test]
 fn highlighting_a_directory_previews_all_changed_descendants() {
     for (filter, unviewed_only) in [("", false), ("a.rs", false), ("", true)] {
         let mut review = review();

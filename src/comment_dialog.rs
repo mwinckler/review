@@ -34,6 +34,7 @@ pub struct LineSelection {
     pub(crate) row: Option<usize>,
 }
 
+#[derive(Clone, Copy)]
 enum LineMotion {
     Relative(isize),
     First,
@@ -41,6 +42,20 @@ enum LineMotion {
 }
 
 impl LineMotion {
+    fn relative(key: KeyEvent, page: usize) -> Option<Self> {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        let amount = match (key.code, control) {
+            (KeyCode::Char('j') | KeyCode::Down, false) => 1,
+            (KeyCode::Char('k') | KeyCode::Up, false) => -1,
+            (KeyCode::PageDown, _) | (KeyCode::Char('f'), true) => page as isize,
+            (KeyCode::PageUp, _) | (KeyCode::Char('b'), true) => -(page as isize),
+            (KeyCode::Char('d'), true) => (page / 2).max(1) as isize,
+            (KeyCode::Char('u'), true) => -((page / 2).max(1) as isize),
+            _ => return None,
+        };
+        Some(Self::Relative(amount))
+    }
+
     fn index(self, current: usize, last: usize) -> usize {
         match self {
             Self::Relative(amount) => current.saturating_add_signed(amount).min(last),
@@ -526,7 +541,7 @@ impl App {
                             && location.old_line.is_some()
                     })
                 })
-        } else if self.focus == Focus::Diff {
+        } else if self.focus == Focus::Diff && self.directory_cursor.is_none() {
             self.source_at_or_after(position)
         } else {
             None
@@ -559,7 +574,14 @@ impl App {
             .positions
             .get(&self.review.view.active)
             .map_or(0, |position| position.vertical);
-        let first = self.source_at_or_after(top)?;
+        let first = self.source_at_or_after(self.directory_cursor.unwrap_or(top))?;
+        if let Some(heading) = self
+            .directory_cursor
+            .and_then(|row| self.file_heading_at(row))
+            && first.location.path != heading.path
+        {
+            return None;
+        }
         if (self.focus != Focus::Diff || self.hunk_selection.is_some())
             && let Some(target) = self.comment_target()
         {
@@ -578,35 +600,50 @@ impl App {
     }
 
     pub(crate) fn ensure_diff_cursor(&mut self, page: usize) {
-        if self
-            .line_selection
-            .as_ref()
-            .and_then(|selection| selection.cursor_row(&self.source_lines))
-            .is_none()
-        {
-            self.line_selection = None;
-            self.line_selection = self.initial_line_selection(page);
+        if self.diff_cursor_row().is_none() {
+            if self.file_headings.is_empty() {
+                self.line_selection = None;
+                self.line_selection = self.initial_line_selection(page);
+            } else {
+                let row = self
+                    .selected_hunk()
+                    .map(|hunk| hunk.rows.start)
+                    .unwrap_or_else(|| self.position().vertical);
+                self.select_diff_line_at(row);
+            }
         }
     }
 
     pub(crate) fn select_diff_line_at(&mut self, row: usize) {
+        let side = self
+            .line_selection
+            .as_ref()
+            .map_or(DiffSide::New, |selection| selection.side);
+        let directory = !self.file_headings.is_empty();
         self.line_selection = self
             .source_at_or_after(row)
-            .and_then(|source| LineSelection::at_source(source, DiffSide::New, false));
+            .filter(|source| !directory || source.row == row)
+            .and_then(|source| LineSelection::at_source(source, side, false));
+        self.directory_cursor = (directory && self.line_selection.is_none()).then_some(row);
     }
 
-    pub(crate) fn keep_cursor_in_viewport(&mut self, page: usize) {
+    pub(crate) fn keep_cursor_in_viewport(&mut self, page: usize, lines: usize) {
         let top = self.position().vertical;
         let visible = top..top + page;
         let selection = self.line_selection.as_ref();
         if selection.is_some_and(|selection| selection.extending) {
             return;
         }
-        let row = selection.and_then(|selection| selection.cursor_row(&self.source_lines));
+        let row = self.diff_cursor_row();
         if row.is_some_and(|row| visible.contains(&row)) {
             return;
         }
         let row = row.unwrap_or(top);
+        if !self.file_headings.is_empty() {
+            let last = top + page.saturating_sub(1);
+            self.select_diff_line_at(row.clamp(top, last).min(lines.saturating_sub(1)));
+            return;
+        }
         let start = self.source_lines.partition_point(|line| line.row < top);
         if let Some(source) = self.source_lines[start..]
             .iter()
@@ -629,18 +666,21 @@ impl App {
         };
         selection.extending = true;
         self.line_selection = Some(selection);
+        self.directory_cursor = None;
         self.focus = Focus::Diff;
     }
 
     pub fn keep_line_selection_visible(&mut self, page: usize, lines: usize) {
-        let Some(selection) = &mut self.line_selection else {
-            return;
-        };
-        if !self.rendering && selection.row.is_some_and(|row| row >= lines) {
+        if let Some(selection) = &mut self.line_selection
+            && !self.rendering
+            && selection.row.is_some_and(|row| row >= lines)
+        {
             selection.row = None;
         }
-        if let Some(row) = selection.cursor_row(&self.source_lines) {
-            selection.row = Some(row);
+        if let Some(row) = self.diff_cursor_row() {
+            if let Some(selection) = &mut self.line_selection {
+                selection.row = Some(row);
+            }
             let position = self.position();
             if row < position.vertical {
                 position.vertical = row;
@@ -651,7 +691,36 @@ impl App {
         }
     }
 
-    pub(crate) fn handle_line_selection(&mut self, key: KeyEvent, page: usize) -> bool {
+    pub(crate) fn handle_line_selection(
+        &mut self,
+        key: KeyEvent,
+        page: usize,
+        lines: usize,
+    ) -> bool {
+        let relative = LineMotion::relative(key, page);
+        if !self.file_headings.is_empty()
+            && !self
+                .line_selection
+                .as_ref()
+                .is_some_and(|selection| selection.extending)
+            && let Some(motion) = relative.or(match (key.code, key.modifiers) {
+                (KeyCode::Home, KeyModifiers::NONE) => Some(LineMotion::First),
+                (KeyCode::Char('G') | KeyCode::End, KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                    Some(LineMotion::Last)
+                }
+                _ => None,
+            })
+        {
+            let row = self
+                .diff_cursor_row()
+                .unwrap_or_else(|| self.position().vertical);
+            self.hunk_selection = None;
+            self.select_diff_line_at(motion.index(row, lines.saturating_sub(1)));
+            return true;
+        }
+        if self.source_lines.is_empty() {
+            return false;
+        }
         let Some(selection) = &mut self.line_selection else {
             return false;
         };
@@ -659,18 +728,8 @@ impl App {
             .hunks
             .last()
             .map_or(0, |hunk| hunk.rows.end.saturating_sub(1));
-        let control = key.modifiers.contains(KeyModifiers::CONTROL);
-        let amount = match (key.code, control) {
-            (KeyCode::Char('j') | KeyCode::Down, false) => Some(1),
-            (KeyCode::Char('k') | KeyCode::Up, false) => Some(-1),
-            (KeyCode::PageDown, _) | (KeyCode::Char('f'), true) => Some(page as isize),
-            (KeyCode::PageUp, _) | (KeyCode::Char('b'), true) => Some(-(page as isize)),
-            (KeyCode::Char('d'), true) => Some((page / 2).max(1) as isize),
-            (KeyCode::Char('u'), true) => Some(-((page / 2).max(1) as isize)),
-            _ => None,
-        };
-        if let Some(amount) = amount {
-            selection.move_cursor(&self.source_lines, LineMotion::Relative(amount), last_row);
+        if let Some(motion) = relative {
+            selection.move_cursor(&self.source_lines, motion, last_row);
         } else {
             if key
                 .modifiers

@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
     fs,
     io::{Read, Seek, SeekFrom},
     ops::Range,
@@ -342,7 +342,19 @@ struct Job {
     path: String,
     changes: Vec<Change>,
     options: RenderOptions,
-    revisions: Option<(Revision, Revision)>,
+    filter: RenderFilter,
+}
+
+#[derive(Clone, Default, PartialEq, Eq, Serialize)]
+pub struct RenderFilter {
+    pub revisions: Option<(Revision, Revision)>,
+    pub viewed: BTreeSet<String>,
+}
+
+#[derive(Clone)]
+pub struct FileHeading {
+    pub row: usize,
+    pub path: String,
 }
 
 fn text_size(text: &Text<'_>) -> usize {
@@ -362,6 +374,7 @@ fn text_size(text: &Text<'_>) -> usize {
 #[derive(Clone, Default)]
 struct Preview {
     text: Text<'static>,
+    file_headings: Vec<FileHeading>,
     hunks: Vec<Hunk>,
     source_lines: Vec<SourceLine>,
     revision_preview: Option<(Comparison, Vec<Change>)>,
@@ -372,7 +385,7 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
     let started = Instant::now();
     let mut remaining = config.clone();
     let mut preview = Preview::default();
-    if let Some((first, last)) = &job.revisions {
+    if let Some((first, last)) = &job.filter.revisions {
         let comparison = job.repo.revision_comparison(first, last)?;
         let changes = job
             .repo
@@ -399,7 +412,8 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
             generation.load(Ordering::Relaxed) == job.id,
             "render cancelled"
         );
-        let (rendered, line_counts) = (|| -> Result<_> {
+        let viewed = directory && job.filter.viewed.contains(&change.path);
+        let mut render = || -> Result<_> {
             let old = job.repo.content(comparison, change, true)?;
             let new = job.repo.content(comparison, change, false)?;
             remaining.timeout_ms = config
@@ -423,8 +437,12 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
                 new.split_inclusive(|byte| *byte == b'\n').count(),
             );
             Ok((text, line_counts))
-        })()
-        .with_context(|| format!("rendering {}", display_path(&change.path)))?;
+        };
+        let (rendered, line_counts) = if viewed {
+            (Text::default(), (0, 0))
+        } else {
+            render().with_context(|| format!("rendering {}", display_path(&change.path)))?
+        };
         let format = config.hunk_format.for_command(&config.command);
         let mut hunks = hunks::parse(&rendered, change, format);
         let mut source_lines = hunks::source_lines(&rendered, change, format, &hunks, line_counts);
@@ -434,18 +452,20 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
             preview.source_lines = source_lines;
             return Ok(preview);
         }
-        let mut section = Text::default();
-        if !preview.text.lines.is_empty() {
-            section.lines.push(Line::default());
-        }
+        preview.file_headings.push(FileHeading {
+            row: preview.text.lines.len(),
+            path: change.path.clone(),
+        });
         let (title, metadata) = change_heading(change);
-        section.lines.push(Line::from(vec![
-            Span::styled(
-                title,
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
+        let title_style = if viewed {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM)
+        } else {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        };
+        let mut section = Text::from(Line::from(vec![
+            Span::styled(title, title_style),
             Span::styled(metadata, Style::default().fg(Color::DarkGray)),
         ]));
         let offset = preview.text.lines.len() + section.lines.len();
@@ -466,7 +486,7 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
         );
         preview.text.lines.extend(section.lines);
     }
-    if preview.text.lines.is_empty() && job.revisions.is_some() {
+    if preview.text.lines.is_empty() && job.filter.revisions.is_some() {
         preview.text = Text::raw("No changes to this file in the selected revision range");
     }
     Ok(preview)
@@ -475,6 +495,7 @@ fn render_job(config: &RendererConfig, job: &Job, generation: &AtomicU64) -> Res
 pub struct RenderResult {
     pub id: u64,
     pub text: std::result::Result<Text<'static>, String>,
+    pub file_headings: Vec<FileHeading>,
     pub hunks: Vec<Hunk>,
     pub source_lines: Vec<SourceLine>,
     pub revision_preview: Option<(Comparison, Vec<Change>)>,
@@ -507,7 +528,7 @@ impl RenderWorker {
                     continue;
                 }
                 let key = blake3::hash(
-                    &serde_json::to_vec(&(&job.path, &job.changes, &job.revisions, job.options))
+                    &serde_json::to_vec(&(&job.path, &job.changes, &job.filter, job.options))
                         .expect("render key is serializable"),
                 )
                 .to_hex()
@@ -525,6 +546,11 @@ impl RenderWorker {
                 }
                 if let Ok(preview) = &result {
                     let size = text_size(&preview.text)
+                        + preview
+                            .file_headings
+                            .iter()
+                            .map(|heading| std::mem::size_of_val(heading) + heading.path.len())
+                            .sum::<usize>()
                         + preview
                             .hunks
                             .iter()
@@ -544,22 +570,18 @@ impl RenderWorker {
                         }
                     }
                 }
-                let (text, hunks, source_lines, revision_preview) = match result {
-                    Ok(preview) => (
-                        Ok(preview.text),
-                        preview.hunks,
-                        preview.source_lines,
-                        preview.revision_preview,
-                    ),
-                    Err(error) => (Err(error), Vec::new(), Vec::new(), None),
+                let (text, preview) = match result {
+                    Ok(mut preview) => (Ok(std::mem::take(&mut preview.text)), preview),
+                    Err(error) => (Err(error), Preview::default()),
                 };
                 if output
                     .send(RenderResult {
                         id: job.id,
                         text,
-                        hunks,
-                        source_lines,
-                        revision_preview,
+                        file_headings: preview.file_headings,
+                        hunks: preview.hunks,
+                        source_lines: preview.source_lines,
+                        revision_preview: preview.revision_preview,
                     })
                     .is_err()
                 {
@@ -595,6 +617,28 @@ impl RenderWorker {
         options: RenderOptions,
         revisions: Option<(Revision, Revision)>,
     ) -> u64 {
+        self.request_preview(
+            repo,
+            comparison,
+            path,
+            changes,
+            options,
+            RenderFilter {
+                revisions,
+                ..RenderFilter::default()
+            },
+        )
+    }
+
+    pub fn request_preview(
+        &self,
+        repo: &Repository,
+        comparison: &Comparison,
+        path: &str,
+        changes: Vec<Change>,
+        options: RenderOptions,
+        filter: RenderFilter,
+    ) -> u64 {
         let id = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         let job = Job {
             id,
@@ -603,7 +647,7 @@ impl RenderWorker {
             path: path.to_owned(),
             changes,
             options,
-            revisions,
+            filter,
         };
         let _ = self.sender.as_ref().expect("worker is running").send(job);
         id

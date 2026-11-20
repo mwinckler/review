@@ -41,7 +41,9 @@ impl App {
         if let Some(target) = &target {
             if self.review.view.active != target.path
                 && !(self.review.view.active.ends_with('/')
-                    && target.path.starts_with(&self.review.view.active))
+                    && self
+                        .preview_changes()
+                        .any(|change| change.path == target.path && !self.review.is_viewed(change)))
             {
                 self.review.view.selected.clone_from(&target.path);
                 self.review.view.filter.clear();
@@ -52,6 +54,7 @@ impl App {
                     .retain(|parent| !target.path.starts_with(parent));
                 self.rebuild();
             }
+            self.directory_cursor = None;
             self.line_selection = Some(LineSelection {
                 path: target.path.clone(),
                 side: target.side,
