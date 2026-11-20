@@ -120,8 +120,10 @@ Use `--base` with an optional `--head` to compare from their unique merge base.
 Git's positional `BASE...HEAD` uses the same merge-base behavior.
 
 For a local Git review, add `--working-tree` to compare against the current files
-instead of just the checked-out commit. This includes staged and unstaged changes
-as they appear on disk, along with untracked files that Git does not ignore.
+instead of just the checked-out commit. From inside the review, press `B`, then
+`Ctrl-w` to toggle **Include Git working tree**, and press `Enter` to apply.
+This includes staged and unstaged changes as they appear on disk, along with
+untracked files that Git does not ignore.
 Use a comparison whose head is the checked-out commit. The option carries over
 when you resume. Review keeps snapshot contents in its state directory and
 leaves the Git index and working files untouched. Use Git to restore files

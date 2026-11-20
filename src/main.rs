@@ -967,7 +967,10 @@ fn run(
             && let Err(error) = refresher
                 .as_ref()
                 .context("Changing revisions requires a local review.")
-                .and_then(|worker| worker.compare(edit.base, edit.head, edit.mode))
+                .and_then(|worker| {
+                    let objects = edit.working_tree.then(|| store.git_objects()).transpose()?;
+                    worker.compare(edit.base, edit.head, edit.mode, objects)
+                })
         {
             dialog.fail(format!("{error:#}"));
             redraw = true;

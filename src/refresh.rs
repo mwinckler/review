@@ -1,4 +1,5 @@
 use std::{
+    path::PathBuf,
     sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
     thread::{self, JoinHandle},
     time::Duration,
@@ -15,6 +16,7 @@ enum Request {
         base: String,
         head: String,
         mode: ComparisonMode,
+        working_tree: Option<PathBuf>,
     },
     Restore(Box<Restore>),
     Stop,
@@ -73,8 +75,13 @@ impl RefreshWorker {
                         Request::Refresh => {
                             manual = true;
                         }
-                        Request::Compare { base, head, mode } => {
-                            revisions = Some((base, head, mode));
+                        Request::Compare {
+                            base,
+                            head,
+                            mode,
+                            working_tree,
+                        } => {
+                            revisions = Some((base, head, mode, working_tree));
                         }
                         Request::Restore(action) => {
                             restore = Some(action);
@@ -89,10 +96,10 @@ impl RefreshWorker {
                 let restore =
                     restore.map(|action| action.apply(&repo).map_err(|error| format!("{error:#}")));
                 let polled = (|| -> anyhow::Result<_> {
-                    let comparison = if let Some((base, head, mode)) = revisions {
+                    let comparison = if let Some((base, head, mode, working_tree)) = revisions {
                         let comparison = repo.snapshot_revisions(&base, &head, mode)?;
-                        Some(if let Some(snapshot) = &observed.working_tree {
-                            repo.include_working_tree(comparison, &snapshot.objects)?
+                        Some(if let Some(objects) = working_tree {
+                            repo.include_working_tree(comparison, &objects)?
                         } else {
                             comparison
                         })
@@ -160,9 +167,20 @@ impl RefreshWorker {
         let _ = self.sender.send(Request::Refresh);
     }
 
-    pub fn compare(&self, base: String, head: String, mode: ComparisonMode) -> anyhow::Result<()> {
+    pub fn compare(
+        &self,
+        base: String,
+        head: String,
+        mode: ComparisonMode,
+        working_tree: Option<PathBuf>,
+    ) -> anyhow::Result<()> {
         self.sender
-            .send(Request::Compare { base, head, mode })
+            .send(Request::Compare {
+                base,
+                head,
+                mode,
+                working_tree,
+            })
             .map_err(|_| anyhow::anyhow!("The repository worker has stopped."))
     }
 

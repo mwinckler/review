@@ -927,7 +927,8 @@ impl App {
                     self.message =
                         "Press r to load the latest GitLab merge request revisions.".into();
                 } else if !self.resume_comment_draft() {
-                    self.revision_dialog = Some(RevisionDialog::new(&self.review.comparison));
+                    self.revision_dialog =
+                        Some(RevisionDialog::new(&self.review.comparison, self.backend));
                 }
             }
             KeyCode::Char('P') => {

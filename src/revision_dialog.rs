@@ -9,13 +9,14 @@ use ratatui::{
 use crate::{
     input,
     ui::{display_path, draw_single_line_field},
-    vcs::{Comparison, ComparisonMode},
+    vcs::{Backend, Comparison, ComparisonMode},
 };
 
 pub struct RevisionEdit {
     pub base: String,
     pub head: String,
     pub mode: ComparisonMode,
+    pub working_tree: bool,
 }
 
 struct Field {
@@ -37,19 +38,21 @@ pub struct RevisionDialog {
     head: Field,
     editing_head: bool,
     mode: ComparisonMode,
+    working_tree: Option<bool>,
     pub pending: bool,
     request: Option<RevisionEdit>,
     error: Option<String>,
 }
 
 impl RevisionDialog {
-    pub(crate) fn new(comparison: &Comparison) -> Self {
+    pub(crate) fn new(comparison: &Comparison, backend: Backend) -> Self {
         let single = comparison.mode == ComparisonMode::SingleRevision;
         Self {
             base: Field::new(if single { "" } else { &comparison.base_ref }),
             head: Field::new(&comparison.head_ref),
             editing_head: single,
             mode: comparison.mode,
+            working_tree: (backend == Backend::Git).then_some(comparison.working_tree.is_some()),
             pending: false,
             request: None,
             error: None,
@@ -77,6 +80,7 @@ impl RevisionDialog {
                     base: self.base.value.trim().to_owned(),
                     head: self.head.value.trim().to_owned(),
                     mode: self.mode,
+                    working_tree: self.working_tree.unwrap_or(false),
                 });
             }
             (KeyCode::Tab | KeyCode::BackTab, _) => {
@@ -92,6 +96,11 @@ impl RevisionDialog {
                 };
                 if self.mode == ComparisonMode::SingleRevision {
                     self.editing_head = true;
+                }
+            }
+            (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
+                if let Some(enabled) = &mut self.working_tree {
+                    *enabled = !*enabled;
                 }
             }
             _ => {
@@ -123,7 +132,9 @@ impl RevisionDialog {
     pub(crate) fn draw(&self, frame: &mut Frame) {
         let screen = frame.area();
         let width = screen.width.min(78);
-        let height = screen.height.min(if self.error.is_some() { 11 } else { 7 });
+        let option_height = u16::from(self.working_tree.is_some());
+        let dialog_height = if self.error.is_some() { 11 } else { 7 };
+        let height = screen.height.min(dialog_height + option_height);
         let area = Rect::new(
             screen.x + (screen.width - width) / 2,
             screen.y + (screen.height - height) / 2,
@@ -137,10 +148,11 @@ impl RevisionDialog {
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let single = self.mode == ComparisonMode::SingleRevision;
-        let [mode, base, head, status, controls] = Layout::vertical([
+        let [mode, base, head, working_tree, status, controls] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(u16::from(!single)),
             Constraint::Length(1),
+            Constraint::Length(option_height),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
@@ -167,6 +179,14 @@ impl RevisionDialog {
             &self.head.value,
             (self.editing_head && !self.pending).then_some(self.head.cursor),
         );
+        if let Some(enabled) = self.working_tree {
+            let checked = if enabled { 'x' } else { ' ' };
+            frame.render_widget(
+                Paragraph::new(format!("[{checked}] Include Git working tree (Ctrl-w)"))
+                    .style(Style::default().fg(Color::Cyan)),
+                working_tree,
+            );
+        }
         let controls_text = if self.pending {
             "Resolving review revisions…"
         } else {
@@ -177,7 +197,13 @@ impl RevisionDialog {
             controls,
         );
         let message = self.error.as_ref().map_or_else(
-            || "An empty field uses the current revision.".to_owned(),
+            || {
+                if self.working_tree == Some(true) {
+                    "Use HEAD to compare against the checked-out commit and local edits.".to_owned()
+                } else {
+                    "An empty field uses the current revision.".to_owned()
+                }
+            },
             |error| format!("Revision change failed: {}", display_path(error)),
         );
         frame.render_widget(
