@@ -715,6 +715,9 @@ impl App {
                 .diff_cursor_row()
                 .unwrap_or_else(|| self.position().vertical);
             self.hunk_selection = None;
+            if matches!(motion, LineMotion::Last) {
+                self.follow_folder_end();
+            }
             self.select_diff_line_at(motion.index(row, lines.saturating_sub(1)));
             return true;
         }

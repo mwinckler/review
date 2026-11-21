@@ -13,7 +13,7 @@ use crate::{
     restore::{Restore, RestoreState},
     revision_dialog::RevisionDialog,
     session_dialog::{SessionAction, SessionDialog},
-    state::{Position, Review},
+    state::{FolderPosition, Position, Review},
     tree::{self, Row},
     vcs::{Backend, Change, Comparison, Revision},
 };
@@ -34,6 +34,7 @@ enum HunkNavigation {
 
 enum DiffScrollMode {
     FollowCursor,
+    FollowEnd,
     KeepCursorVisible,
     Independent,
 }
@@ -134,6 +135,7 @@ pub struct App {
     pub revision_preview: Option<(Comparison, Vec<Change>)>,
     hunk_actions: VecDeque<HunkNavigation>,
     pending_heading: Option<(String, usize)>,
+    folder_restore: Option<Position>,
     diff_scroll_mode: DiffScrollMode,
     horizontal_scroll_limit: u16,
     prefix: Option<(char, Option<usize>)>,
@@ -195,6 +197,7 @@ impl App {
             revision_preview: None,
             hunk_actions: VecDeque::new(),
             pending_heading: None,
+            folder_restore: None,
             diff_scroll_mode: DiffScrollMode::FollowCursor,
             horizontal_scroll_limit: 0,
             prefix: None,
@@ -236,6 +239,7 @@ impl App {
             .as_ref()
             .is_none_or(|(path, _)| self.review.view.active != *path)
         {
+            self.restore_pending_folder_position();
             self.clear_revision_filter();
             self.clear_preview();
         }
@@ -264,7 +268,8 @@ impl App {
         }
         self.horizontal_scroll_limit =
             u16::try_from(diff_width.saturating_sub(viewport_width as usize)).unwrap_or(u16::MAX);
-        if let Some(position) = self.review.view.positions.get_mut(&self.review.view.active)
+        if self.folder_restore.is_none()
+            && let Some(position) = self.review.view.positions.get_mut(&self.review.view.active)
             && position.horizontal > self.horizontal_scroll_limit
         {
             position.horizontal = self.horizontal_scroll_limit;
@@ -339,6 +344,103 @@ impl App {
             self.position().vertical = row;
         }
         self.file_headings = headings;
+    }
+
+    pub fn begin_folder_preview(&mut self) {
+        if self.folder_restore.is_some() {
+            return;
+        }
+        let position = self.position();
+        self.folder_restore =
+            (position.vertical > 0 || position.horizontal > 0 || position.folder_top.is_some())
+                .then(|| position.clone());
+    }
+
+    pub fn restore_pending_folder_position(&mut self) {
+        if let Some(position) = self.folder_restore.take() {
+            *self.position() = position;
+        }
+    }
+
+    pub fn folder_render_priority(&mut self, page: usize) -> (Range<usize>, Option<usize>) {
+        let top = self.position().vertical;
+        let anchor = self
+            .restoring_folder_heading()
+            .map(|(_, heading)| heading.row);
+        (
+            top..top.saturating_add(page),
+            anchor.or_else(|| self.diff_cursor_row()),
+        )
+    }
+
+    fn restoring_folder_heading(&self) -> Option<(usize, &FileHeading)> {
+        let anchor = self.folder_restore.as_ref()?.folder_top.as_ref()?;
+        self.file_headings
+            .iter()
+            .enumerate()
+            .find(|(_, heading)| heading.path == anchor.path)
+    }
+
+    pub fn restore_folder_top(&mut self, lines: usize, page: usize) {
+        let Some(saved) = &self.folder_restore else {
+            return;
+        };
+        let mut ready = self.rendering_rows.is_empty();
+        let row = if let Some((index, heading)) = self.restoring_folder_heading() {
+            let offset = saved.folder_top.as_ref().map_or(0, |anchor| anchor.offset);
+            let end = self
+                .file_headings
+                .get(index + 1)
+                .map_or(lines, |next| next.row);
+            let row = heading.row + offset.min(end.saturating_sub(heading.row + 1));
+            // Earlier placeholders can still shift the saved viewport's absolute row.
+            ready |= self
+                .rendering_rows
+                .first()
+                .is_none_or(|pending| pending.start >= row.saturating_add(page));
+            row
+        } else {
+            saved.vertical
+        };
+        let top = row.min(lines.saturating_sub(page));
+        if self.position().vertical != top {
+            self.position().vertical = top;
+            self.directory_cursor = None;
+            self.line_selection = None;
+        }
+        if ready {
+            self.folder_restore = None;
+        }
+    }
+
+    pub fn remember_folder_top(&mut self) {
+        if self.folder_restore.is_some() {
+            return;
+        }
+        let top = self.position().vertical;
+        let anchor = self
+            .file_heading_at(top)
+            .filter(|_| top > 0)
+            .map(|heading| FolderPosition {
+                path: heading.path.clone(),
+                offset: top - heading.row,
+            });
+        let saved = &mut self.position().folder_top;
+        if *saved != anchor {
+            *saved = anchor;
+            self.dirty = true;
+        }
+    }
+
+    pub fn review_for_save(&self) -> Review {
+        let mut review = self.review.clone();
+        if let Some(position) = &self.folder_restore {
+            review
+                .view
+                .positions
+                .insert(review.view.active.clone(), position.clone());
+        }
+        review
     }
 
     pub fn revision_ids(&self) -> &[String] {
@@ -425,6 +527,7 @@ impl App {
         self.rendering_rows.clear();
         self.directory_cursor = None;
         self.pending_heading = None;
+        self.folder_restore = None;
         self.line_selection = None;
         self.diff_scroll_mode = DiffScrollMode::FollowCursor;
         self.hunk_selection = None;
@@ -481,6 +584,17 @@ impl App {
             .and_then(|location| self.hunks.iter().find(|hunk| &hunk.location == location))
     }
 
+    pub fn editor_preview_ready(&self) -> bool {
+        !self.rendering
+            && self.hunk_actions.is_empty()
+            && (self.selected_hunk().is_some()
+                || self.hunk_selection.as_ref().is_none_or(|location| {
+                    !self.file_headings.iter().any(|heading| {
+                        heading.path == location.path && self.is_rendering_row(heading.row + 1)
+                    })
+                }))
+    }
+
     pub fn editor_location(&self) -> Option<HunkLocation> {
         if let Some(selection) = &self.line_selection {
             return Some(HunkLocation {
@@ -530,13 +644,17 @@ impl App {
     }
 
     pub fn apply_hunk_navigation(&mut self, page: usize, lines: usize) -> bool {
-        if self.rendering || self.hunk_actions.is_empty() {
+        if self.waiting_for_hunks() || self.hunk_actions.is_empty() {
             return false;
         }
         while let Some(navigation) = self.hunk_actions.pop_front() {
             self.jump_hunk(navigation, page, lines);
         }
         true
+    }
+
+    fn waiting_for_hunks(&self) -> bool {
+        self.rendering || (!self.file_headings.is_empty() && !self.rendering_rows.is_empty())
     }
 
     fn jump_hunk(&mut self, navigation: HunkNavigation, page: usize, lines: usize) {
@@ -606,7 +724,11 @@ impl App {
         diff_lines: usize,
         terminal_width: u16,
     ) {
+        let before = self.folder_navigation();
         self.handle_input(key, page, diff_lines, terminal_width);
+        if before.is_some() && before != self.folder_navigation() {
+            self.folder_restore = None;
+        }
         if self.focus == Focus::Tree {
             self.line_selection = None;
             self.directory_cursor = None;
@@ -614,6 +736,20 @@ impl App {
         self.review.view.diff_focused = self.focus == Focus::Diff;
         self.review.view.comments_focused = self.focus == Focus::Comments;
         self.keep_diff_selection_visible(page, diff_lines);
+        if !self.file_headings.is_empty() {
+            self.remember_folder_top();
+        }
+    }
+
+    fn folder_navigation(&self) -> Option<(usize, Option<usize>)> {
+        self.folder_restore.as_ref()?;
+        let position = self.review.view.positions.get(&self.review.view.active)?;
+        Some((position.vertical, self.diff_cursor_row()))
+    }
+
+    pub(crate) fn follow_folder_end(&mut self) {
+        self.folder_restore = None;
+        self.diff_scroll_mode = DiffScrollMode::FollowEnd;
     }
 
     pub fn keep_diff_selection_visible(&mut self, page: usize, diff_lines: usize) {
@@ -622,6 +758,13 @@ impl App {
                 DiffScrollMode::FollowCursor => {
                     self.ensure_diff_cursor(page);
                     self.keep_line_selection_visible(page, diff_lines);
+                }
+                DiffScrollMode::FollowEnd => {
+                    let last = diff_lines.saturating_sub(1);
+                    if self.diff_cursor_row() != Some(last) {
+                        self.select_diff_line_at(last);
+                    }
+                    self.position().vertical = diff_lines.saturating_sub(page);
                 }
                 DiffScrollMode::KeepCursorVisible => self.keep_cursor_in_viewport(page, diff_lines),
                 DiffScrollMode::Independent => {}
@@ -898,7 +1041,7 @@ impl App {
                         HunkNavigation::Relative(prefix == ']'),
                         HunkNavigation::Number,
                     );
-                    if self.rendering {
+                    if self.waiting_for_hunks() {
                         self.hunk_actions.push_back(navigation);
                         self.focus = Focus::Diff;
                     } else {
@@ -1477,11 +1620,15 @@ impl App {
                     .to_lowercase()
                     .contains(&needle)
             {
+                self.folder_restore = None;
                 self.position().vertical = index;
                 if !self.file_headings.is_empty() {
                     self.hunk_selection = None;
                 }
                 self.select_diff_line_at(index);
+                if !self.file_headings.is_empty() {
+                    self.remember_folder_top();
+                }
                 return;
             }
         }

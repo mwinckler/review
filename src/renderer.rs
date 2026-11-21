@@ -338,17 +338,11 @@ pub(crate) fn changed_line_ranges(
 struct Job {
     id: u64,
     repo: Repository,
-    comparison: Comparison,
-    path: String,
+    comparison: Arc<Comparison>,
+    directory: bool,
     changes: Vec<Change>,
     options: RenderOptions,
-    selection: RenderSelection,
-}
-
-#[derive(Default)]
-struct RenderSelection {
     revisions: Option<(Revision, Revision)>,
-    contexts: BTreeMap<String, u32>,
 }
 
 #[derive(Clone)]
@@ -475,7 +469,7 @@ pub struct FolderPreview {
     files: FileDiffs,
     viewed: BTreeSet<String>,
     contexts: BTreeMap<String, u32>,
-    pending: Vec<(String, Option<u32>)>,
+    pending: Option<(usize, Option<u32>)>,
     errors: BTreeMap<String, String>,
 }
 
@@ -486,7 +480,7 @@ impl FolderPreview {
             files: BTreeMap::new(),
             viewed: BTreeSet::new(),
             contexts: BTreeMap::new(),
-            pending: Vec::new(),
+            pending: None,
             errors: BTreeMap::new(),
         }
     }
@@ -519,64 +513,75 @@ impl FolderPreview {
         true
     }
 
-    pub fn request_missing(&mut self) -> Vec<Change> {
-        if !self.pending.is_empty() {
-            return Vec::new();
-        }
-        let missing: Vec<_> =
-            self.changes
-                .iter()
-                .filter(|change| {
-                    !self.viewed.contains(&change.path)
-                        && self.files.get(&change.path).is_none_or(|file| {
-                            file.context != self.contexts.get(&change.path).copied()
-                        })
-                        && !self.errors.contains_key(&change.path)
-                })
-                .cloned()
-                .collect();
-        self.pending.extend(missing.iter().map(|change| {
-            (
-                change.path.clone(),
-                self.contexts.get(&change.path).copied(),
-            )
-        }));
-        missing
+    fn needs_render(&self, path: &str) -> bool {
+        !self.viewed.contains(path)
+            && !self.errors.contains_key(path)
+            && self
+                .files
+                .get(path)
+                .is_none_or(|file| file.context != self.contexts.get(path).copied())
     }
 
-    pub fn contexts(&self) -> &BTreeMap<String, u32> {
-        &self.contexts
-    }
-
-    pub fn discard_superseded_request(&mut self) -> bool {
-        if self.pending.is_empty()
-            || self
-                .pending
-                .iter()
-                .any(|(path, context)| self.contexts.get(path).copied() == *context)
+    pub fn request_next(
+        &mut self,
+        headings: &[FileHeading],
+        viewport: Range<usize>,
+        cursor: Option<usize>,
+    ) -> Option<(Change, Option<u32>)> {
+        let index_at = |row| {
+            headings
+                .partition_point(|heading| heading.row <= row)
+                .saturating_sub(1)
+        };
+        let visible = index_at(viewport.start)
+            ..headings.partition_point(|heading| heading.row < viewport.end);
+        let missing = |index: usize| self.needs_render(&self.changes[index].path);
+        let selected = cursor
+            .filter(|row| !headings.is_empty() && viewport.contains(row))
+            .map(index_at)
+            .filter(|&index| missing(index));
+        let foreground = selected.or_else(|| visible.clone().find(|&index| missing(index)));
+        if let Some((index, context)) = self.pending
+            && missing(index)
+            && self.contexts.get(&self.changes[index].path).copied() == context
+            && selected.is_none_or(|selected| index == selected)
+            && (foreground.is_none() || visible.contains(&index))
         {
-            return false;
+            return None;
         }
-        self.pending.clear();
-        true
+        // Keep at most one render in flight so a newly visible file can take its place.
+        let Some(index) =
+            foreground.or_else(|| (0..self.changes.len()).find(|&index| missing(index)))
+        else {
+            self.pending = None;
+            return None;
+        };
+        let change = &self.changes[index];
+        let context = self.contexts.get(&change.path).copied();
+        self.pending = Some((index, context));
+        Some((change.clone(), context))
+    }
+
+    pub fn has_pending_request(&self) -> bool {
+        self.pending.is_some()
     }
 
     pub fn finish(&mut self, result: Result<FileDiffs, String>) {
+        let pending = self.pending.take();
         match result {
             Ok(mut files) => {
                 files.retain(|path, file| file.context == self.contexts.get(path).copied());
                 self.store_diffs(files);
             }
-            Err(error) => self.errors.extend(
-                self.pending
-                    .iter()
-                    .filter(|(path, context)| {
-                        !self.viewed.contains(path) && self.contexts.get(path).copied() == *context
-                    })
-                    .map(|(path, _)| (path.clone(), error.clone())),
-            ),
+            Err(error) => {
+                if let Some((index, context)) = pending {
+                    let path = &self.changes[index].path;
+                    if self.needs_render(path) && self.contexts.get(path).copied() == context {
+                        self.errors.insert(path.clone(), error);
+                    }
+                }
+            }
         }
-        self.pending.clear();
     }
 
     fn store_diffs(&mut self, files: FileDiffs) {
@@ -720,8 +725,7 @@ fn render_job(
     cache: &mut FileCache,
 ) -> Result<RenderResult> {
     let started = Instant::now();
-    let directory = job.path.ends_with('/');
-    let revision_preview = if let Some((first, last)) = &job.selection.revisions {
+    let revision_preview = if let Some((first, last)) = &job.revisions {
         let comparison = job.repo.revision_comparison(first, last)?;
         let changes: Vec<_> = job
             .repo
@@ -750,15 +754,7 @@ fn render_job(
             generation.load(Ordering::Relaxed) == job.id,
             "render cancelled"
         );
-        let options = RenderOptions {
-            context: job
-                .selection
-                .contexts
-                .get(&change.path)
-                .copied()
-                .or(job.options.context),
-            ..job.options
-        };
+        let options = job.options;
         let key = (change.fingerprint(), options);
         let file = if let Some(index) = cache.iter().position(|entry| entry.0 == key) {
             let entry = cache.remove(index).expect("cache index exists");
@@ -796,11 +792,11 @@ fn render_job(
         };
         size += file.text_size;
         ensure!(
-            !directory || size <= MAX_OUTPUT_BYTES as usize,
+            !job.directory || size <= MAX_OUTPUT_BYTES as usize,
             "renderer output exceeded 16 MiB"
         );
         files.insert(change.path.clone(), file);
-        if !directory {
+        if !job.directory {
             break;
         }
     }
@@ -887,67 +883,51 @@ impl RenderWorker {
         options: RenderOptions,
         revisions: Option<(Revision, Revision)>,
     ) -> u64 {
-        self.request_selected(
+        self.request_comparison(
             repo,
-            comparison,
-            path,
+            Arc::new(comparison.clone()),
+            path.ends_with('/'),
             changes,
             options,
-            RenderSelection {
-                revisions,
-                ..RenderSelection::default()
-            },
+            revisions,
         )
     }
 
-    pub fn request_folder(
+    pub fn request_file(
         &self,
         repo: &Repository,
-        comparison: &Comparison,
-        path: &str,
-        changes: Vec<Change>,
+        comparison: &Arc<Comparison>,
+        change: Change,
         options: RenderOptions,
-        contexts: &BTreeMap<String, u32>,
     ) -> u64 {
-        let contexts = changes
-            .iter()
-            .filter_map(|change| {
-                contexts
-                    .get(&change.path)
-                    .map(|&context| (change.path.clone(), context))
-            })
-            .collect();
-        self.request_selected(
+        self.request_comparison(
             repo,
-            comparison,
-            path,
-            changes,
+            Arc::clone(comparison),
+            false,
+            vec![change],
             options,
-            RenderSelection {
-                contexts,
-                ..RenderSelection::default()
-            },
+            None,
         )
     }
 
-    fn request_selected(
+    fn request_comparison(
         &self,
         repo: &Repository,
-        comparison: &Comparison,
-        path: &str,
+        comparison: Arc<Comparison>,
+        directory: bool,
         changes: Vec<Change>,
         options: RenderOptions,
-        selection: RenderSelection,
+        revisions: Option<(Revision, Revision)>,
     ) -> u64 {
         let id = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         let job = Job {
             id,
             repo: repo.clone(),
-            comparison: comparison.clone(),
-            path: path.to_owned(),
+            comparison,
+            directory,
             changes,
             options,
-            selection,
+            revisions,
         };
         let _ = self.sender.as_ref().expect("worker is running").send(job);
         id

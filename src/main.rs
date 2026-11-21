@@ -452,6 +452,8 @@ fn main() -> Result<()> {
         saved = reply.saved;
         app.review = saved.review.clone();
         result = result.and(reply.result.map(|_| ()).map_err(anyhow::Error::msg));
+    } else {
+        app.restore_pending_folder_position();
     }
     saved.review = app.review;
     let saved_result = lock.save(&mut saved);
@@ -612,7 +614,6 @@ fn run(
             diff_page
         };
         let mut folder_changed = false;
-        let mut new_folder = false;
         if redraw && !app.review.view.active.is_empty() {
             let path = &app.review.view.active;
             let options = RenderOptions {
@@ -646,8 +647,11 @@ fn run(
                 let changes = app.preview_changes().cloned().collect();
                 if key.0.ends_with('/') {
                     request_id = worker.cancel();
-                    folder = Some(FolderPreview::new(changes));
-                    new_folder = true;
+                    folder = Some((
+                        FolderPreview::new(changes),
+                        Arc::new(app.review.comparison.clone()),
+                    ));
+                    app.begin_folder_preview();
                     folder_changed = true;
                 } else {
                     folder = None;
@@ -699,17 +703,13 @@ fn run(
             });
             diff_width = diff.width();
         }
-        if redraw && let Some(folder) = &mut folder {
+        if redraw && let Some((folder, _)) = &mut folder {
             folder_changed |= folder.update_view(&app.review);
-            if folder_changed && folder.discard_superseded_request() {
-                request_id = worker.cancel();
-                app.rendering = false;
-            }
         }
         for result in worker.results.try_iter() {
             if result.id == request_id {
                 app.rendering = false;
-                if let Some(folder) = &mut folder {
+                if let Some((folder, _)) = &mut folder {
                     folder.finish(result.files);
                     folder_changed = true;
                 } else {
@@ -727,28 +727,39 @@ fn run(
                 redraw = true;
             }
         }
-        if redraw
-            && let Some(folder) = &mut folder
-            && let Some((path, options, _)) = &requested
-        {
-            let missing = folder.request_missing();
-            if !missing.is_empty() {
-                request_id = worker.request_folder(
-                    repo,
-                    &app.review.comparison,
-                    path,
-                    missing,
-                    *options,
-                    folder.contexts(),
-                );
-                app.rendering |= new_folder;
-            }
-            if folder_changed && !app.rendering {
-                (diff, diff_width) = install_diff_preview(app, folder.assemble(), diff_page);
-            }
+        if folder_changed && let Some((folder, _)) = &folder {
+            let top = app.position().vertical;
+            (diff, diff_width) = install_diff_preview(app, folder.assemble(), diff_page);
+            app.restore_folder_top(diff.lines.len(), diff_page);
+            app.dirty |= app.position().vertical != top;
         }
         redraw |= app.apply_hunk_navigation(diff_page, diff.lines.len());
         app.keep_diff_selection_visible(diff_page, diff.lines.len());
+        if folder_changed {
+            app.remember_folder_top();
+        }
+        if redraw
+            && let Some((folder, comparison)) = &mut folder
+            && let Some((_, options, _)) = &requested
+        {
+            let (viewport, cursor) = app.folder_render_priority(diff_page);
+            let was_pending = folder.has_pending_request();
+            if let Some((change, context)) =
+                folder.request_next(&app.file_headings, viewport, cursor)
+            {
+                request_id = worker.request_file(
+                    repo,
+                    comparison,
+                    change,
+                    RenderOptions {
+                        context,
+                        ..*options
+                    },
+                );
+            } else if was_pending && !folder.has_pending_request() {
+                request_id = worker.cancel();
+            }
+        }
         if app.waiting_for_preview() || !app.rendering_rows.is_empty() {
             let activity = (render_clock.elapsed().as_millis() / 100) as usize;
             redraw |= app.render_activity != activity;
@@ -794,7 +805,15 @@ fn run(
             redraw = false;
         }
         let mut force_save = false;
-        if event::poll(Duration::from_millis(30))? {
+        let poll_ms = if folder
+            .as_ref()
+            .is_some_and(|(folder, _)| folder.has_pending_request())
+        {
+            10
+        } else {
+            30
+        };
+        if event::poll(Duration::from_millis(poll_ms))? {
             match event::read()? {
                 Event::Key(_) | Event::Paste(_) if app.quit => {}
                 Event::Key(key)
@@ -995,7 +1014,7 @@ fn run(
                 }
                 SessionAction::Rename { id, name } => {
                     let result = if id == saved.id {
-                        saved.review = app.review.clone();
+                        saved.review = app.review_for_save();
                         lock.rename(saved, &name).map(|()| {
                             app.session_label = saved.label();
                         })
@@ -1041,7 +1060,7 @@ fn run(
         }
         if let Some(job) = gitlab_job {
             let started = (|| -> Result<()> {
-                saved.review = app.review.clone();
+                saved.review = app.review_for_save();
                 lock.save(saved)?;
                 gitlab_worker.start(repo, saved.clone(), Arc::clone(lock), job)
             })();
@@ -1060,7 +1079,7 @@ fn run(
             redraw = true;
         }
         if app.editor_requested
-            && !app.rendering
+            && app.editor_preview_ready()
             && requested.as_ref().is_some_and(|key| {
                 key.0 == app.review.view.active
                     && key.1.inline == app.review.view.inline
@@ -1239,7 +1258,7 @@ fn run(
             && !app.network_busy
             && (force_save || app.quit || last_save.elapsed() >= Duration::from_millis(250))
         {
-            saved.review = app.review.clone();
+            saved.review = app.review_for_save();
             match lock.save(saved) {
                 Ok(()) => {
                     app.dirty = false;

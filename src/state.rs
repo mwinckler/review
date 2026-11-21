@@ -12,6 +12,14 @@ use crate::{
 pub struct Position {
     pub vertical: usize,
     pub horizontal: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_top: Option<FolderPosition>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderPosition {
+    pub path: String,
+    pub offset: usize,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

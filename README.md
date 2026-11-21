@@ -507,8 +507,10 @@ files viewed, including nested files and files hidden by filters or collapsed fo
 Pressing it on a fully viewed folder unmarks all its changed files.
 New reviews start on the topmost visible folder, or the first file if there
 are no folders. Highlighting a folder shows a combined diff of all its changed
-descendants, including collapsed and filtered-out files. The horizontal rule uses
-Difftastic's first filename line when available.
+descendants, including collapsed and filtered-out files. File diffs appear as
+they finish rendering. Review prioritizes files in the diff viewport and renders
+the rest in the background. The horizontal rule uses Difftastic's first filename
+line when available.
 Focus the right pane with `Ctrl-l` or `Tab` to move the cursor or search the
 combined diff. Press `Space` to mark the file under the cursor viewed and
 collapse its diff to the filename heading. The cursor moves to the next file
