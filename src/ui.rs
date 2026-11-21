@@ -948,7 +948,7 @@ pub(crate) fn comment_heading(entry: CommentEntry<'_>, review: &Review) -> Strin
         }
         CommentEntry::GitLab(discussion) => {
             let note = discussion.comments().next().expect("visible discussion");
-            let location = if let Some(target) = discussion.location() {
+            let location = if let Some(target) = discussion.location(review) {
                 format!(
                     "{}:{}-{} ({})",
                     display_path(&target.path),

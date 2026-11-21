@@ -1262,6 +1262,17 @@ impl Repository {
         }
     }
 
+    pub(crate) fn content_at(&self, commit: &str, path: &str) -> Result<Vec<u8>> {
+        validate_commit_id(commit)?;
+        match self.backend {
+            Backend::Git => self.run(&["cat-file", "blob", &format!("{commit}:{path}")], false),
+            Backend::Jj => self.run(
+                &["file", "show", "-r", commit, &exact_fileset(path)?],
+                false,
+            ),
+        }
+    }
+
     pub(crate) fn resolve(&self, revision: &str, snapshot: bool) -> Result<String> {
         let output = match self.backend {
             Backend::Git => self.run(

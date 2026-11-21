@@ -263,7 +263,7 @@ impl GitLab {
         }
         let drafts: Vec<DraftNote> = self.list(&format!("{endpoint}/draft_notes?per_page=100"))?;
         let gitlab = saved.review.gitlab.as_mut().expect("MR session");
-        self.load_discussions(gitlab)?;
+        self.load_discussions(gitlab, &saved.review.comparison, &saved.review.changes)?;
         gitlab.publication.user_id = Some(user.id);
         let reconciled = reconcile(
             &mut gitlab.publication,
@@ -696,7 +696,7 @@ impl GitLab {
             false,
         )?;
         let gitlab = saved.review.gitlab.as_mut().expect("MR session");
-        self.load_discussions(gitlab)?;
+        self.load_discussions(gitlab, &saved.review.comparison, &saved.review.changes)?;
         let result = reconcile(
             &mut gitlab.publication,
             &[],

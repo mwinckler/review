@@ -16,7 +16,7 @@ use crate::{
     vim::VimEditor,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LineTarget {
     /// The renderer's comparison path; old-side anchors use the pre-rename path.
     pub path: String,

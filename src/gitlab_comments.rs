@@ -10,12 +10,22 @@ use crate::{
     gitlab::User,
     state::Review,
     store::now_millis,
+    vcs::{Change, Comparison},
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Discussion {
     pub id: String,
     pub notes: Vec<DiscussionNote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pinned_position: Option<PinnedPosition>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PinnedPosition {
+    commit: String,
+    #[serde(flatten)]
+    target: LineTarget,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -91,18 +101,58 @@ impl Discussion {
         self.notes.iter().filter(|note| !note.system)
     }
 
-    pub(crate) fn position(&self) -> Option<&Value> {
+    fn position(&self) -> Option<&Value> {
         self.comments().find_map(|note| note.position.as_ref())
+    }
+
+    fn review_position(&self, comparison: &Comparison) -> Option<LineTarget> {
+        let position = self.position()?;
+        if same_snapshots(position, comparison) {
+            return text_location(position, |_| true);
+        }
+        self.pinned_position
+            .as_ref()
+            .filter(|position| position.commit == snapshot(comparison, position.target.side))
+            .map(|position| position.target.clone())
+            .or_else(|| text_location(position, |side| same_snapshot(position, comparison, side)))
+    }
+
+    pub(crate) fn retain_position(&mut self, previous: Option<&Self>, comparison: &Comparison) {
+        self.pinned_position = None;
+        if let Some(position) = self.position()
+            && position["position_type"] == "text"
+            && !same_snapshots(position, comparison)
+            && let Some(target) = previous.and_then(|previous| previous.review_position(comparison))
+        {
+            self.pin(comparison, target);
+        }
+    }
+
+    pub(crate) fn unmapped_position(&self, comparison: &Comparison) -> Option<(&str, LineTarget)> {
+        if self.review_position(comparison).is_some() {
+            return None;
+        }
+        let position = self.position()?;
+        let target = text_location(position, |_| true)?;
+        let commit = position[commit_field(target.side)].as_str()?;
+        Some((commit, target))
+    }
+
+    pub(crate) fn pin(&mut self, comparison: &Comparison, target: LineTarget) {
+        self.pinned_position = Some(PinnedPosition {
+            commit: snapshot(comparison, target.side).into(),
+            target,
+        });
     }
 
     pub(crate) fn path(&self) -> Option<&str> {
         let position = self.position()?;
         let side = if position["new_line"].is_null() && !position["old_line"].is_null() {
-            "old_path"
+            DiffSide::Old
         } else {
-            "new_path"
+            DiffSide::New
         };
-        position[side]
+        position[path_field(side)]
             .as_str()
             .filter(|path| !path.is_empty())
             .or_else(|| {
@@ -113,57 +163,89 @@ impl Discussion {
     }
 
     pub(crate) fn is_outdated(&self, review: &Review) -> bool {
-        let Some(position) = self.position() else {
-            return false;
-        };
-        position["base_sha"].as_str() != Some(review.comparison.base_id.as_str())
-            || position["head_sha"].as_str() != Some(review.comparison.head_id.as_str())
-            || review
-                .gitlab
-                .as_ref()
-                .and_then(|gitlab| gitlab.merge_request.diff_refs.as_ref())
-                .is_some_and(|refs| position["start_sha"].as_str() != Some(refs.start_sha.as_str()))
-    }
-
-    pub(crate) fn location(&self) -> Option<LineTarget> {
-        let position = self.position()?;
-        if position["position_type"] != "text" {
-            return None;
-        }
-        for (side, coordinate, path) in [
-            (DiffSide::New, "new_line", "new_path"),
-            (DiffSide::Old, "old_line", "old_path"),
-        ] {
-            let range = if let Some(range) =
-                position.get("line_range").filter(|range| !range.is_null())
-            {
-                range_line(&range["start"], coordinate).zip(range_line(&range["end"], coordinate))
-            } else {
-                line(&position[coordinate]).map(|line| (line, line))
-            };
-            if let Some((start, end)) = range.filter(|(start, end)| end >= start) {
-                return Some(LineTarget {
-                    path: position[path].as_str()?.to_owned(),
-                    side,
-                    start_line: start,
-                    end_line: end,
-                });
-            }
-        }
-        // A range spanning removed and added lines can still jump to its final line.
-        let (side, coordinate, path) = if line(&position["new_line"]).is_some() {
-            (DiffSide::New, "new_line", "new_path")
-        } else {
-            (DiffSide::Old, "old_line", "old_path")
-        };
-        let number = line(&position[coordinate])?;
-        Some(LineTarget {
-            path: position[path].as_str()?.to_owned(),
-            side,
-            start_line: number,
-            end_line: number,
+        self.position().is_some_and(|position| {
+            !same_snapshots(position, &review.comparison)
+                && self.review_position(&review.comparison).is_none()
         })
     }
+
+    pub(crate) fn location(&self, review: &Review) -> Option<LineTarget> {
+        self.review_position(&review.comparison)
+            .or_else(|| text_location(self.position()?, |_| true))
+    }
+}
+
+fn same_snapshots(position: &Value, comparison: &Comparison) -> bool {
+    same_snapshot(position, comparison, DiffSide::Old)
+        && same_snapshot(position, comparison, DiffSide::New)
+}
+
+fn same_snapshot(position: &Value, comparison: &Comparison, side: DiffSide) -> bool {
+    position[commit_field(side)].as_str() == Some(snapshot(comparison, side))
+}
+
+fn snapshot(comparison: &Comparison, side: DiffSide) -> &str {
+    match side {
+        DiffSide::Old => &comparison.base_id,
+        DiffSide::New => &comparison.head_id,
+    }
+}
+
+fn commit_field(side: DiffSide) -> &'static str {
+    match side {
+        DiffSide::Old => "base_sha",
+        DiffSide::New => "head_sha",
+    }
+}
+
+fn path_field(side: DiffSide) -> &'static str {
+    match side {
+        DiffSide::Old => "old_path",
+        DiffSide::New => "new_path",
+    }
+}
+
+pub(crate) fn matching_change<'a>(
+    changes: &'a [Change],
+    target: &LineTarget,
+) -> Option<&'a Change> {
+    changes.iter().find(|change| match target.side {
+        DiffSide::Old => change.old_path == target.path && !change.old.kind.is_empty(),
+        DiffSide::New => change.path == target.path && !change.new.kind.is_empty(),
+    })
+}
+
+fn text_location(position: &Value, accept: impl Fn(DiffSide) -> bool) -> Option<LineTarget> {
+    if position["position_type"] != "text" {
+        return None;
+    }
+    let sides = [(DiffSide::New, "new_line"), (DiffSide::Old, "old_line")];
+    let target = |side, start_line, end_line| {
+        let path = position[path_field(side)].as_str()?;
+        Some(LineTarget {
+            path: path.to_owned(),
+            side,
+            start_line,
+            end_line,
+        })
+    };
+    if let Some(range) = position.get("line_range").filter(|range| !range.is_null()) {
+        for (side, coordinate) in sides {
+            if accept(side)
+                && let Some((start, end)) = range_line(&range["start"], coordinate)
+                    .zip(range_line(&range["end"], coordinate))
+                && end >= start
+                && let Some(target) = target(side, start, end)
+            {
+                return Some(target);
+            }
+        }
+    }
+    // A range spanning removed and added lines can still jump to its final line.
+    sides.into_iter().find_map(|(side, coordinate)| {
+        let number = line(&position[coordinate]).filter(|_| accept(side))?;
+        target(side, number, number)
+    })
 }
 
 fn line(value: &Value) -> Option<usize> {
@@ -222,14 +304,8 @@ impl<'a> CommentEntry<'a> {
                 end_line: comment.anchor.end_line,
             }),
             Self::GitLab(discussion) => {
-                if discussion.is_outdated(review) {
-                    return None;
-                }
-                let mut target = discussion.location()?;
-                let change = review.changes.iter().find(|change| match target.side {
-                    DiffSide::Old => change.old_path == target.path && !change.old.kind.is_empty(),
-                    DiffSide::New => change.path == target.path && !change.new.kind.is_empty(),
-                })?;
+                let mut target = discussion.review_position(&review.comparison)?;
+                let change = matching_change(&review.changes, &target)?;
                 target.path.clone_from(&change.path);
                 Some(target)
             }
@@ -246,6 +322,11 @@ impl<'a> CommentEntry<'a> {
                     .unwrap_or(&comment.anchor.path),
             ),
             Self::GitLab(discussion) => {
+                if let Some(target) = discussion.review_position(&review.comparison)
+                    && let Some(change) = matching_change(&review.changes, &target)
+                {
+                    return Some(&change.path);
+                }
                 let path = discussion.path()?;
                 Some(
                     review

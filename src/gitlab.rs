@@ -1,10 +1,11 @@
 //! GitLab metadata and authenticated API access through `glab`.
 
 use std::{
-    path::{Path, PathBuf},
+    collections::BTreeMap,
+    path::Path,
     process::Command,
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -13,8 +14,10 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
 use crate::{
+    comments::DiffSide,
     conductor::{Conductor, ConductorStartup},
-    gitlab_comments::{Discussion, DiscussionReply},
+    editor::remap_range,
+    gitlab_comments::{Discussion, DiscussionReply, matching_change},
     gitlab_review::Publication,
     vcs::{Change, Comparison, Repository, validate_commit_id},
 };
@@ -271,7 +274,7 @@ struct ProjectInfo {
 }
 
 pub struct GitLab {
-    directory: PathBuf,
+    repo: Repository,
     project: Project,
 }
 
@@ -282,7 +285,7 @@ impl GitLab {
 
     pub fn new(repo: &Repository, project: &Project) -> Self {
         Self {
-            directory: repo.root.clone(),
+            repo: repo.clone(),
             project: project.clone(),
         }
     }
@@ -311,9 +314,20 @@ impl GitLab {
         body: Option<&serde_json::Value>,
         paginate: bool,
     ) -> Result<Vec<u8>> {
+        self.api_with_timeout(method, endpoint, body, paginate, Duration::from_secs(90))
+    }
+
+    fn api_with_timeout(
+        &self,
+        method: &str,
+        endpoint: &str,
+        body: Option<&serde_json::Value>,
+        paginate: bool,
+        timeout: Duration,
+    ) -> Result<Vec<u8>> {
         let mut command = Command::new("glab");
         command
-            .current_dir(&self.directory)
+            .current_dir(&self.repo.root)
             .env_remove("GLAB_DEBUG_HTTP")
             .args([
                 "api",
@@ -331,7 +345,8 @@ impl GitLab {
             command.args(["--input", "-"]);
         }
         let output =
-            crate::command::output(&mut command, input.as_deref()).context("GitLab API request")?;
+            crate::command::output_with_timeout(&mut command, input.as_deref(), timeout, || false)
+                .context("GitLab API request")?;
         ensure!(
             output.status.success(),
             "GitLab API on {}: {}. Authenticate with review gitlab login --hostname {}",
@@ -436,12 +451,98 @@ impl GitLab {
         bail!("GitLab is still preparing MR !{iid}; retry shortly")
     }
 
-    pub(crate) fn load_discussions(&self, context: &mut GitLabReview) -> Result<()> {
-        context.discussions = self.list(&format!(
+    pub(crate) fn load_discussions(
+        &self,
+        context: &mut GitLabReview,
+        comparison: &Comparison,
+        changes: &[Change],
+    ) -> Result<()> {
+        let mut discussions: Vec<Discussion> = self.list(&format!(
             "{}/discussions?per_page=100",
             context.merge_request.endpoint()
         ))?;
+        let previous: BTreeMap<_, _> = context
+            .discussions
+            .iter()
+            .map(|discussion| (discussion.id.as_str(), discussion))
+            .collect();
+        // Source verification is best-effort; bound the extra API work across all threads.
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut remaining_bytes = 16 * 1024 * 1024usize;
+        let mut sources = BTreeMap::new();
+        for discussion in &mut discussions {
+            discussion.retain_position(previous.get(discussion.id.as_str()).copied(), comparison);
+            if Instant::now() >= deadline {
+                continue;
+            }
+            let Some((commit, mut target)) = discussion.unmapped_position(comparison) else {
+                continue;
+            };
+            let Some(change) = matching_change(changes, &target) else {
+                continue;
+            };
+            let old = target.side == DiffSide::Old;
+            let project = if old {
+                context.merge_request.target_project_id
+            } else {
+                context
+                    .merge_request
+                    .source_project_id
+                    .unwrap_or(context.merge_request.target_project_id)
+            };
+            let before = sources
+                .entry((project, commit.to_owned(), target.path.clone()))
+                .or_insert_with(|| {
+                    if remaining_bytes == 0 {
+                        return None;
+                    }
+                    let content = self
+                        .discussion_source(project, commit, &target.path, deadline)
+                        .ok()?;
+                    remaining_bytes = remaining_bytes.checked_sub(content.len())?;
+                    Some(content)
+                });
+            let Some(before) = before else {
+                continue;
+            };
+            let Ok(after) = self.repo.content(comparison, change, old) else {
+                continue;
+            };
+            if std::str::from_utf8(before).is_ok()
+                && std::str::from_utf8(&after).is_ok()
+                && let Ok(Some(lines)) =
+                    remap_range(change, before, &after, target.start_line..=target.end_line)
+            {
+                target.start_line = *lines.start();
+                target.end_line = *lines.end();
+                discussion.pin(comparison, target);
+            }
+        }
+        context.discussions = discussions;
         Ok(())
+    }
+
+    fn discussion_source(
+        &self,
+        project: u64,
+        commit: &str,
+        path: &str,
+        deadline: Instant,
+    ) -> Result<Vec<u8>> {
+        validate_commit_id(commit)?;
+        if let Ok(content) = self.repo.content_at(commit, path) {
+            return Ok(content);
+        }
+        let path = encode(path);
+        let timeout = deadline.saturating_duration_since(Instant::now());
+        ensure!(!timeout.is_zero(), "GitLab comment source lookup timed out");
+        self.api_with_timeout(
+            "GET",
+            &format!("projects/{project}/repository/files/{path}/raw?ref={commit}"),
+            None,
+            false,
+            timeout,
+        )
     }
 
     pub fn prepare(
@@ -537,7 +638,7 @@ impl GitLab {
             discussions: Vec::new(),
             replies: Vec::new(),
         };
-        self.load_discussions(&mut gitlab)?;
+        self.load_discussions(&mut gitlab, &comparison, &changes)?;
         let conductor_startup = match checkout {
             Checkout::Direct => {
                 repo.checkout_review(

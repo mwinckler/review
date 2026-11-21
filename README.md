@@ -269,6 +269,8 @@ fenced code, and tables. While composing a comment or reply, `Ctrl-p` toggles
 between editing Markdown and its rendered preview.
 
 Discussions are saved with the session and reloaded when resuming an MR review.
+Review keeps line markers at their verified positions in the saved snapshots
+when GitLab reports positions from another revision.
 Press `r` inside the comments browser to reload conversations while keeping the
 reviewed snapshots and working copy. The normal `r` refresh updates both the MR
 snapshots and discussions. Local feedback and publication receipts are preserved
