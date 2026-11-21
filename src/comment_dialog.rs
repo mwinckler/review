@@ -182,6 +182,12 @@ pub enum DraftField {
     Body,
 }
 
+struct CommentOrigin {
+    focus: Focus,
+    fullscreen: bool,
+    comments_visible: bool,
+}
+
 pub struct CommentDraft {
     pub id: Option<String>,
     pub anchor: CommentAnchor,
@@ -194,6 +200,7 @@ pub struct CommentDraft {
     pub preview: bool,
     pub(crate) editor: RefCell<VimEditor>,
     source: Option<String>,
+    origin: Option<CommentOrigin>,
 }
 
 impl CommentDraft {
@@ -232,6 +239,7 @@ impl CommentDraft {
             preview: false,
             editor: RefCell::default(),
             source: Some(String::from_utf8(content)?),
+            origin: None,
         })
     }
 
@@ -248,6 +256,7 @@ impl CommentDraft {
             preview: false,
             editor: RefCell::default(),
             source: None,
+            origin: None,
         }
     }
 
@@ -467,10 +476,15 @@ impl App {
         false
     }
 
-    pub fn compose_comment(&mut self, draft: CommentDraft) {
+    pub fn compose_comment(&mut self, mut draft: CommentDraft) {
         if self.resume_comment_draft() {
             return;
         }
+        draft.origin = Some(CommentOrigin {
+            focus: self.focus,
+            fullscreen: self.review.view.fullscreen,
+            comments_visible: self.review.view.comments_visible,
+        });
         self.focus_comments();
         self.comment_dialog = Some(CommentDialog::Compose(Box::new(draft)));
     }
@@ -812,6 +826,11 @@ impl App {
                 if key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL)
                     || key.code == KeyCode::Esc && !draft.preview && draft.field != DraftField::Body
                 {
+                    if let Some(origin) = &draft.origin {
+                        self.set_focus(origin.focus);
+                        self.review.view.fullscreen = origin.fullscreen;
+                        self.review.view.comments_visible = origin.comments_visible;
+                    }
                     return;
                 }
                 if key.code == KeyCode::Esc && draft.preview {
