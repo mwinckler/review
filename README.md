@@ -512,10 +512,11 @@ they finish rendering. Review prioritizes files in the diff viewport and renders
 the rest in the background. The horizontal rule uses Difftastic's first filename
 line when available.
 Focus the right pane with `Ctrl-l` or `Tab` to move the cursor or search the
-combined diff. Press `Space` to mark the file under the cursor viewed and
-collapse its diff to the filename heading. The cursor moves to the next file
-heading, or stays on the last file. Press `Space` on a viewed heading to mark its
-file unviewed and expand its diff.
+combined diff. In a multi-file diff, the tree subtly highlights the file under
+the cursor. Press `Space` to mark that file viewed and collapse its diff to the
+filename heading. The cursor moves to the next file heading, or stays on the
+last file. Press `Space` on a viewed heading to mark its file unviewed and expand
+its diff.
 Press `+` or `-` to adjust context for the file under the diff cursor. That file's
 body shows a spinner at its existing height while the new diff renders.
 Viewed files and fully viewed folders appear slightly dimmed in the tree.

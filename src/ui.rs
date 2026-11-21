@@ -345,6 +345,13 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
         let height = panes.tree.height.saturating_sub(2) as usize;
         let visible = tree::visible_range(app.rows.len(), app.selection, height);
         let offset = visible.start;
+        let diff_file = if app.in_folder_diff() && app.file_headings.len() > 1 {
+            app.diff_cursor_row()
+                .and_then(|row| app.file_heading_at(row))
+                .map(|heading| heading.path.as_str())
+        } else {
+            None
+        };
         let items: Vec<_> = app
             .rows
             .iter()
@@ -399,11 +406,13 @@ pub fn draw(frame: &mut Frame, app: &App, diff: &Text<'static>) {
                         Style::default().fg(Color::Magenta),
                     ));
                 }
-                let style = if row.viewed == row.total {
-                    Style::default().add_modifier(Modifier::DIM)
-                } else {
-                    Style::default()
-                };
+                let mut style = Style::default();
+                if row.viewed == row.total {
+                    style = style.add_modifier(Modifier::DIM);
+                }
+                if diff_file == Some(row.path.as_str()) {
+                    style = style.bg(Color::Rgb(21, 27, 36));
+                }
                 ListItem::new(Line::from(spans)).style(style)
             })
             .collect();
