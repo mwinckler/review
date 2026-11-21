@@ -584,6 +584,13 @@ impl App {
             .and_then(|location| self.hunks.iter().find(|hunk| &hunk.location == location))
     }
 
+    pub(crate) fn hunk_at(&self, row: usize) -> Option<&Hunk> {
+        let index = self.hunks.partition_point(|hunk| hunk.rows.end <= row);
+        self.hunks
+            .get(index)
+            .filter(|hunk| hunk.rows.contains(&row))
+    }
+
     pub fn editor_preview_ready(&self) -> bool {
         !self.rendering
             && self.hunk_actions.is_empty()
@@ -610,6 +617,11 @@ impl App {
             && let Some(row) = self.directory_cursor
             && let Some(heading) = self.file_heading_at(row)
         {
+            if row != heading.row
+                && let Some(hunk) = self.hunk_at(row)
+            {
+                return Some(hunk.location.clone());
+            }
             return self.file_location(&heading.path);
         }
         if self.focus == Focus::Diff {

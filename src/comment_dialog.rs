@@ -620,10 +620,24 @@ impl App {
             .as_ref()
             .map_or(DiffSide::New, |selection| selection.side);
         let directory = !self.file_headings.is_empty();
-        self.line_selection = self
-            .source_at_or_after(row)
-            .filter(|source| !directory || source.row == row)
-            .and_then(|source| LineSelection::at_source(source, side, false));
+        // A wrapped row inherits its source line within the same hunk.
+        let source = LineSelection::source_at_row(&self.source_lines, row).filter(|source| {
+            source.row == row
+                || self
+                    .hunk_at(row)
+                    .is_some_and(|hunk| hunk.rows.contains(&source.row))
+        });
+        self.line_selection = if let Some(source) = source {
+            LineSelection::at_source(source, side, false).map(|mut selection| {
+                selection.row = Some(row);
+                selection
+            })
+        } else if !directory {
+            self.source_at_or_after(row)
+                .and_then(|source| LineSelection::at_source(source, side, false))
+        } else {
+            None
+        };
         self.directory_cursor = (directory && self.line_selection.is_none()).then_some(row);
     }
 
