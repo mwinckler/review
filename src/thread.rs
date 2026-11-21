@@ -62,6 +62,7 @@ impl App {
                 cursor: target.end_line,
                 extending: false,
                 row: None,
+                preferred_side: target.side,
             });
         }
         self.focus_comments();

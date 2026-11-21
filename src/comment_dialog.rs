@@ -32,6 +32,8 @@ pub struct LineSelection {
     pub cursor: usize,
     pub extending: bool,
     pub(crate) row: Option<usize>,
+    /// The requested side can differ from the side available on this row.
+    pub(crate) preferred_side: DiffSide,
 }
 
 #[derive(Clone, Copy)]
@@ -66,9 +68,9 @@ impl LineMotion {
 }
 
 impl LineSelection {
-    fn at_source(source: &SourceLine, side: DiffSide, extending: bool) -> Option<Self> {
-        let (side, number) = if let Some(number) = source.number(side) {
-            (side, number)
+    fn at_source(source: &SourceLine, preferred_side: DiffSide, extending: bool) -> Option<Self> {
+        let (side, number) = if let Some(number) = source.number(preferred_side) {
+            (preferred_side, number)
         } else if let Some(number) = source.location.new_line {
             (DiffSide::New, number)
         } else {
@@ -81,6 +83,7 @@ impl LineSelection {
             cursor: number,
             extending,
             row: Some(source.row),
+            preferred_side,
         })
     }
 
@@ -119,7 +122,7 @@ impl LineSelection {
                 LineMotion::Last => last.row,
             };
             if let Some(source) = Self::source_at_row(sources, row)
-                && let Some(mut next) = Self::at_source(source, self.side, false)
+                && let Some(mut next) = Self::at_source(source, self.preferred_side, false)
             {
                 next.row = Some(row);
                 *self = next;
@@ -629,10 +632,10 @@ impl App {
     }
 
     pub(crate) fn select_diff_line_at(&mut self, row: usize) {
-        let side = self
+        let preferred_side = self
             .line_selection
             .as_ref()
-            .map_or(DiffSide::New, |selection| selection.side);
+            .map_or(DiffSide::New, |selection| selection.preferred_side);
         let directory = !self.file_headings.is_empty();
         // A wrapped row inherits its source line within the same hunk.
         let source = LineSelection::source_at_row(&self.source_lines, row).filter(|source| {
@@ -642,13 +645,13 @@ impl App {
                     .is_some_and(|hunk| hunk.rows.contains(&source.row))
         });
         self.line_selection = if let Some(source) = source {
-            LineSelection::at_source(source, side, false).map(|mut selection| {
+            LineSelection::at_source(source, preferred_side, false).map(|mut selection| {
                 selection.row = Some(row);
                 selection
             })
         } else if !directory {
             self.source_at_or_after(row)
-                .and_then(|source| LineSelection::at_source(source, side, false))
+                .and_then(|source| LineSelection::at_source(source, preferred_side, false))
         } else {
             None
         };
@@ -678,8 +681,8 @@ impl App {
             .take_while(|line| visible.contains(&line.row))
             .min_by_key(|line| line.row.abs_diff(row))
         {
-            let side = selection.map_or(DiffSide::New, |selection| selection.side);
-            self.line_selection = LineSelection::at_source(source, side, false);
+            let preferred_side = selection.map_or(DiffSide::New, |s| s.preferred_side);
+            self.line_selection = LineSelection::at_source(source, preferred_side, false);
         }
     }
 
